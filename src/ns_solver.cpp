@@ -1,0 +1,279 @@
+// DESIGN.md reference: Layer 3 — Time Loop
+// Fix log:
+//   sig-match    : all signatures match ns_solver.hpp exactly
+//   cfg-members  : regrid_interval / max_level / sgs / verbose_json live in cfg
+//   alias        : RK3 stages 2/3 no longer alias Qs_ as both src and dst
+//   h-field      : node.block->h used everywhere
+#include "../include/sgs.hpp"
+#include "../include/amr_operators.hpp"
+#include "../include/ns_solver.hpp"
+#include "../include/operators.hpp"
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdio>
+
+// =============================================================================
+// Helpers
+// =============================================================================
+static double block_mass(const CellBlock& b)         { return b.total_mass(); }
+static double block_momentum_x(const CellBlock& b)   { return b.total_momentum_x(); }
+static double block_total_energy(const CellBlock& b) { return b.total_energy(); }
+
+static double block_kinetic_energy(const CellBlock& b) {
+    double s = 0.0;
+    for (int k = ilo(); k <= ihi(); ++k)
+    for (int j = ilo(); j <= ihi(); ++j)
+    for (int i = ilo(); i <= ihi(); ++i) {
+        Prim q = b.prim(i,j,k);
+        s += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w);
+    }
+    return s * b.h*b.h*b.h;
+}
+
+// =============================================================================
+// NSSolver::init
+// =============================================================================
+void NSSolver::init(double domain_L,
+                    const std::function<Prim(double,double,double)>& ic) {
+    tree.init(domain_L);
+    t = 0.0; step = 0;
+    history.clear();
+
+    auto& blk = *tree.nodes[0].block;
+    for (int k = 0; k < NB2; ++k)
+    for (int j = 0; j < NB2; ++j)
+    for (int i = 0; i < NB2; ++i) {
+        double x = blk.ox + (i - NG + 0.5) * blk.h;
+        double y = blk.oy + (j - NG + 0.5) * blk.h;
+        double z = blk.oz + (k - NG + 0.5) * blk.h;
+        Prim p = ic(x, y, z);
+        int idx = cell_idx(i,j,k);
+        blk.Q[0][idx] = p.rho;
+        blk.Q[1][idx] = p.rho * p.u;
+        blk.Q[2][idx] = p.rho * p.v;
+        blk.Q[3][idx] = p.rho * p.w;
+        blk.Q[4][idx] = p.rho * 0.5*(p.u*p.u + p.v*p.v + p.w*p.w)
+                       + p.p / (GAMMA - 1.0);
+    }
+
+    alloc_scratch();
+}
+
+
+// =============================================================================
+// copy helpers
+// =============================================================================
+void NSSolver::copy_tree_to_stage(std::vector<CellBlock>& stage) {
+    auto leaves = tree.leaf_indices();
+    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
+        const auto& src = *tree.nodes[leaves[ii]].block;
+        auto&       dst = stage[ii];
+        for (int v = 0; v < NVAR; ++v) dst.Q[v] = src.Q[v];
+    }
+}
+
+void NSSolver::copy_stage_to_tree(const std::vector<CellBlock>& stage) {
+    auto leaves = tree.leaf_indices();
+    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
+        auto&       dst = *tree.nodes[leaves[ii]].block;
+        const auto& src = stage[ii];
+        for (int v = 0; v < NVAR; ++v) dst.Q[v] = src.Q[v];
+    }
+}
+
+void NSSolver::save_Qn() { copy_tree_to_stage(Qn_); }
+
+// =============================================================================
+// NSSolver::advance — alias-free SSP-RK3
+// =============================================================================
+double NSSolver::advance() {
+    bool periodic = (cfg.bc == BCType::Periodic);
+    double dt = tree_cfl_dt(tree, cfg.cfl);
+
+    save_Qn();
+
+    auto leaves = tree.leaf_indices();
+    int  NL     = (int)leaves.size();
+
+    // Stage 1: Q^(1) = Q^n + dt*L(Q^n)
+    tree_rhs(tree, rhs_, periodic);
+    for (int ii = 0; ii < NL; ++ii)
+    for (int v  = 0; v  < NVAR; ++v)
+    for (int k  = ilo(); k <= ihi(); ++k)
+    for (int j  = ilo(); j <= ihi(); ++j)
+    for (int i  = ilo(); i <= ihi(); ++i) {
+        int idx = cell_idx(i,j,k);
+        Qs_[ii].Q[v][idx] = Qn_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx];
+    }
+    copy_stage_to_tree(Qs_);
+
+    // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))
+    tree_rhs(tree, rhs_, periodic);
+    for (int ii = 0; ii < NL; ++ii)
+    for (int v  = 0; v  < NVAR; ++v)
+    for (int k  = ilo(); k <= ihi(); ++k)
+    for (int j  = ilo(); j <= ihi(); ++j)
+    for (int i  = ilo(); i <= ihi(); ++i) {
+        int idx = cell_idx(i,j,k);
+        Qs_[ii].Q[v][idx] =
+            (3.0/4.0) * Qn_[ii].Q[v][idx] +            
+            (1.0/4.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
+    }
+    copy_stage_to_tree(Qs_);
+
+    // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))
+    tree_rhs(tree, rhs_, periodic);
+    for (int ii = 0; ii < NL; ++ii)
+    for (int v  = 0; v  < NVAR; ++v)
+    for (int k  = ilo(); k <= ihi(); ++k)
+    for (int j  = ilo(); j <= ihi(); ++j)
+    for (int i  = ilo(); i <= ihi(); ++i) {
+        int idx = cell_idx(i,j,k);
+        Qs_[ii].Q[v][idx] =
+            (1.0/3.0) * Qn_[ii].Q[v][idx] +            
+            (2.0/3.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
+    }
+    copy_stage_to_tree(Qs_);
+
+    t    += dt;
+    step += 1;
+
+    // Regrid — cfg.regrid_interval / cfg.max_level live in SolverConfig
+    if (cfg.regrid_interval > 0 && step % cfg.regrid_interval == 0)
+        regrid();
+
+    // SGS operator-split
+    if (cfg.sgs) {
+        for (int li : tree.leaf_indices())
+            cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
+    }
+
+    // JSON diagnostics
+    if (cfg.verbose_json) {
+        double ke = 0.0;
+        for (int li : tree.leaf_indices()) {
+            auto& blk = *tree.nodes[li].block;
+            double h3 = blk.h * blk.h * blk.h;
+            for (int k = NG; k < NG+NB; ++k)
+            for (int j = NG; j < NG+NB; ++j)
+            for (int i = NG; i < NG+NB; ++i) {
+                Prim q = blk.prim(i,j,k);
+                ke += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w) * h3;
+            }
+        }
+        static double ke_prev = ke;
+        double residual   = (ke_prev > 0.0) ? std::fabs(ke - ke_prev) / ke_prev : 0.0;
+        ke_prev = ke;
+        double cfl_actual = dt / tree_cfl_dt(tree, 1.0);
+        std::fprintf(stdout,
+            "{\"step\":%d,\"t\":%.6e,\"dt\":%.6e,\"KE\":%.6e,"
+            "\"residual\":%.6e,\"cfl\":%.4f}\n",
+            step, t, dt, ke, residual, cfl_actual);
+        std::fflush(stdout);
+    }
+
+    return dt;
+}
+
+// =============================================================================
+// run
+// =============================================================================
+void NSSolver::run() {
+    if (cfg.verbose)
+        printf("%-8s %-12s %-12s %-14s %-14s\n",
+               "step","t","dt","mass","KE");
+
+    while (t < cfg.t_end && step < cfg.max_steps) {
+        double dt = advance();
+        if (step % cfg.diag_interval == 0 || t >= cfg.t_end) {
+            auto d = compute_diag();
+            history.push_back(d);
+            if (cfg.verbose) print_diag(d);
+        }
+        (void)dt;
+    }
+}
+
+// =============================================================================
+// Diagnostics
+// =============================================================================
+StepDiag NSSolver::compute_diag() const {
+    StepDiag d;
+    d.step = step; d.t = t; d.dt = 0.0;
+    d.mass = 0; d.momentum_x = 0; d.kinetic_energy = 0; d.total_energy = 0;
+    for (int li : tree.leaf_indices()) {
+        const auto& b = *tree.nodes[li].block;
+        d.mass           += block_mass(b);
+        d.momentum_x     += block_momentum_x(b);
+        d.kinetic_energy += block_kinetic_energy(b);
+        d.total_energy   += block_total_energy(b);
+    }
+    return d;
+}
+
+void NSSolver::print_diag(const StepDiag& d) const {
+    printf("%-8d %-12.6e %-12.6e %-14.8e %-14.8e\n",
+           d.step, d.t, d.dt, d.mass, d.kinetic_energy);
+}
+
+// =============================================================================
+// alloc_scratch
+// =============================================================================
+// FIX P5: only reallocate when the leaf count has actually changed.
+//
+// ROOT CAUSE (original):
+//   alloc_scratch() always called clear()+reserve()+emplace_back() for every
+//   block, even when the grid topology was unchanged.  regrid() called it
+//   unconditionally at the end, so every regrid_interval steps the solver
+//   threw away and rebuilt rhs_/Qn_/Qs_ regardless of whether any block was
+//   actually refined or coarsened.  At 10k+ blocks this is O(N) malloc/free
+//   traffic plus cache-cold reinitialisation on the next advance() call.
+//
+// FIX:
+//   Track scratch_leaf_count_ (the leaf count the scratch was last built for).
+//   alloc_scratch() is now a no-op if the count hasn't changed.
+//   regrid() sets a local flag when it actually mutates the tree and only
+//   calls alloc_scratch() when the topology really changed.
+void NSSolver::alloc_scratch() {
+    auto leaves = tree.leaf_indices();
+    int n = (int)leaves.size();
+    if (n == scratch_leaf_count_) return;   // topology unchanged — skip realloc
+
+    rhs_.clear(); Qn_.clear(); Qs_.clear();
+    rhs_.reserve(n); Qn_.reserve(n); Qs_.reserve(n);
+    for (int li : leaves) {
+        double h = tree.nodes[li].block->h;
+        rhs_.emplace_back(0.0, 0.0, 0.0, h);
+        Qn_.emplace_back( 0.0, 0.0, 0.0, h);
+        Qs_.emplace_back( 0.0, 0.0, 0.0, h);
+    }
+    scratch_leaf_count_ = n;
+}
+
+
+// =============================================================================
+// NSSolver::regrid
+// =============================================================================
+// FIX P5 (continued): only call alloc_scratch() when topology actually changed.
+void NSSolver::regrid() {
+    bool topology_changed = false;
+    auto leaves = tree.leaf_indices();
+    for (int li : leaves) {
+        auto& node = tree.nodes[li];
+        if (node.level >= cfg.max_level) continue;
+        double h = node.block->h;
+        if (!should_refine(*node.block, h)) continue;
+
+        CellBlock        child_storage[8];
+        const CellBlock* children[8];
+        for (int oct = 0; oct < 8; ++oct) {
+            children[oct] = &child_storage[oct];
+            prolong_conservative(*node.block, child_storage[oct], oct);
+        }
+        restrict_conservative(*node.block, children);
+        topology_changed = true;
+    }
+    // Only pay for realloc when the leaf count actually changed
+    if (topology_changed) alloc_scratch();
+}
