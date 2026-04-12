@@ -1,8 +1,10 @@
 // amr_operators.cpp — AMR prolongation / restriction / ghost-fill / sensors
 // FIX B2: missing closing braces added to prolong_conservative,
 //         restrict_conservative, and fill_cf_ghosts
-// FIX B3: restrict_conservative fine-cell base index corrected:
-//         fi = NG + (lf_i % half)  — NOT * 2
+// FIX B3 (original): restrict_conservative fine-cell base index corrected.
+// FIX P0.1: restored *2 factor — fi = NG + (lf_i % half) * 2.
+//           Without it both halves of a coarse axis resolve to fine indices
+//           0‥3 instead of 0‥3 and 4‥7, breaking volume conservation.
 // FIX C3: should_refine uses centred 2nd-order gradient
 #include "../include/amr_operators.hpp"
 #include <cstring>
@@ -48,12 +50,13 @@ void restrict_conservative(CellBlock& coarse, const CellBlock* children[8]) {
         int half  = NB / 2;
         int child = oct_from_xyz(lf_i / half, lf_j / half, lf_k / half);
 
-        // FIX B3: base fine-cell index is NG + (offset within child octant).
-        // The di/dj/dk loop below covers the 2×2×2 fine cells.
-        // The old code multiplied by 2, doubling the offset and going out of range.
-        int fi = NG + (lf_i % half);   // was: NG + (lf_i % half) * 2
-        int fj = NG + (lf_j % half);   // was: NG + (lf_j % half) * 2
-        int fk = NG + (lf_k % half);   // was: NG + (lf_k % half) * 2
+        // FIX P0.1: base fine-cell index is NG + (offset within octant) * 2.
+        // The *2 maps the coarse-level offset (0..half-1) to the fine-level
+        // starting cell (0, 2, 4, … within that octant's 2×2×2 footprint).
+        // The di/dj/dk loop below then covers the 2×2×2 fine cells.
+        int fi = NG + (lf_i % half) * 2;
+        int fj = NG + (lf_j % half) * 2;
+        int fk = NG + (lf_k % half) * 2;
 
         double sum = 0.0;
         for (int dk = 0; dk < 2; ++dk)
