@@ -1,5 +1,8 @@
 // test_amr6.cpp — Step 6 gate: conservative AMR
 // Gate: global mass conserved to < 1e-12 at every step including regrid
+// FIX P0.2: global_mass() now uses node.block->h (BlockNode::h was removed).
+// FIX P0.3: A02 octant expected-value computation aligned to canonical
+//           bit0=x, bit1=y, bit2=z convention used by amr_operators.cpp.
 
 #include "../include/ns_solver.hpp"
 #include "../include/amr_operators.hpp"
@@ -16,13 +19,15 @@ static void check(const char* name, bool ok, double got=-1, double thr=-1) {
     }
 }
 
-// Compute global mass = sum over all leaves of sum(rho*h^3)
+// Compute global mass = sum over all leaves of sum(rho * h^3)
+// FIX P0.2: cell size read from node.block->h, not the removed node.h field.
 static double global_mass(const NSSolver& s) {
     double m = 0;
     for (int li : s.tree.leaf_indices()) {
         auto& node = s.tree.nodes[li];
         auto& blk  = *node.block;
-        double h3  = node.h * node.h * node.h;
+        double h   = node.block->h;          // P0.2: was node.h
+        double h3  = h * h * h;
         for (int k=NG;k<NG+NB;++k)
         for (int j=NG;j<NG+NB;++j)
         for (int i=NG;i<NG+NB;++i)
@@ -65,6 +70,10 @@ static void a01_prolong_conservative() {
 }
 
 // A02: restriction is conservative
+// FIX P0.3: expected octant index now uses canonical bit0=x convention:
+//   oct = (lf_i/half) | ((lf_j/half)<<1) | ((lf_k/half)<<2)
+// Previously the test used bit2=x which disagreed with oct_from_xyz in
+// amr_operators.cpp, producing wrong expected values for non-corner octants.
 static void a02_restrict_conservative() {
     CellBlock coarse;
     CellBlock children_storage[8];
@@ -78,15 +87,15 @@ static void a02_restrict_conservative() {
     }
     restrict_conservative(coarse, children);
 
-    // Expected: coarse[I] = average of the 8 fine values that map to it
-    // For uniform children: coarse = average of child values (each child covers
-    // one octant of the coarse block, 2×2×2 fine cells per coarse cell)
+    // Expected: coarse[I] = value of the child octant that owns cell I.
+    // Canonical octant convention: bit0=x, bit1=y, bit2=z.
     double err = 0;
     for (int k=NG;k<NG+NB;++k)
     for (int j=NG;j<NG+NB;++j)
     for (int i=NG;i<NG+NB;++i) {
         int lf_i=i-NG, lf_j=j-NG, lf_k=k-NG, half=NB/2;
-        int oct = ((lf_i/half)<<2)|((lf_j/half)<<1)|(lf_k/half);
+        // FIX P0.3: bit0=x, bit1=y, bit2=z  (was bit2=x)
+        int oct = (lf_i/half) | ((lf_j/half)<<1) | ((lf_k/half)<<2);
         double expected = 1.0 + oct*0.1;
         err = std::fmax(err, std::fabs(coarse.Q[0][cell_idx(i,j,k)] - expected));
     }
@@ -109,7 +118,6 @@ static void a03_regrid_conserves_mass() {
     // Manually trigger refine on first block and restrict back
     int root = s.tree.root();
     auto& coarse = *s.tree.nodes[root].block;
-    double h = s.tree.nodes[root].h;
 
     // Refine
     CellBlock fine_children[8];
