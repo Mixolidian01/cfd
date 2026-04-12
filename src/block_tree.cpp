@@ -4,6 +4,7 @@
 //   #2  / I    : BlockNode::h removed; child h lives in block->h only
 //   #4         : find_or_create_node / rebuild_neighbours_recursive removed
 //   #16        : refine() caches parent state before resize() to avoid UB
+//   P0.7       : dead ternary removed in fill_ghosts_periodic (6 occurrences)
 #include "block_tree.hpp"
 #include <algorithm>
 #include <cassert>
@@ -417,6 +418,14 @@ int BlockTree::balance() {
 
 // ── fill_ghosts_periodic ──────────────────────────────────────────────────────
 // Fix #11: loop over NVAR instead of 5× copy-pasted variable names.
+// FIX P0.7: removed 6 dead ternary expressions of the form
+//   int si = (ni >= 0 && nodes[ni].block) ? ihi() : ihi();
+// Both branches returned the same value, making the condition unreachable.
+// Source indices are now explicit constants that communicate intent clearly:
+//   XMINUS/YMINUS/ZMINUS pull from ihi() — the last interior cell of the
+//   left/bottom/back neighbour (or self for periodic single-block).
+//   XPLUS/YPLUS/ZPLUS   pull from ilo() — the first interior cell of the
+//   right/top/front neighbour (or self for periodic single-block).
 void BlockTree::fill_ghosts_periodic() {
     auto leaves = leaf_indices();
     for (int li : leaves) {
@@ -432,59 +441,53 @@ void BlockTree::fill_ghosts_periodic() {
                     src.Q[v][cell_idx(src_i, src_j, src_k)];
         };
 
-        // x-minus ghost
+        // x-minus ghost: read from ihi() face of the left (XMINUS) neighbour
         {
             int ni = nd.neighbours[XMINUS];
             const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            int si = (ni >= 0 && nodes[ni].block) ? ihi() : ihi();
             for (int k = ilo(); k <= ihi(); ++k)
             for (int j = ilo(); j <= ihi(); ++j)
-                fill_face(0, j, k, si, j, k, src);
+                fill_face(0, j, k, ihi(), j, k, src);
         }
-        // x-plus ghost
+        // x-plus ghost: read from ilo() face of the right (XPLUS) neighbour
         {
             int ni = nd.neighbours[XPLUS];
             const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            int si = (ni >= 0 && nodes[ni].block) ? ilo() : ilo();
             for (int k = ilo(); k <= ihi(); ++k)
             for (int j = ilo(); j <= ihi(); ++j)
-                fill_face(NB2-1, j, k, si, j, k, src);
+                fill_face(NB2-1, j, k, ilo(), j, k, src);
         }
-        // y-minus ghost
+        // y-minus ghost: read from ihi() face of the bottom (YMINUS) neighbour
         {
             int ni = nd.neighbours[YMINUS];
             const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            int sj = (ni >= 0 && nodes[ni].block) ? ihi() : ihi();
             for (int k = ilo(); k <= ihi(); ++k)
             for (int i = ilo(); i <= ihi(); ++i)
-                fill_face(i, 0, k, i, sj, k, src);
+                fill_face(i, 0, k, i, ihi(), k, src);
         }
-        // y-plus ghost
+        // y-plus ghost: read from ilo() face of the top (YPLUS) neighbour
         {
             int ni = nd.neighbours[YPLUS];
             const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            int sj = (ni >= 0 && nodes[ni].block) ? ilo() : ilo();
             for (int k = ilo(); k <= ihi(); ++k)
             for (int i = ilo(); i <= ihi(); ++i)
-                fill_face(i, NB2-1, k, i, sj, k, src);
+                fill_face(i, NB2-1, k, i, ilo(), k, src);
         }
-        // z-minus ghost
+        // z-minus ghost: read from ihi() face of the back (ZMINUS) neighbour
         {
             int ni = nd.neighbours[ZMINUS];
             const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            int sk = (ni >= 0 && nodes[ni].block) ? ihi() : ihi();
             for (int j = ilo(); j <= ihi(); ++j)
             for (int i = ilo(); i <= ihi(); ++i)
-                fill_face(i, j, 0, i, j, sk, src);
+                fill_face(i, j, 0, i, j, ihi(), src);
         }
-        // z-plus ghost
+        // z-plus ghost: read from ilo() face of the front (ZPLUS) neighbour
         {
             int ni = nd.neighbours[ZPLUS];
             const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            int sk = (ni >= 0 && nodes[ni].block) ? ilo() : ilo();
             for (int j = ilo(); j <= ihi(); ++j)
             for (int i = ilo(); i <= ihi(); ++i)
-                fill_face(i, j, NB2-1, i, j, sk, src);
+                fill_face(i, j, NB2-1, i, j, ilo(), src);
         }
     }
 }
