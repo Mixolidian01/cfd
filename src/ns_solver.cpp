@@ -5,6 +5,7 @@
 //   alias        : RK3 stages 2/3 no longer alias Qs_ as both src and dst
 //   h-field      : node.block->h used everywhere
 //   P0.6         : static ke_prev replaced by member ke_prev_
+//   P1.5         : regrid() full Berger-Colella protocol
 #include "../include/sgs.hpp"
 #include "../include/amr_operators.hpp"
 #include "../include/ns_solver.hpp"
@@ -62,12 +63,11 @@ void NSSolver::init(double domain_L,
     alloc_scratch();
 }
 
-
 // =============================================================================
 // copy helpers
 // =============================================================================
 void NSSolver::copy_tree_to_stage(std::vector<CellBlock>& stage) {
-    auto leaves = tree.leaf_indices();
+    const auto& leaves = tree.leaf_indices();
     for (int ii = 0; ii < (int)leaves.size(); ++ii) {
         const auto& src = *tree.nodes[leaves[ii]].block;
         auto&       dst = stage[ii];
@@ -76,7 +76,7 @@ void NSSolver::copy_tree_to_stage(std::vector<CellBlock>& stage) {
 }
 
 void NSSolver::copy_stage_to_tree(const std::vector<CellBlock>& stage) {
-    auto leaves = tree.leaf_indices();
+    const auto& leaves = tree.leaf_indices();
     for (int ii = 0; ii < (int)leaves.size(); ++ii) {
         auto&       dst = *tree.nodes[leaves[ii]].block;
         const auto& src = stage[ii];
@@ -95,8 +95,8 @@ double NSSolver::advance() {
 
     save_Qn();
 
-    auto leaves = tree.leaf_indices();
-    int  NL     = (int)leaves.size();
+    const auto& leaves = tree.leaf_indices();
+    int NL = (int)leaves.size();
 
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)
     tree_rhs(tree, rhs_, periodic);
@@ -138,6 +138,10 @@ double NSSolver::advance() {
     }
     copy_stage_to_tree(Qs_);
 
+    // P1.4: apply flux correction after each full RK3 step
+    tree.apply_flux_correction(dt);
+    tree.zero_flux_registers();
+
     t    += dt;
     step += 1;
 
@@ -164,8 +168,6 @@ double NSSolver::advance() {
                 ke += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w) * h3;
             }
         }
-        // FIX P0.6: use member ke_prev_ instead of static local.
-        // Sentinel ke_prev_ < 0 on first call → residual = 0.
         double residual = (ke_prev_ >= 0.0 && ke_prev_ > 0.0)
                           ? std::fabs(ke - ke_prev_) / ke_prev_
                           : 0.0;
@@ -226,7 +228,7 @@ void NSSolver::print_diag(const StepDiag& d) const {
 // alloc_scratch
 // =============================================================================
 void NSSolver::alloc_scratch() {
-    auto leaves = tree.leaf_indices();
+    const auto& leaves = tree.leaf_indices();
     int n = (int)leaves.size();
     if (n == scratch_leaf_count_) return;
 
@@ -242,25 +244,80 @@ void NSSolver::alloc_scratch() {
 }
 
 // =============================================================================
-// NSSolver::regrid
+// NSSolver::regrid — P1.5 full Berger-Colella protocol
 // =============================================================================
 void NSSolver::regrid() {
     bool topology_changed = false;
-    auto leaves = tree.leaf_indices();
-    for (int li : leaves) {
-        auto& node = tree.nodes[li];
-        if (node.level >= cfg.max_level) continue;
-        double h = node.block->h;
-        if (!should_refine(*node.block, h)) continue;
+    bool periodic = (cfg.bc == BCType::Periodic);
 
-        CellBlock        child_storage[8];
-        const CellBlock* children[8];
-        for (int oct = 0; oct < 8; ++oct) {
-            children[oct] = &child_storage[oct];
-            prolong_conservative(*node.block, child_storage[oct], oct);
+    // ── Pass 1: refinement ────────────────────────────────────────────────
+    {
+        // Snapshot current leaves before topology changes
+        std::vector<int> to_refine;
+        for (int li : tree.leaf_indices()) {
+            auto& node = tree.nodes[li];
+            if (node.level >= cfg.max_level) continue;
+            if (should_refine(*node.block, node.block->h))
+                to_refine.push_back(li);
         }
-        restrict_conservative(*node.block, children);
-        topology_changed = true;
+        for (int li : to_refine) {
+            if (!tree.nodes[li].is_leaf()) continue;  // already refined by balance
+            tree.refine(li);
+            topology_changed = true;
+        }
     }
-    if (topology_changed) alloc_scratch();
+
+    // ── Pass 2: coarsening (sibling groups where ALL 8 should_coarsen) ────
+    {
+        // Build set of candidate parent nodes whose 8 children are all leaves
+        // and all pass should_coarsen.
+        std::vector<int> to_coarsen;
+        for (int li : tree.leaf_indices()) {
+            int p = tree.nodes[li].parent;
+            if (p < 0) continue;
+            int fc = tree.nodes[p].first_child;
+            if (fc < 0) continue;
+            bool all_leaf   = true;
+            bool all_coarse = true;
+            for (int oct = 0; oct < 8; ++oct) {
+                int ci = fc + oct;
+                if (!tree.nodes[ci].is_leaf())          { all_leaf = false; break; }
+                if (!should_coarsen(*tree.nodes[ci].block,
+                                   tree.nodes[ci].block->h)) { all_coarse = false; }
+            }
+            if (all_leaf && all_coarse) {
+                // Avoid duplicates
+                if (std::find(to_coarsen.begin(), to_coarsen.end(), p)
+                    == to_coarsen.end())
+                    to_coarsen.push_back(p);
+            }
+        }
+        for (int p : to_coarsen) {
+            // Re-check: topology may have changed in refinement pass
+            int fc = tree.nodes[p].first_child;
+            if (fc < 0) continue;
+            bool all_leaf = true;
+            for (int oct = 0; oct < 8; ++oct)
+                if (!tree.nodes[fc+oct].is_leaf()) { all_leaf = false; break; }
+            if (!all_leaf) continue;
+            tree.coarsen(p);
+            topology_changed = true;
+        }
+    }
+
+    if (!topology_changed) return;
+
+    // ── 2:1 balance ───────────────────────────────────────────────────────
+    tree.balance();
+
+    // ── Rebuild neighbours + ghost fill ───────────────────────────────────
+    tree.rebuild_neighbours();
+    if (periodic)
+        tree.fill_ghosts_periodic();
+    else
+        tree.fill_ghosts_wall();
+
+    // ── Resize scratch arrays ─────────────────────────────────────────────
+    scratch_leaf_count_ = -1;  // force realloc
+    alloc_scratch();
 }

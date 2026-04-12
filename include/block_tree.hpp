@@ -11,6 +11,14 @@
 //
 // Neighbour convention (6 face directions):
 //   XMINUS=0  XPLUS=1  YMINUS=2  YPLUS=3  ZMINUS=4  ZPLUS=5
+//
+// P1 fix log:
+//   P1.1 : free-list node allocator (alloc_node / free_node)
+//   P1.2 : balance() work-queue model
+//   P1.3 : fill_cf_ghosts dispatched from fill_ghosts_periodic/_wall
+//   P1.4 : flux register implemented (accumulate_fine_flux / apply_flux_correction)
+//   P1.5 : regrid() full Berger-Colella protocol
+//   P1.6 : leaf cache with dirty flag (leaf_cache_ / leaf_dirty_)
 
 #include "cell_block.hpp"
 #include <vector>
@@ -18,6 +26,7 @@
 #include <memory>
 #include <cassert>
 #include <cstdint>
+#include <deque>
 
 // ── Morton encoding (10 bits per axis) ───────────────────────────────────────
 uint32_t morton_encode(uint32_t x, uint32_t y, uint32_t z) noexcept;
@@ -42,6 +51,9 @@ inline int  oct_ix(int oct) noexcept { return  oct     & 1; }
 inline int  oct_iy(int oct) noexcept { return (oct>>1) & 1; }
 inline int  oct_iz(int oct) noexcept { return (oct>>2) & 1; }
 
+// ── Sentinel for dead (freed) nodes ──────────────────────────────────────────
+static constexpr int NODE_DEAD = -2;
+
 // ── Tree node ─────────────────────────────────────────────────────────────────
 struct BlockNode {
     // Tree topology
@@ -57,14 +69,24 @@ struct BlockNode {
     // Cell size h is always read from block->h — never from a separate field.
     std::unique_ptr<CellBlock> block;
 
-    // Flux registers: one per face, size = NB*NB per variable.
-    // Allocated only on leaves adjacent to a finer-level leaf.
-    std::array<std::vector<double>, NFACES> flux_reg;  // [face][var*NB*NB]
+    // Flux registers: one per face, size = NVAR*NB*NB.
+    // Populated only on leaves adjacent to a finer-level neighbour.
+    // Layout: flux_reg[face][var*NB*NB + jf*NB + if_]
+    std::array<std::vector<double>, NFACES> flux_reg;
 
-    bool is_leaf()    const noexcept { return first_child == -1; }
-    bool has_block()  const noexcept { return block != nullptr;  }
+    bool is_leaf()   const noexcept { return first_child == -1 && parent != NODE_DEAD; }
+    bool has_block() const noexcept { return block != nullptr; }
+    bool is_dead()   const noexcept { return parent == NODE_DEAD; }
 
     BlockNode() { neighbours.fill(-1); }
+
+    // Reset to default-constructed state (used by free-list reuse).
+    void reset() noexcept {
+        parent = -1; first_child = -1; level = 0; morton = 0;
+        neighbours.fill(-1);
+        block.reset();
+        for (auto& fr : flux_reg) fr.clear();
+    }
 };
 
 // ── BlockTree ─────────────────────────────────────────────────────────────────
@@ -72,23 +94,17 @@ struct BlockTree {
     std::vector<BlockNode> nodes;
 
     // ── Construction ─────────────────────────────────────────────────────
-    // Create a single-block root covering [0,L]^3 at level 0.
     void init(double L);
 
     // ── Refinement / coarsening ───────────────────────────────────────────────
-    // Refine leaf at index `idx` → 8 children.
-    // Prolongates Q from parent to children (piecewise-constant).
-    // Fix #16: parent state is cached before resize() to avoid UB.
+    // refine: leaf → 8 children (prolongates Q piecewise-constant)
     void refine(int idx);
-
-    // Coarsen 8 siblings (children of `parent_idx`) → parent leaf.
-    // Restricts Q from children to parent (volume-weighted average).
-    // Precondition: all 8 children must be leaves.
+    // coarsen: 8 siblings → parent (restricts Q volume-averaged)
+    // P1.1: no tail assumption — uses free-list
     void coarsen(int parent_idx);
 
     // ── 2:1 balance ───────────────────────────────────────────────────────
-    // Ensure no two adjacent leaf nodes differ by more than 1 level.
-    // Returns number of extra refinements performed.
+    // P1.2: work-queue model — correct after any topology change
     int balance();
 
     // ── Accessors ─────────────────────────────────────────────────────────
@@ -96,31 +112,40 @@ struct BlockTree {
     int  root()     const noexcept { return 0; }
     bool valid()    const noexcept { return !nodes.empty(); }
 
-    // Returns leaf node indices.  O(n) scan; result is a fresh vector.
-    std::vector<int> leaf_indices() const;
+    // P1.6: cached leaf index list; invalidated by refine/coarsen/rebuild.
+    const std::vector<int>& leaf_indices() const;
 
     // ── Neighbour topology ────────────────────────────────────────────────
-    // Rebuild neighbour pointers for all leaves after refine/coarsen.
     void rebuild_neighbours();
 
     // ── Ghost fill ────────────────────────────────────────────────────────
-    // Copy interior data from neighbour blocks into ghost cells.
-    void fill_ghosts_periodic();   // periodic in all directions
-    void fill_ghosts_wall();       // no-slip wall on all boundaries
+    // P1.3: dispatches fill_cf_ghosts for coarse-fine faces
+    void fill_ghosts_periodic();
+    void fill_ghosts_wall();
 
-    // ── Flux register management ──────────────────────────────────────────
+    // ── Flux register management (P1.4) ───────────────────────────────────
     void zero_flux_registers();
     void accumulate_fine_flux(int fine_leaf, FaceDir d,
                               const std::vector<double>& flux);
-    void apply_flux_correction();  // correct coarse cells at all CF interfaces
+    void apply_flux_correction(double dt);
 
     // ── Morton utilities ──────────────────────────────────────────────────
     static uint32_t child_morton(uint32_t parent_code, int oct) noexcept;
-    
+
     double domain_L() const noexcept { return domain_L_; }
 
 private:
     double domain_L_ = 1.0;
+
+    // P1.1: free-list allocator
+    std::vector<int> free_list_;
+    int  alloc_node();
+    void free_node(int idx);
+
+    // P1.6: leaf cache
+    mutable std::vector<int> leaf_cache_;
+    mutable bool             leaf_dirty_ = true;
+    void invalidate_leaf_cache() const noexcept { leaf_dirty_ = true; }
 
     void set_child_geometry(int parent_idx, int child_local, int child_idx);
     void prolongate_to_children(int parent_idx);

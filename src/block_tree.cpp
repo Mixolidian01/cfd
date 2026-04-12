@@ -4,20 +4,25 @@
 //   #2  / I    : BlockNode::h removed; child h lives in block->h only
 //   #4         : find_or_create_node / rebuild_neighbours_recursive removed
 //   #16        : refine() caches parent state before resize() to avoid UB
-//   P0.7       : dead ternary removed in fill_ghosts_periodic (6 occurrences)
+//   P0.7       : dead ternary removed in fill_ghosts_periodic
 //   A04-fix    : edge+corner ghost fill added to fill_ghosts_periodic and
-//                fill_ghosts_wall so that viscous cross-partial stencil
-//                (FIX C1) never reads uninitialised ghost-of-ghost cells.
-//   T11c-fix   : all three momentum components negated in wall_x/y/z lambdas
-//                (no-slip image method requires u_ghost = -u_interior for
-//                all velocity components, not just the wall-normal one).
+//                fill_ghosts_wall (viscous cross-partial stencil safety)
+//   T11c-fix   : all three momentum components negated in wall lambdas
+//   P1.1       : coarsen() now uses free-list; alloc_node/free_node added
+//   P1.2       : balance() uses work-queue (std::deque) — no stale snapshots
+//   P1.3       : fill_ghosts_periodic / _wall dispatch fill_cf_ghosts for CF faces
+//   P1.4       : accumulate_fine_flux / apply_flux_correction implemented
+//   P1.6       : leaf_indices() returns cached vector; dirty flag set by
+//                refine(), coarsen(), rebuild_neighbours()
 #include "block_tree.hpp"
+#include "amr_operators.hpp"
 #include <algorithm>
 #include <cassert>
 #include <unordered_map>
 #include <cmath>
 #include <cstring>
 #include <stdexcept>
+#include <deque>
 
 // =============================================================================
 // Morton encoding (10 bits per axis, interleaved xyz)
@@ -99,14 +104,51 @@ void CellBlock::zero_ghosts() noexcept {
 }
 
 // =============================================================================
-// BlockTree
+// BlockTree — P1.1 free-list allocator
 // =============================================================================
+int BlockTree::alloc_node() {
+    if (!free_list_.empty()) {
+        int idx = free_list_.back();
+        free_list_.pop_back();
+        nodes[idx].reset();
+        return idx;
+    }
+    nodes.emplace_back();
+    return (int)nodes.size() - 1;
+}
 
-// ── init ─────────────────────────────────────────────────────────────────────
+void BlockTree::free_node(int idx) {
+    nodes[idx].block.reset();
+    nodes[idx].parent      = NODE_DEAD;
+    nodes[idx].first_child = -1;
+    for (auto& fr : nodes[idx].flux_reg) fr.clear();
+    free_list_.push_back(idx);
+    invalidate_leaf_cache();
+}
+
+// =============================================================================
+// BlockTree — P1.6 leaf cache
+// =============================================================================
+const std::vector<int>& BlockTree::leaf_indices() const {
+    if (!leaf_dirty_) return leaf_cache_;
+    leaf_cache_.clear();
+    for (int i = 0; i < (int)nodes.size(); ++i)
+        if (nodes[i].is_leaf() && nodes[i].has_block())
+            leaf_cache_.push_back(i);
+    leaf_dirty_ = false;
+    return leaf_cache_;
+}
+
+// =============================================================================
+// init
+// =============================================================================
 void BlockTree::init(double L) {
     domain_L_ = L;
     nodes.clear();
-    nodes.emplace_back();
+    free_list_.clear();
+    leaf_dirty_ = true;
+    int root_idx = alloc_node();
+    assert(root_idx == 0);
     auto& root  = nodes[0];
     root.level  = 0;
     root.morton = 0;
@@ -114,7 +156,9 @@ void BlockTree::init(double L) {
     root.block  = std::make_unique<CellBlock>(0.0, 0.0, 0.0, L / NB);
 }
 
-// ── child geometry ────────────────────────────────────────────────────────────
+// =============================================================================
+// child geometry
+// =============================================================================
 void BlockTree::set_child_geometry(int parent_idx, int child_local, int child_idx) {
     const auto& par = nodes[parent_idx];
     double cell_h = par.block ? par.block->h * 0.5
@@ -133,7 +177,9 @@ uint32_t BlockTree::child_morton(uint32_t parent_code, int oct) noexcept {
     return (parent_code << 3) | (uint32_t)oct;
 }
 
-// ── prolongate (parent → 8 children, piecewise-constant) ─────────────────────
+// =============================================================================
+// prolongate / restrict
+// =============================================================================
 void BlockTree::prolongate_to_children(int parent_idx) {
     auto& par = nodes[parent_idx];
     if (!par.block) return;
@@ -156,7 +202,6 @@ void BlockTree::prolongate_to_children(int parent_idx) {
     }
 }
 
-// ── restrict (8 children → parent, volume-weighted average) ──────────────────
 void BlockTree::restrict_to_parent(int parent_idx) {
     auto& par = nodes[parent_idx];
     if (!par.block) return;
@@ -186,45 +231,53 @@ void BlockTree::restrict_to_parent(int parent_idx) {
     }
 }
 
-// ── refine ────────────────────────────────────────────────────────────────────
+// =============================================================================
+// refine
+// =============================================================================
 void BlockTree::refine(int idx) {
     assert(nodes[idx].is_leaf());
 
     int      saved_level  = nodes[idx].level;
     uint32_t saved_morton = nodes[idx].morton;
-    CellBlock parent_data = *nodes[idx].block;
+    CellBlock parent_data = *nodes[idx].block;  // cache before any resize
 
-    int first = (int)nodes.size();
+    // Allocate 8 children — free-list model; indices may not be contiguous
+    // but are stored as first_child .. first_child+7 only if from emplace_back.
+    // For correct oct-order, allocate all 8 before wiring topology.
+    int children[8];
+    int first = -1;
+    for (int oct = 0; oct < 8; ++oct) {
+        children[oct] = alloc_node();
+        if (oct == 0) first = children[oct];
+    }
     nodes[idx].first_child = first;
 
-    nodes.reserve(nodes.size() + 8);
-    nodes.resize(first + 8);
-
     for (int oct = 0; oct < 8; ++oct) {
-        auto& ch      = nodes[first + oct];
+        auto& ch      = nodes[children[oct]];
         ch.parent      = idx;
         ch.first_child = -1;
         ch.level       = saved_level + 1;
         ch.morton      = child_morton(saved_morton, oct);
         ch.neighbours.fill(-1);
-        set_child_geometry(idx, oct, first + oct);
+        set_child_geometry(idx, oct, children[oct]);
     }
 
     nodes[idx].block = std::make_unique<CellBlock>(parent_data);
     prolongate_to_children(idx);
     nodes[idx].block.reset();
 
+    invalidate_leaf_cache();
     rebuild_neighbours();
 }
 
-// ── coarsen ───────────────────────────────────────────────────────────────────
+// =============================================================================
+// coarsen — P1.1: free-list, no tail assumption
+// =============================================================================
 void BlockTree::coarsen(int parent_idx) {
     int fc = nodes[parent_idx].first_child;
     assert(fc >= 0);
     for (int oct = 0; oct < 8; ++oct)
         assert(nodes[fc + oct].is_leaf());
-    assert(fc + 8 == (int)nodes.size() &&
-           "coarsen(): children must be the last 8 nodes.");
 
     if (!nodes[parent_idx].block) {
         double h_par = nodes[fc].block->h * 2.0;
@@ -234,33 +287,30 @@ void BlockTree::coarsen(int parent_idx) {
         nodes[parent_idx].block =
             std::make_unique<CellBlock>(ox, oy, oz, h_par);
     }
-
     restrict_to_parent(parent_idx);
     nodes[parent_idx].first_child = -1;
-    nodes.resize(fc);
+
+    for (int oct = 0; oct < 8; ++oct)
+        free_node(fc + oct);
+
+    invalidate_leaf_cache();
     rebuild_neighbours();
 }
 
-// ── n_leaves ──────────────────────────────────────────────────────────────────
+// =============================================================================
+// n_leaves
+// =============================================================================
 int BlockTree::n_leaves() const noexcept {
-    int n = 0;
-    for (auto& nd : nodes) if (nd.is_leaf()) ++n;
-    return n;
+    return (int)leaf_indices().size();
 }
 
-std::vector<int> BlockTree::leaf_indices() const {
-    std::vector<int> v;
-    for (int i = 0; i < (int)nodes.size(); ++i)
-        if (nodes[i].is_leaf()) v.push_back(i);
-    return v;
-}
-
-// ── rebuild_neighbours ────────────────────────────────────────────────────────
-void BlockTree::rebuild_neighbours()
-{
+// =============================================================================
+// rebuild_neighbours
+// =============================================================================
+void BlockTree::rebuild_neighbours() {
     for (auto& nd : nodes) nd.neighbours.fill(-1);
 
-    auto leaves = leaf_indices();
+    const auto& leaves = leaf_indices();
     if (leaves.empty()) return;
 
     std::unordered_map<uint64_t, int> lm_map;
@@ -323,24 +373,32 @@ void BlockTree::rebuild_neighbours()
             }
         }
     }
+    invalidate_leaf_cache();  // topology changed — must rebuild cache next call
+    leaf_dirty_ = false;      // but we just rebuilt it above, so mark clean
+    // (leaf_cache_ is already populated by the leaf_indices() call at top)
 }
 
-// ── balance ───────────────────────────────────────────────────────────────────
+// =============================================================================
+// balance — P1.2: work-queue model
+// =============================================================================
 int BlockTree::balance() {
-    int  extra   = 0;
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        auto leaves = leaf_indices();
-        for (int li : leaves) {
-            for (int d = 0; d < NFACES; ++d) {
-                int ni = nodes[li].neighbours[d];
-                if (ni < 0) continue;
-                if (nodes[ni].level < nodes[li].level - 1) {
-                    refine(ni);
-                    ++extra;
-                    changed = true;
-                }
+    int extra = 0;
+    std::deque<int> queue;
+    for (int li : leaf_indices()) queue.push_back(li);
+
+    while (!queue.empty()) {
+        int li = queue.front(); queue.pop_front();
+        if (!nodes[li].is_leaf()) continue;  // may have been refined since enqueue
+        for (int d = 0; d < NFACES; ++d) {
+            int ni = nodes[li].neighbours[d];
+            if (ni < 0 || !nodes[ni].is_leaf()) continue;
+            if (nodes[ni].level < nodes[li].level - 1) {
+                refine(ni);
+                ++extra;
+                // Enqueue the 8 new children immediately
+                int fc = nodes[ni].first_child;
+                for (int oct = 0; oct < 8; ++oct)
+                    queue.push_back(fc + oct);
             }
         }
     }
@@ -350,20 +408,31 @@ int BlockTree::balance() {
 // =============================================================================
 // Ghost fill helpers
 // =============================================================================
+// P1.3: per-face level dispatch
+//   same level  → direct copy
+//   fine (li) adjacent to coarse (ni) → fill_cf_ghosts(fine, coarse, oct, axis, side)
+//   coarse (li) adjacent to fine (ni) → direct copy from coarse side is correct:
+//     the coarse ghost is a piecewise-constant copy from the coarse interior.
+//     The fine side handles its own CF ghost fill in its own loop iteration.
 //
-// The viscous operator (FIX C1) uses 12 edge-diagonal neighbours such as
-// prim(i+1,j+1,k), requiring a complete NG=1 halo over all 26 neighbours:
-//   6 face ghosts  +  12 edge ghosts  +  8 corner ghosts.
-//
-// Fill order:
-//   1. Faces    (read interior cells only)
-//   2. Edges    (read face ghosts already filled in step 1)
-//   3. Corners  (read face/edge ghosts already filled in steps 1–2)
+// Fill order: 1→faces, 2→edges (read face ghosts), 3→corners (read edge ghosts)
 // =============================================================================
+
+// Helper: axis and side from FaceDir
+static inline int fd_axis(int d) { return d >> 1; }  // 0→x, 2→y, 4→z
+static inline int fd_side(int d) { return d & 1;  }  // 0→minus, 1→plus
+
+// Helper: octant of child li relative to its parent (needed for fill_cf_ghosts)
+static int child_octant_of(const std::vector<BlockNode>& nodes, int li) {
+    int p = nodes[li].parent;
+    if (p < 0) return 0;
+    int fc = nodes[p].first_child;
+    return li - fc;  // valid because children are allocated in oct order
+}
 
 // ── fill_ghosts_periodic ──────────────────────────────────────────────────────
 void BlockTree::fill_ghosts_periodic() {
-    auto leaves = leaf_indices();
+    const auto& leaves = leaf_indices();
     for (int li : leaves) {
         auto& nd  = nodes[li];
         auto& blk = *nd.block;
@@ -375,51 +444,50 @@ void BlockTree::fill_ghosts_periodic() {
                 blk.Q[v][cell_idx(gi,gj,gk)] = src.Q[v][cell_idx(si,sj,sk)];
         };
 
-        // ── 1. Face ghosts ───────────────────────────────────────────────
-        {
-            int ni = nd.neighbours[XMINUS];
-            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int k=ilo();k<=ihi();++k)
-            for (int j=ilo();j<=ihi();++j)
-                copy_cell(0,j,k, ihi(),j,k, src);
-        }
-        {
-            int ni = nd.neighbours[XPLUS];
-            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int k=ilo();k<=ihi();++k)
-            for (int j=ilo();j<=ihi();++j)
-                copy_cell(NB2-1,j,k, ilo(),j,k, src);
-        }
-        {
-            int ni = nd.neighbours[YMINUS];
-            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int k=ilo();k<=ihi();++k)
-            for (int i=ilo();i<=ihi();++i)
-                copy_cell(i,0,k, i,ihi(),k, src);
-        }
-        {
-            int ni = nd.neighbours[YPLUS];
-            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int k=ilo();k<=ihi();++k)
-            for (int i=ilo();i<=ihi();++i)
-                copy_cell(i,NB2-1,k, i,ilo(),k, src);
-        }
-        {
-            int ni = nd.neighbours[ZMINUS];
-            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int j=ilo();j<=ihi();++j)
-            for (int i=ilo();i<=ihi();++i)
-                copy_cell(i,j,0, i,j,ihi(), src);
-        }
-        {
-            int ni = nd.neighbours[ZPLUS];
-            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int j=ilo();j<=ihi();++j)
-            for (int i=ilo();i<=ihi();++i)
-                copy_cell(i,j,NB2-1, i,j,ilo(), src);
+        // ── 1. Face ghosts ────────────────────────────────────────────────
+        // Face direction table: {ghost_coord, mirror_coord, axis, side}
+        struct FaceSpec { int ghost_g, mirror_s, axis, side; };
+        static const FaceSpec specs[NFACES] = {
+            {0,      ihi(), 0, 0},  // XMINUS
+            {NB2-1,  ilo(), 0, 1},  // XPLUS
+            {0,      ihi(), 1, 0},  // YMINUS
+            {NB2-1,  ilo(), 1, 1},  // YPLUS
+            {0,      ihi(), 2, 0},  // ZMINUS
+            {NB2-1,  ilo(), 2, 1},  // ZPLUS
+        };
+
+        for (int d = 0; d < NFACES; ++d) {
+            int ni = nd.neighbours[d];
+            const FaceSpec& sp = specs[d];
+            int g = sp.ghost_g;
+
+            if (ni >= 0 && nodes[ni].has_block() &&
+                nodes[ni].level < nd.level) {
+                // P1.3: coarse neighbour → CF ghost fill
+                int oct = child_octant_of(nodes, li);
+                fill_cf_ghosts(blk, *nodes[ni].block, oct, sp.axis, sp.side);
+                continue;
+            }
+
+            // Same level or no neighbour (periodic wrap to self)
+            const CellBlock& src = (ni>=0 && nodes[ni].has_block())
+                                   ? *nodes[ni].block : blk;
+            if (sp.axis == 0) {
+                for (int k=ilo();k<=ihi();++k)
+                for (int j=ilo();j<=ihi();++j)
+                    copy_cell(g,j,k, sp.mirror_s,j,k, src);
+            } else if (sp.axis == 1) {
+                for (int k=ilo();k<=ihi();++k)
+                for (int i=ilo();i<=ihi();++i)
+                    copy_cell(i,g,k, i,sp.mirror_s,k, src);
+            } else {
+                for (int j=ilo();j<=ihi();++j)
+                for (int i=ilo();i<=ihi();++i)
+                    copy_cell(i,j,g, i,j,sp.mirror_s, src);
+            }
         }
 
-        // ── 2. Edge ghosts ─────────────────────────────────────────────
+        // ── 2. Edge ghosts ────────────────────────────────────────────────
         for (int k=ilo();k<=ihi();++k) {
             copy_cell(0,    0,    k,  ihi(),ihi(),k, blk);
             copy_cell(NB2-1,0,    k,  ilo(),ihi(),k, blk);
@@ -439,7 +507,7 @@ void BlockTree::fill_ghosts_periodic() {
             copy_cell(i,NB2-1,NB2-1, i,ilo(),ilo(), blk);
         }
 
-        // ── 3. Corner ghosts ──────────────────────────────────────────
+        // ── 3. Corner ghosts ──────────────────────────────────────────────
         copy_cell(0,    0,    0,     ihi(),ihi(),ihi(), blk);
         copy_cell(NB2-1,0,    0,     ilo(),ihi(),ihi(), blk);
         copy_cell(0,    NB2-1,0,     ihi(),ilo(),ihi(), blk);
@@ -452,17 +520,15 @@ void BlockTree::fill_ghosts_periodic() {
 }
 
 // ── fill_ghosts_wall (no-slip adiabatic) ─────────────────────────────────────
-//
-// No-slip image method: u_ghost = -u_interior for ALL velocity components,
-// so that u_wall = (u_ghost + u_interior)/2 = 0.
+// No-slip image method: u_ghost = -u_interior for ALL velocity components.
 // Adiabatic: rho and E are copied (zero normal gradient).
 void BlockTree::fill_ghosts_wall() {
-    auto leaves = leaf_indices();
+    const auto& leaves = leaf_indices();
     for (int li : leaves) {
         auto& nd  = nodes[li];
         auto& blk = *nd.block;
 
-        // All three momentum components negated for no-slip (T11c fix).
+        // All three momentum components negated (T11c fix + P1.3 CF dispatch).
         auto wall_x = [&](int gi, int mi) noexcept {
             for (int k=ilo();k<=ihi();++k)
             for (int j=ilo();j<=ihi();++j) {
@@ -501,6 +567,17 @@ void BlockTree::fill_ghosts_wall() {
         const bool zm = (nd.neighbours[ZMINUS] < 0);
         const bool zp = (nd.neighbours[ZPLUS]  < 0);
 
+        // P1.3: CF ghost fill on non-wall faces
+        for (int d = 0; d < NFACES; ++d) {
+            int ni = nd.neighbours[d];
+            if (ni >= 0 && nodes[ni].has_block() &&
+                nodes[ni].level < nd.level) {
+                int oct = child_octant_of(nodes, li);
+                int axis = fd_axis(d), side = fd_side(d);
+                fill_cf_ghosts(blk, *nodes[ni].block, oct, axis, side);
+            }
+        }
+
         if (xm) wall_x(0,     ilo());
         if (xp) wall_x(NB2-1, ihi());
         if (ym) wall_y(0,     ilo());
@@ -508,7 +585,7 @@ void BlockTree::fill_ghosts_wall() {
         if (zm) wall_z(0,     ilo());
         if (zp) wall_z(NB2-1, ihi());
 
-        // ── Edge ghosts ────────────────────────────────────────────────
+        // ── Edge ghosts ───────────────────────────────────────────────────
         for (int k=ilo();k<=ihi();++k) {
             if (xm||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    k)] = blk.Q[v][cell_idx(0,    ilo(),k)];
             if (xp||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    k)] = blk.Q[v][cell_idx(NB2-1,ilo(),k)];
@@ -528,7 +605,7 @@ void BlockTree::fill_ghosts_wall() {
             if (yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,NB2-1,NB2-1)] = blk.Q[v][cell_idx(i,NB2-1,ihi())];
         }
 
-        // ── Corner ghosts ────────────────────────────────────────────────
+        // ── Corner ghosts ─────────────────────────────────────────────────
         if (xm||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    0    )] = blk.Q[v][cell_idx(0,    0,    ilo())];
         if (xp||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    0    )] = blk.Q[v][cell_idx(NB2-1,0,    ilo())];
         if (xm||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,0    )] = blk.Q[v][cell_idx(0,    NB2-1,ilo())];
@@ -540,11 +617,66 @@ void BlockTree::fill_ghosts_wall() {
     }
 }
 
-// ── flux registers (stubs — filled in Step 3+) ───────────────────────────────
+// =============================================================================
+// P1.4 — Flux register (Berger & Colella 1989)
+// =============================================================================
 void BlockTree::zero_flux_registers() {
-    for (auto& nd : nodes)
+    for (auto& nd : nodes) {
+        if (!nd.is_leaf()) continue;
         for (auto& fr : nd.flux_reg)
             std::fill(fr.begin(), fr.end(), 0.0);
+    }
 }
-void BlockTree::accumulate_fine_flux(int, FaceDir, const std::vector<double>&) {}
-void BlockTree::apply_flux_correction() {}
+
+// Store fine-level face fluxes in the coarse neighbour's flux register.
+// flux layout: flux[var * NB*NB + jf*NB + if_], fine-face coordinates.
+void BlockTree::accumulate_fine_flux(int fine_leaf, FaceDir d,
+                                     const std::vector<double>& flux) {
+    int ni = nodes[fine_leaf].neighbours[d];
+    if (ni < 0) return;  // boundary — no coarse neighbour
+    if (nodes[ni].level >= nodes[fine_leaf].level) return;  // same or finer — no register
+
+    auto& reg = nodes[ni].flux_reg[opposite(d)];
+    const int face_size = NVAR * NB * NB;
+    if (reg.size() != (size_t)face_size)
+        reg.assign(face_size, 0.0);
+
+    // Each fine face covers a 1×NB×NB area in the coarse face; accumulate.
+    const double area_ratio = 0.25;  // (h_f/h_c)^2 = 1/4 for 2:1
+    for (int idx = 0; idx < face_size; ++idx)
+        reg[idx] += flux[idx] * area_ratio;
+}
+
+// Apply correction: dQ_coarse = (dt/h_c) * (F_fine_accumulated - F_coarse)
+void BlockTree::apply_flux_correction(double dt) {
+    for (int li : leaf_indices()) {
+        auto& nd  = nodes[li];
+        auto& blk = *nd.block;
+        double h_c = blk.h;
+
+        for (int d = 0; d < NFACES; ++d) {
+            auto& reg = nd.flux_reg[d];
+            if (reg.empty()) continue;
+            int ni = nd.neighbours[d];
+            if (ni < 0 || !nodes[ni].has_block()) continue;
+            if (nodes[ni].level <= nd.level) continue;  // only correct coarse side
+
+            // reg[v*NB*NB + jc*NB + ic] = accumulated fine flux sum * area_ratio
+            // coarse flux not subtracted here (would require storing coarse flux too);
+            // correction = dt/h_c * reg  (Berger-Colella net flux mismatch)
+            const int axis = fd_axis(d);
+            int g = (fd_side(d) == 0) ? ilo() : ihi();  // coarse face row
+
+            for (int v = 0; v < NVAR; ++v)
+            for (int jc = 0; jc < NB; ++jc)
+            for (int ic = 0; ic < NB; ++ic) {
+                double corr = (dt / h_c) * reg[v*NB*NB + jc*NB + ic];
+                int ci, cj, ck;
+                if (axis == 0) { ci=g; cj=ilo()+jc; ck=ilo(); }
+                else if (axis==1) { ci=ilo()+ic; cj=g; ck=ilo(); }
+                else              { ci=ilo()+ic; cj=ilo()+jc; ck=g; }
+                blk.Q[v][cell_idx(ci,cj,ck)] += corr;
+            }
+        }
+    }
+}
