@@ -11,3 +11,5 @@ Each entry contains the answer index, date, and a one-line description.
 | A4 | 2026-04-12 | Consolidated bug register merging Perplexity A3, claude_analysis_20260409, Code_technical_review_v2, and supplementary Claude analysis — 16 critical/moderate/minor items |
 | A5 | 2026-04-12 | Cross-domain improvement proposals — WENO5-Z, skew-symmetric convection, entropy-stable fluxes, persistent GPU kernels, AoSoA, CUDA Graph, LTS, IMEX-ARK, neural SGS |
 | A6 | 2026-04-12 | Combined roadmap — compatibility analysis + 5-phase plan (P0 emergency fixes through P4 HPC features); dependency graph; expected performance table |
+| A9 | 2026-04-13 | A04 root-cause diagnosis — BlockNode constructor, ghost-fill logic and viscous stencil traced; edge/corner ghosts identified as the mass-conservation leak |
+| A10 | 2026-04-13 | A04 fix committed — edge+corner ghost fill added to fill_ghosts_periodic and fill_ghosts_wall in block_tree.cpp; Python-verified; commit 7f17be9 |
