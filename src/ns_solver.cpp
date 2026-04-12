@@ -4,6 +4,7 @@
 //   cfg-members  : regrid_interval / max_level / sgs / verbose_json live in cfg
 //   alias        : RK3 stages 2/3 no longer alias Qs_ as both src and dst
 //   h-field      : node.block->h used everywhere
+//   P0.6         : static ke_prev replaced by member ke_prev_
 #include "../include/sgs.hpp"
 #include "../include/amr_operators.hpp"
 #include "../include/ns_solver.hpp"
@@ -39,6 +40,7 @@ void NSSolver::init(double domain_L,
     tree.init(domain_L);
     t = 0.0; step = 0;
     history.clear();
+    ke_prev_ = -1.0;   // FIX P0.6: reset sentinel on every init()
 
     auto& blk = *tree.nodes[0].block;
     for (int k = 0; k < NB2; ++k)
@@ -117,7 +119,7 @@ double NSSolver::advance() {
     for (int i  = ilo(); i <= ihi(); ++i) {
         int idx = cell_idx(i,j,k);
         Qs_[ii].Q[v][idx] =
-            (3.0/4.0) * Qn_[ii].Q[v][idx] +            
+            (3.0/4.0) * Qn_[ii].Q[v][idx] +
             (1.0/4.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
     }
     copy_stage_to_tree(Qs_);
@@ -131,7 +133,7 @@ double NSSolver::advance() {
     for (int i  = ilo(); i <= ihi(); ++i) {
         int idx = cell_idx(i,j,k);
         Qs_[ii].Q[v][idx] =
-            (1.0/3.0) * Qn_[ii].Q[v][idx] +            
+            (1.0/3.0) * Qn_[ii].Q[v][idx] +
             (2.0/3.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
     }
     copy_stage_to_tree(Qs_);
@@ -139,7 +141,7 @@ double NSSolver::advance() {
     t    += dt;
     step += 1;
 
-    // Regrid — cfg.regrid_interval / cfg.max_level live in SolverConfig
+    // Regrid
     if (cfg.regrid_interval > 0 && step % cfg.regrid_interval == 0)
         regrid();
 
@@ -162,9 +164,12 @@ double NSSolver::advance() {
                 ke += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w) * h3;
             }
         }
-        static double ke_prev = ke;
-        double residual   = (ke_prev > 0.0) ? std::fabs(ke - ke_prev) / ke_prev : 0.0;
-        ke_prev = ke;
+        // FIX P0.6: use member ke_prev_ instead of static local.
+        // Sentinel ke_prev_ < 0 on first call → residual = 0.
+        double residual = (ke_prev_ >= 0.0 && ke_prev_ > 0.0)
+                          ? std::fabs(ke - ke_prev_) / ke_prev_
+                          : 0.0;
+        ke_prev_ = ke;
         double cfl_actual = dt / tree_cfl_dt(tree, 1.0);
         std::fprintf(stdout,
             "{\"step\":%d,\"t\":%.6e,\"dt\":%.6e,\"KE\":%.6e,"
@@ -220,25 +225,10 @@ void NSSolver::print_diag(const StepDiag& d) const {
 // =============================================================================
 // alloc_scratch
 // =============================================================================
-// FIX P5: only reallocate when the leaf count has actually changed.
-//
-// ROOT CAUSE (original):
-//   alloc_scratch() always called clear()+reserve()+emplace_back() for every
-//   block, even when the grid topology was unchanged.  regrid() called it
-//   unconditionally at the end, so every regrid_interval steps the solver
-//   threw away and rebuilt rhs_/Qn_/Qs_ regardless of whether any block was
-//   actually refined or coarsened.  At 10k+ blocks this is O(N) malloc/free
-//   traffic plus cache-cold reinitialisation on the next advance() call.
-//
-// FIX:
-//   Track scratch_leaf_count_ (the leaf count the scratch was last built for).
-//   alloc_scratch() is now a no-op if the count hasn't changed.
-//   regrid() sets a local flag when it actually mutates the tree and only
-//   calls alloc_scratch() when the topology really changed.
 void NSSolver::alloc_scratch() {
     auto leaves = tree.leaf_indices();
     int n = (int)leaves.size();
-    if (n == scratch_leaf_count_) return;   // topology unchanged — skip realloc
+    if (n == scratch_leaf_count_) return;
 
     rhs_.clear(); Qn_.clear(); Qs_.clear();
     rhs_.reserve(n); Qn_.reserve(n); Qs_.reserve(n);
@@ -251,11 +241,9 @@ void NSSolver::alloc_scratch() {
     scratch_leaf_count_ = n;
 }
 
-
 // =============================================================================
 // NSSolver::regrid
 // =============================================================================
-// FIX P5 (continued): only call alloc_scratch() when topology actually changed.
 void NSSolver::regrid() {
     bool topology_changed = false;
     auto leaves = tree.leaf_indices();
@@ -274,6 +262,5 @@ void NSSolver::regrid() {
         restrict_conservative(*node.block, children);
         topology_changed = true;
     }
-    // Only pay for realloc when the leaf count actually changed
     if (topology_changed) alloc_scratch();
 }
