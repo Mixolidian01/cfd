@@ -94,7 +94,8 @@ inline double sutherland(double T) noexcept {
     return mu_ref * ratio * std::sqrt(ratio) * (T_ref + S) / (T + S);
 }
 
-// ── CellBlock ───────────────────────────────────────────────────────────────────────────────────────nstruct CellBlock {
+// ── CellBlock ───────────────────────────────────────────────────────────────────────────────────────
+struct CellBlock {
     // SoA: one array per conserved variable, size NCELL each.
     std::array<std::vector<double>, NVAR> Q;
 
