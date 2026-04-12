@@ -15,3 +15,4 @@ Each entry contains the answer index, date, and a one-line description.
 | A10 | 2026-04-13 | A04 fix committed — edge+corner ghost fill added to fill_ghosts_periodic and fill_ghosts_wall in block_tree.cpp; Python-verified; commit 7f17be9 |
 | A11 | 2026-04-13 | T11c root-cause identified — wall_x/y/z lambdas only negated wall-normal momentum; tangential components copied instead of negated (wrong no-slip) |
 | A12 | 2026-04-13 | T11c fix committed — all three momentum components negated in wall_x/y/z lambdas (no-slip image method); commit 4ee1b38 |
+| A13 | 2026-04-13 | Phase 1 AMR foundation committed (P1.1–P1.6): free-list coarsen, work-queue balance, CF ghost dispatch, flux registers, full regrid(), leaf cache; commit 32dbfe7 |
