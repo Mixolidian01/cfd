@@ -28,17 +28,21 @@
 #include <cmath>
 #include <cassert>
 
-// ── Constants ─────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────────────────────
 inline constexpr int    NB     = 8;          // cells per block side
 inline constexpr int    NG     = 1;          // ghost layers each side
 inline constexpr int    NB2    = NB + 2*NG;  // side with ghosts = 10
 inline constexpr int    NCELL  = NB2*NB2*NB2;// total storage per field
 inline constexpr int    NVAR   = 5;          // number of conserved variables
 inline constexpr double GAMMA  = 1.4;
-inline constexpr double R_GAS  = 287.0;      // J/(kg·K), dry air
+// FIX P0.5: 287.058 J/(kg·K) — CODATA dry-air value.
+// Was 287.0; GPU_R_GAS in gpu_constants.cuh was already 287.058.
+// The 0.058 discrepancy produced different pressures at the same (rho,T)
+// on CPU vs GPU paths, silently corrupting cross-validation comparisons.
+inline constexpr double R_GAS  = 287.058;    // J/(kg·K), dry air (CODATA)
 static constexpr double CPU_CP = GAMMA * R_GAS / (GAMMA - 1.0);
 
-// ── Index helpers (always inline, zero overhead) ─────────────────────────────
+// ── Index helpers (always inline, zero overhead) ────────────────────────────────────────────
 inline constexpr int cell_idx(int i, int j, int k) noexcept {
     return k * NB2*NB2 + j * NB2 + i;
 }
@@ -46,12 +50,12 @@ inline constexpr int cell_idx(int i, int j, int k) noexcept {
 inline constexpr int ilo() noexcept { return NG; }
 inline constexpr int ihi() noexcept { return NG + NB - 1; }
 
-// ── Primitive variable struct (local, not stored) ─────────────────────────────
+// ── Primitive variable struct (local, not stored) ──────────────────────────────────────────
 struct Prim {
     double rho, u, v, w, p, T, c;
 };
 
-// ── Equation of state (inline — called millions of times) ────────────────────
+// ── Equation of state (inline — called millions of times) ────────────────────────────
 inline Prim eos_cons_to_prim(double rho, double rhou, double rhov,
                               double rhow, double E) noexcept
 {
@@ -77,16 +81,20 @@ inline void eos_prim_to_cons(const Prim& q,
     E    = q.p / (GAMMA - 1.0) + 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w);
 }
 
-// ── Sutherland viscosity ──────────────────────────────────────────────────────
+// ── Sutherland viscosity ─────────────────────────────────────────────────────────────────────────────
 inline double sutherland(double T) noexcept {
     constexpr double mu_ref  = 1.716e-5;   // kg/(m·s)
     constexpr double T_ref   = 273.15;     // K
     constexpr double S       = 110.4;      // K
-    return mu_ref * std::pow(T / T_ref, 1.5) * (T_ref + S) / (T + S);
+    // FIX P0.4: replaced std::pow(T/T_ref, 1.5) with (T/T_ref)*std::sqrt(T/T_ref).
+    // Mathematically identical: x^1.5 = x * sqrt(x).
+    // Avoids exp(1.5*log(x)) path in libm (~50 cycles) in favour of
+    // one multiply + one sqrt (~5 cycles). Now matches gpu_sutherland().
+    double ratio = T / T_ref;
+    return mu_ref * ratio * std::sqrt(ratio) * (T_ref + S) / (T + S);
 }
 
-// ── CellBlock ─────────────────────────────────────────────────────────────────
-struct CellBlock {
+// ── CellBlock ───────────────────────────────────────────────────────────────────────────────────────nstruct CellBlock {
     // SoA: one array per conserved variable, size NCELL each.
     std::array<std::vector<double>, NVAR> Q;
 
@@ -118,7 +126,7 @@ struct CellBlock {
         return eos_cons_to_prim(rho(i,j,k), rhou(i,j,k),
                                 rhov(i,j,k), rhow(i,j,k), E(i,j,k));
     }
-    
+
     // In cell_block.hpp
     double u(int i,int j,int k) const { Prim q=prim(i,j,k); return q.u; }
     double v(int i,int j,int k) const { Prim q=prim(i,j,k); return q.v; }
