@@ -8,6 +8,9 @@
 //   A04-fix    : edge+corner ghost fill added to fill_ghosts_periodic and
 //                fill_ghosts_wall so that viscous cross-partial stencil
 //                (FIX C1) never reads uninitialised ghost-of-ghost cells.
+//   T11c-fix   : all three momentum components negated in wall_x/y/z lambdas
+//                (no-slip image method requires u_ghost = -u_interior for
+//                all velocity components, not just the wall-normal one).
 #include "block_tree.hpp"
 #include <algorithm>
 #include <cassert>
@@ -109,11 +112,9 @@ void BlockTree::init(double L) {
     root.morton = 0;
     root.parent = -1;
     root.block  = std::make_unique<CellBlock>(0.0, 0.0, 0.0, L / NB);
-    // Note: cell size is always read from block->h, never from a separate field.
 }
 
 // ── child geometry ────────────────────────────────────────────────────────────
-// Canonical octant layout — bit0=x, bit1=y, bit2=z (see block_tree.hpp helpers)
 void BlockTree::set_child_geometry(int parent_idx, int child_local, int child_idx) {
     const auto& par = nodes[parent_idx];
     double cell_h = par.block ? par.block->h * 0.5
@@ -122,13 +123,12 @@ void BlockTree::set_child_geometry(int parent_idx, int child_local, int child_id
     double oy = par.block ? par.block->oy : 0.0;
     double oz = par.block ? par.block->oz : 0.0;
     double half = cell_h * NB;
-    if (oct_ix(child_local)) ox += half;   // bit0 → x
-    if (oct_iy(child_local)) oy += half;   // bit1 → y
-    if (oct_iz(child_local)) oz += half;   // bit2 → z
+    if (oct_ix(child_local)) ox += half;
+    if (oct_iy(child_local)) oy += half;
+    if (oct_iz(child_local)) oz += half;
     nodes[child_idx].block = std::make_unique<CellBlock>(ox, oy, oz, cell_h);
 }
 
-// ── Morton child code ─────────────────────────────────────────────────────────
 uint32_t BlockTree::child_morton(uint32_t parent_code, int oct) noexcept {
     return (parent_code << 3) | (uint32_t)oct;
 }
@@ -187,7 +187,6 @@ void BlockTree::restrict_to_parent(int parent_idx) {
 }
 
 // ── refine ────────────────────────────────────────────────────────────────────
-// Fix #16: cache all parent state before resize() to avoid use-after-reallocation UB.
 void BlockTree::refine(int idx) {
     assert(nodes[idx].is_leaf());
 
@@ -356,16 +355,10 @@ int BlockTree::balance() {
 // prim(i+1,j+1,k), requiring a complete NG=1 halo over all 26 neighbours:
 //   6 face ghosts  +  12 edge ghosts  +  8 corner ghosts.
 //
-// Fill order is strict:
+// Fill order:
 //   1. Faces    (read interior cells only)
 //   2. Edges    (read face ghosts already filled in step 1)
 //   3. Corners  (read face/edge ghosts already filled in steps 1–2)
-//
-// For a periodic single-block domain the neighbour of every boundary face
-// is itself (ni = -1 → src = blk), giving exact periodic wrapping.
-// For a multi-block domain the face neighbour block is used for face ghosts;
-// edge and corner ghosts are filled from the already-updated face ghosts of
-// the same block (self-consistent approximation sufficient for NG=1).
 // =============================================================================
 
 // ── fill_ghosts_periodic ──────────────────────────────────────────────────────
@@ -383,7 +376,6 @@ void BlockTree::fill_ghosts_periodic() {
         };
 
         // ── 1. Face ghosts ───────────────────────────────────────────────
-        // x-minus: ghost i=0 ← src i=ihi()
         {
             int ni = nd.neighbours[XMINUS];
             const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
@@ -391,7 +383,6 @@ void BlockTree::fill_ghosts_periodic() {
             for (int j=ilo();j<=ihi();++j)
                 copy_cell(0,j,k, ihi(),j,k, src);
         }
-        // x-plus: ghost i=NB2-1 ← src i=ilo()
         {
             int ni = nd.neighbours[XPLUS];
             const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
@@ -399,7 +390,6 @@ void BlockTree::fill_ghosts_periodic() {
             for (int j=ilo();j<=ihi();++j)
                 copy_cell(NB2-1,j,k, ilo(),j,k, src);
         }
-        // y-minus: ghost j=0 ← src j=ihi()
         {
             int ni = nd.neighbours[YMINUS];
             const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
@@ -407,7 +397,6 @@ void BlockTree::fill_ghosts_periodic() {
             for (int i=ilo();i<=ihi();++i)
                 copy_cell(i,0,k, i,ihi(),k, src);
         }
-        // y-plus: ghost j=NB2-1 ← src j=ilo()
         {
             int ni = nd.neighbours[YPLUS];
             const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
@@ -415,7 +404,6 @@ void BlockTree::fill_ghosts_periodic() {
             for (int i=ilo();i<=ihi();++i)
                 copy_cell(i,NB2-1,k, i,ilo(),k, src);
         }
-        // z-minus: ghost k=0 ← src k=ihi()
         {
             int ni = nd.neighbours[ZMINUS];
             const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
@@ -423,7 +411,6 @@ void BlockTree::fill_ghosts_periodic() {
             for (int i=ilo();i<=ihi();++i)
                 copy_cell(i,j,0, i,j,ihi(), src);
         }
-        // z-plus: ghost k=NB2-1 ← src k=ilo()
         {
             int ni = nd.neighbours[ZPLUS];
             const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
@@ -432,30 +419,27 @@ void BlockTree::fill_ghosts_periodic() {
                 copy_cell(i,j,NB2-1, i,j,ilo(), src);
         }
 
-        // ── 2. Edge ghosts (12 edges, read already-filled face ghosts) ───
-        // XY-edges (vary k over interior)
+        // ── 2. Edge ghosts ─────────────────────────────────────────────
         for (int k=ilo();k<=ihi();++k) {
-            copy_cell(0,    0,    k,  ihi(),ihi(),k, blk);  // xm-ym
-            copy_cell(NB2-1,0,    k,  ilo(),ihi(),k, blk);  // xp-ym
-            copy_cell(0,    NB2-1,k,  ihi(),ilo(),k, blk);  // xm-yp
-            copy_cell(NB2-1,NB2-1,k,  ilo(),ilo(),k, blk);  // xp-yp
+            copy_cell(0,    0,    k,  ihi(),ihi(),k, blk);
+            copy_cell(NB2-1,0,    k,  ilo(),ihi(),k, blk);
+            copy_cell(0,    NB2-1,k,  ihi(),ilo(),k, blk);
+            copy_cell(NB2-1,NB2-1,k,  ilo(),ilo(),k, blk);
         }
-        // XZ-edges (vary j over interior)
         for (int j=ilo();j<=ihi();++j) {
-            copy_cell(0,    j,0,     ihi(),j,ihi(), blk);  // xm-zm
-            copy_cell(NB2-1,j,0,     ilo(),j,ihi(), blk);  // xp-zm
-            copy_cell(0,    j,NB2-1, ihi(),j,ilo(), blk);  // xm-zp
-            copy_cell(NB2-1,j,NB2-1, ilo(),j,ilo(), blk);  // xp-zp
+            copy_cell(0,    j,0,     ihi(),j,ihi(), blk);
+            copy_cell(NB2-1,j,0,     ilo(),j,ihi(), blk);
+            copy_cell(0,    j,NB2-1, ihi(),j,ilo(), blk);
+            copy_cell(NB2-1,j,NB2-1, ilo(),j,ilo(), blk);
         }
-        // YZ-edges (vary i over interior)
         for (int i=ilo();i<=ihi();++i) {
-            copy_cell(i,0,    0,     i,ihi(),ihi(), blk);  // ym-zm
-            copy_cell(i,NB2-1,0,     i,ilo(),ihi(), blk);  // yp-zm
-            copy_cell(i,0,    NB2-1, i,ihi(),ilo(), blk);  // ym-zp
-            copy_cell(i,NB2-1,NB2-1, i,ilo(),ilo(), blk);  // yp-zp
+            copy_cell(i,0,    0,     i,ihi(),ihi(), blk);
+            copy_cell(i,NB2-1,0,     i,ilo(),ihi(), blk);
+            copy_cell(i,0,    NB2-1, i,ihi(),ilo(), blk);
+            copy_cell(i,NB2-1,NB2-1, i,ilo(),ilo(), blk);
         }
 
-        // ── 3. Corner ghosts (8 corners) ────────────────────────────────
+        // ── 3. Corner ghosts ──────────────────────────────────────────
         copy_cell(0,    0,    0,     ihi(),ihi(),ihi(), blk);
         copy_cell(NB2-1,0,    0,     ilo(),ihi(),ihi(), blk);
         copy_cell(0,    NB2-1,0,     ihi(),ilo(),ihi(), blk);
@@ -468,23 +452,24 @@ void BlockTree::fill_ghosts_periodic() {
 }
 
 // ── fill_ghosts_wall (no-slip adiabatic) ─────────────────────────────────────
-// Edge and corner ghost fills mirror the nearest wall normal.
-// Sign convention: normal velocity is negated, scalars and tangential
-// velocities are copied (no-slip adiabatic).
+//
+// No-slip image method: u_ghost = -u_interior for ALL velocity components,
+// so that u_wall = (u_ghost + u_interior)/2 = 0.
+// Adiabatic: rho and E are copied (zero normal gradient).
 void BlockTree::fill_ghosts_wall() {
     auto leaves = leaf_indices();
     for (int li : leaves) {
         auto& nd  = nodes[li];
         auto& blk = *nd.block;
 
-        // ── Face ghosts (wall reflection) ────────────────────────────────
+        // All three momentum components negated for no-slip (T11c fix).
         auto wall_x = [&](int gi, int mi) noexcept {
             for (int k=ilo();k<=ihi();++k)
             for (int j=ilo();j<=ihi();++j) {
                 blk.rho (gi,j,k) =  blk.rho (mi,j,k);
                 blk.rhou(gi,j,k) = -blk.rhou(mi,j,k);
-                blk.rhov(gi,j,k) =  blk.rhov(mi,j,k);
-                blk.rhow(gi,j,k) =  blk.rhow(mi,j,k);
+                blk.rhov(gi,j,k) = -blk.rhov(mi,j,k);
+                blk.rhow(gi,j,k) = -blk.rhow(mi,j,k);
                 blk.E   (gi,j,k) =  blk.E   (mi,j,k);
             }
         };
@@ -492,9 +477,9 @@ void BlockTree::fill_ghosts_wall() {
             for (int k=ilo();k<=ihi();++k)
             for (int i=ilo();i<=ihi();++i) {
                 blk.rho (i,gj,k) =  blk.rho (i,mj,k);
-                blk.rhou(i,gj,k) =  blk.rhou(i,mj,k);
+                blk.rhou(i,gj,k) = -blk.rhou(i,mj,k);
                 blk.rhov(i,gj,k) = -blk.rhov(i,mj,k);
-                blk.rhow(i,gj,k) =  blk.rhow(i,mj,k);
+                blk.rhow(i,gj,k) = -blk.rhow(i,mj,k);
                 blk.E   (i,gj,k) =  blk.E   (i,mj,k);
             }
         };
@@ -502,8 +487,8 @@ void BlockTree::fill_ghosts_wall() {
             for (int j=ilo();j<=ihi();++j)
             for (int i=ilo();i<=ihi();++i) {
                 blk.rho (i,j,gk) =  blk.rho (i,j,mk);
-                blk.rhou(i,j,gk) =  blk.rhou(i,j,mk);
-                blk.rhov(i,j,gk) =  blk.rhov(i,j,mk);
+                blk.rhou(i,j,gk) = -blk.rhou(i,j,mk);
+                blk.rhov(i,j,gk) = -blk.rhov(i,j,mk);
                 blk.rhow(i,j,gk) = -blk.rhow(i,j,mk);
                 blk.E   (i,j,gk) =  blk.E   (i,j,mk);
             }
@@ -523,27 +508,19 @@ void BlockTree::fill_ghosts_wall() {
         if (zm) wall_z(0,     ilo());
         if (zp) wall_z(NB2-1, ihi());
 
-        // ── Edge ghosts (12 edges, read face ghosts already filled) ──────
-        // Mirror priority: if both faces bounding an edge are walls, both
-        // normals are negated; otherwise the non-wall face value is used.
-        // Implementation: simply copy from the already-filled ghost layers
-        // using the same self-copy strategy as the periodic case.
-        //
-        // XY-edges
+        // ── Edge ghosts ────────────────────────────────────────────────
         for (int k=ilo();k<=ihi();++k) {
             if (xm||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    k)] = blk.Q[v][cell_idx(0,    ilo(),k)];
             if (xp||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    k)] = blk.Q[v][cell_idx(NB2-1,ilo(),k)];
             if (xm||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,k)] = blk.Q[v][cell_idx(0,    ihi(),k)];
             if (xp||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,NB2-1,k)] = blk.Q[v][cell_idx(NB2-1,ihi(),k)];
         }
-        // XZ-edges
         for (int j=ilo();j<=ihi();++j) {
             if (xm||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    j,0    )] = blk.Q[v][cell_idx(0,    j,ilo())];
             if (xp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,j,0    )] = blk.Q[v][cell_idx(NB2-1,j,ilo())];
             if (xm||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    j,NB2-1)] = blk.Q[v][cell_idx(0,    j,ihi())];
             if (xp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,j,NB2-1)] = blk.Q[v][cell_idx(NB2-1,j,ihi())];
         }
-        // YZ-edges
         for (int i=ilo();i<=ihi();++i) {
             if (ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,0,    0    )] = blk.Q[v][cell_idx(i,0,    ilo())];
             if (yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,NB2-1,0    )] = blk.Q[v][cell_idx(i,NB2-1,ilo())];
@@ -551,8 +528,7 @@ void BlockTree::fill_ghosts_wall() {
             if (yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,NB2-1,NB2-1)] = blk.Q[v][cell_idx(i,NB2-1,ihi())];
         }
 
-        // ── Corner ghosts (8 corners) ────────────────────────────────────
-        // Each corner is filled from the adjacent XY-edge ghost (already set).
+        // ── Corner ghosts ────────────────────────────────────────────────
         if (xm||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    0    )] = blk.Q[v][cell_idx(0,    0,    ilo())];
         if (xp||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    0    )] = blk.Q[v][cell_idx(NB2-1,0,    ilo())];
         if (xm||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,0    )] = blk.Q[v][cell_idx(0,    NB2-1,ilo())];
