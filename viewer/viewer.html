@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CFD Live Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+/* ── Design tokens ─────────────────────────────────────────────────── */
+:root {
+  --bg:          #0f1117;
+  --surface:     #181c27;
+  --surface-2:   #1e2334;
+  --border:      #2a3048;
+  --text:        #e2e6f0;
+  --text-muted:  #7a8099;
+  --accent:      #4f98a3;
+  --accent-dim:  #1e3a3e;
+  --green:       #6daa45;
+  --orange:      #fdab43;
+  --red:         #dd6974;
+  --font-mono:   'JetBrains Mono', 'Fira Mono', 'Courier New', monospace;
+  --font-ui:     'Inter', system-ui, sans-serif;
+  --radius:      6px;
+  --shadow:      0 4px 16px rgba(0,0,0,0.4);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { color-scheme: dark; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Header ────────────────────────────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+header svg { flex-shrink: 0; }
+
+.header-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.header-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.ws-badge {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ws-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  transition: background 0.3s;
+}
+.ws-dot.connected { background: var(--green); }
+
+/* ── KPI bar ────────────────────────────────────────────────────────── */
+.kpi-bar {
+  display: flex;
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.kpi {
+  flex: 1;
+  padding: 10px 16px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kpi-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.kpi-value {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: -0.02em;
+}
+
+.kpi-value.dim { color: var(--text); font-size: 15px; }
+
+/* ── Main layout ────────────────────────────────────────────────────── */
+.main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+  min-height: 0;
+}
+
+.panel {
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 14px 16px 10px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  flex-shrink: 0;
+}
+
+.panel-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.panel-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+select, button {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--font-ui);
+}
+
+select:hover, button:hover {
+  border-color: var(--accent);
+}
+
+.chart-wrap {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+}
+
+.chart-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* ── Slice panel ────────────────────────────────────────────────────── */
+.slice-panel {
+  grid-row: 1 / 3;
+  grid-column: 2;
+}
+
+.slice-canvas-wrap {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  overflow: hidden;
+  min-height: 0;
+}
+
+#sliceCanvas {
+  image-rendering: pixelated;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+}
+
+.colorbar {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  bottom: 10px;
+  width: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.colorbar-gradient {
+  flex: 1;
+  width: 12px;
+  border-radius: 3px;
+}
+
+.colorbar-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  writing-mode: horizontal-tb;
+}
+
+/* ── Log panel ──────────────────────────────────────────────────────── */
+.log-panel {
+  grid-column: 1;
+}
+
+#logBox {
+  flex: 1;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.7;
+  padding: 4px 2px;
+  min-height: 0;
+}
+
+#logBox .log-line:last-child { color: var(--text); }
+#logBox .log-line .v { color: var(--accent); }
+#logBox .log-line .warn { color: var(--orange); }
+
+/* ── No-data overlay ────────────────────────────────────────────────── */
+.no-data {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  pointer-events: none;
+}
+.no-data svg { opacity: 0.3; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8">
+    <path d="M3 6h18M3 12h18M3 18h18"/>
+    <circle cx="7" cy="6" r="1.5" fill="var(--accent)"/>
+    <circle cx="12" cy="12" r="1.5" fill="var(--accent)"/>
+    <circle cx="17" cy="18" r="1.5" fill="var(--accent)"/>
+  </svg>
+  <div>
+    <div class="header-title">CFD Live Viewer</div>
+    <div class="header-sub" id="headerSub">connecting…</div>
+  </div>
+  <div class="ws-badge">
+    <span id="wsDot" class="ws-dot"></span>
+    <span id="wsLabel">disconnected</span>
+  
+  <button id="btnStop"
+    style="margin-left:8px;padding:4px 12px;background:var(--surface-2);
+           border:1px solid var(--border);color:var(--red);border-radius:var(--radius);
+           font-size:12px;cursor:pointer;font-family:var(--font-ui);"
+    title="Stop the bridge server">
+    ■ Stop server
+  </button>
+</header>
+
+<!-- KPI Bar -->
+<div class="kpi-bar">
+  <div class="kpi">
+    <div class="kpi-label">Step</div>
+    <div class="kpi-value" id="kpiStep">—</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Sim time t</div>
+    <div class="kpi-value" id="kpiT">—</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">KE</div>
+    <div class="kpi-value" id="kpiKE">—</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">dt</div>
+    <div class="kpi-value dim" id="kpiDt">—</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">CFL</div>
+    <div class="kpi-value dim" id="kpiCFL">—</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Residual</div>
+    <div class="kpi-value dim" id="kpiRes">—</div>
+  </div>
+</div>
+
+<!-- Main grid -->
+<div class="main">
+
+  <!-- Panel 1: KE decay (top-left) -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">Kinetic Energy</div>
+      <div class="panel-controls">
+        <button id="btnClearKE">Clear</button>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="keChart"></canvas>
+    </div>
+  </div>
+
+  <!-- Panel 2: Slice viewer (right, full height) -->
+  <div class="panel slice-panel">
+    <div class="panel-header">
+      <div class="panel-title">2D Slice</div>
+      <div class="panel-controls">
+        <select id="selField">
+          <option value="rho">ρ (density)</option>
+          <option value="u">u (vel-x)</option>
+          <option value="v">v (vel-y)</option>
+          <option value="w">w (vel-z)</option>
+          <option value="p">p (pressure)</option>
+          <option value="T">T (temp)</option>
+        </select>
+        <select id="selAxis">
+          <option value="z">z-slice</option>
+          <option value="y">y-slice</option>
+          <option value="x">x-slice</option>
+        </select>
+        <button id="btnRefreshSlice">↻</button>
+        <button id="btnAutoSlice">Auto</button>
+      </div>
+    </div>
+    <div class="slice-canvas-wrap">
+      <canvas id="sliceCanvas"></canvas>
+      <div id="sliceNoData" class="no-data">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>
+        </svg>
+        <span>No slice data yet</span>
+        <span style="font-size:11px">Click ↻ or wait for Auto</span>
+      </div>
+      <div class="colorbar">
+        <div class="colorbar-label" id="cbMax">—</div>
+        <canvas id="cbGradient" class="colorbar-gradient" width="12" height="200"></canvas>
+        <div class="colorbar-label" id="cbMin">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Panel 3: Residual (bottom-left) -->
+  <div class="panel log-panel">
+    <div class="panel-header">
+      <div class="panel-title">Residual / Log</div>
+      <div class="panel-controls">
+        <button id="btnToggleLog">Chart</button>
+      </div>
+    </div>
+    <div class="chart-wrap" id="resChartWrap">
+      <canvas id="resChart"></canvas>
+    </div>
+    <div id="logBox" style="display:none"></div>
+  </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════════════════════
+const WS_URL      = 'ws://localhost:8765';
+const MAX_POINTS  = 500;
+const AUTO_SLICE_INTERVAL_MS = 2000;  // request new slice every 2s
+
+// ═══════════════════════════════════════════════════════════════════
+// COLORMAPS  (viridis, RdBu, inferno — each 10-stop)
+// ═══════════════════════════════════════════════════════════════════
+const COLORMAPS = {
+  viridis: [
+    [68,1,84],[72,40,120],[62,83,160],[49,120,172],[38,153,170],
+    [31,183,156],[74,207,104],[143,224,68],[208,230,39],[253,231,37]
+  ],
+  RdBu: [
+    [33,102,172],[67,147,195],[146,197,222],[209,229,240],[247,247,247],
+    [253,219,199],[244,165,130],[214,96,77],[178,24,43],[103,0,31]
+  ],
+  inferno: [
+    [0,0,4],[40,11,84],[101,21,110],[159,42,99],[212,72,66],
+    [245,125,21],[250,193,39],[252,255,164],[252,255,200],[252,255,255]
+  ]
+};
+
+let activeColormap = 'viridis';
+
+function cmapLookup(t, name) {
+  const stops = COLORMAPS[name] || COLORMAPS.viridis;
+  const n = stops.length - 1;
+  const i = Math.floor(t * n);
+  const f = t * n - i;
+  const a = stops[Math.min(i, n)];
+  const b = stops[Math.min(i + 1, n)];
+  return [
+    a[0] + (b[0]-a[0])*f,
+    a[1] + (b[1]-a[1])*f,
+    a[2] + (b[2]-a[2])*f
+  ];
+}
+
+// Draw colorbar gradient
+function drawColorbar(canvasEl) {
+  const ctx = canvasEl.getContext('2d');
+  const h = canvasEl.height;
+  for (let y = 0; y < h; y++) {
+    const t = 1 - y / h;
+    const [r,g,b] = cmapLookup(t, activeColormap);
+    ctx.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+    ctx.fillRect(0, y, 12, 1);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CHART.JS SETUP
+// ═══════════════════════════════════════════════════════════════════
+Chart.defaults.color = '#7a8099';
+Chart.defaults.borderColor = '#2a3048';
+Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+Chart.defaults.font.size = 11;
+
+function makeChart(canvasId, label, color, logScale) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  return new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label,
+        data: [],
+        borderColor: color,
+        backgroundColor: color + '18',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.3,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toExponential(4)}`
+          }
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Step', color: '#7a8099' },
+          ticks: { maxTicksLimit: 8 },
+          grid: { color: '#2a3048' }
+        },
+        y: {
+          type: logScale ? 'logarithmic' : 'linear',
+          title: { display: true, text: label, color: '#7a8099' },
+          grid: { color: '#2a3048' }
+        }
+      }
+    }
+  });
+}
+
+const keChart  = makeChart('keChart',  'KE',       '#4f98a3', false);
+const resChart = makeChart('resChart', 'Residual', '#dd6974', true);
+
+function chartPush(chart, x, y) {
+  chart.data.labels.push(x);
+  chart.data.datasets[0].data.push(y);
+  if (chart.data.labels.length > MAX_POINTS) {
+    chart.data.labels.shift();
+    chart.data.datasets[0].data.shift();
+  }
+  chart.update('none');
+}
+
+document.getElementById('btnClearKE').onclick = () => {
+  keChart.data.labels = [];
+  keChart.data.datasets[0].data = [];
+  keChart.update();
+};
+
+// Toggle log/chart
+let showLog = false;
+document.getElementById('btnToggleLog').onclick = () => {
+  showLog = !showLog;
+  document.getElementById('resChartWrap').style.display = showLog ? 'none' : 'block';
+  document.getElementById('logBox').style.display       = showLog ? 'block' : 'none';
+  document.getElementById('btnToggleLog').textContent   = showLog ? 'Chart' : 'Log';
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// LOG BOX
+// ═══════════════════════════════════════════════════════════════════
+const logBox = document.getElementById('logBox');
+const MAX_LOG = 200;
+
+function logAppend(data) {
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  const ke  = data.KE        != null ? data.KE.toExponential(4)       : '—';
+  const res = data.residual  != null ? data.residual.toExponential(3) : '—';
+  const dt  = data.dt        != null ? data.dt.toExponential(3)       : '—';
+  line.innerHTML =
+    `step=<span class="v">${String(data.step).padStart(6)}</span>  ` +
+    `t=<span class="v">${data.t.toFixed(5)}</span>  ` +
+    `KE=<span class="v">${ke}</span>  ` +
+    `res=<span class="warn">${res}</span>  ` +
+    `dt=<span class="v">${dt}</span>`;
+  logBox.appendChild(line);
+  while (logBox.children.length > MAX_LOG) logBox.removeChild(logBox.firstChild);
+  logBox.scrollTop = logBox.scrollHeight;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// KPI UPDATES
+// ═══════════════════════════════════════════════════════════════════
+function fmt(v, digits) {
+  if (v == null) return '—';
+  if (Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-3 && v !== 0))
+    return v.toExponential(digits ?? 3);
+  return v.toPrecision(digits ?? 5);
+}
+
+function updateKPIs(d) {
+  document.getElementById('kpiStep').textContent = d.step ?? '—';
+  document.getElementById('kpiT').textContent    = fmt(d.t, 5);
+  document.getElementById('kpiKE').textContent   = fmt(d.KE, 4);
+  document.getElementById('kpiDt').textContent   = fmt(d.dt, 3);
+  document.getElementById('kpiCFL').textContent  = fmt(d.cfl, 3);
+  document.getElementById('kpiRes').textContent  = fmt(d.residual, 3);
+  document.getElementById('headerSub').textContent =
+    `Step ${d.step ?? '?'}  ·  t = ${fmt(d.t, 5)}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// WEBGL SLICE RENDERER
+// ═══════════════════════════════════════════════════════════════════
+const sliceCanvas  = document.getElementById('sliceCanvas');
+const sliceCtx     = sliceCanvas.getContext('2d');
+const sliceNoData  = document.getElementById('sliceNoData');
+
+let sliceVmin = 0, sliceVmax = 1;
+let lastSliceStep = null;
+
+function renderSlice(width, height, vmin, vmax, data) {
+  sliceVmin = vmin; sliceVmax = vmax;
+  sliceCanvas.width  = width;
+  sliceCanvas.height = height;
+
+  const imgData = sliceCtx.createImageData(width, height);
+  const range   = vmax - vmin || 1;
+
+  for (let i = 0; i < width * height; i++) {
+    const t = (data[i] - vmin) / range;
+    const tc = Math.max(0, Math.min(1, t));
+    const [r, g, b] = cmapLookup(tc, activeColormap);
+    imgData.data[i*4]   = r | 0;
+    imgData.data[i*4+1] = g | 0;
+    imgData.data[i*4+2] = b | 0;
+    imgData.data[i*4+3] = 255;
+  }
+  sliceCtx.putImageData(imgData, 0, 0);
+  sliceNoData.style.display = 'none';
+
+  // Update colorbar labels
+  document.getElementById('cbMax').textContent = vmax.toPrecision(3);
+  document.getElementById('cbMin').textContent = vmin.toPrecision(3);
+  drawColorbar(document.getElementById('cbGradient'));
+}
+
+function requestSlice(step) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({
+    type:  'slice',
+    field: document.getElementById('selField').value,
+    axis:  document.getElementById('selAxis').value,
+    step:  step ?? null
+  }));
+}
+
+// Parse incoming binary slice message
+// Header: [int32 width][int32 height][int32 sliceIdx][float32 vmin][float32 vmax]
+// Body: width*height float32 values
+function handleBinaryMessage(buf) {
+  const view   = new DataView(buf);
+  const width  = view.getInt32(0,   true);
+  const height = view.getInt32(4,   true);
+  // sliceIdx at byte 8 (unused in renderer)
+  const vmin   = view.getFloat32(12, true);
+  const vmax   = view.getFloat32(16, true);
+  const data   = new Float32Array(buf, 20);
+
+  if (data.length !== width * height) {
+    console.warn('Slice size mismatch', data.length, width*height);
+    return;
+  }
+  renderSlice(width, height, vmin, vmax, data);
+}
+
+document.getElementById('btnRefreshSlice').onclick = () => requestSlice(null);
+
+// Auto-slice
+let autoSlice = false;
+let autoInterval = null;
+document.getElementById('btnAutoSlice').onclick = () => {
+  autoSlice = !autoSlice;
+  const btn = document.getElementById('btnAutoSlice');
+  btn.textContent = autoSlice ? '■ Stop' : 'Auto';
+  btn.style.borderColor = autoSlice ? 'var(--accent)' : '';
+  if (autoSlice) {
+    autoInterval = setInterval(() => requestSlice(lastSliceStep), AUTO_SLICE_INTERVAL_MS);
+  } else {
+    clearInterval(autoInterval);
+  }
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// WEBSOCKET  —  generation-counter pattern prevents stale callbacks
+// ═══════════════════════════════════════════════════════════════════
+let ws             = null;
+let reconnectTimer = null;
+let serverStopped  = false;
+let wsGen          = 0;   // bumped on every new connection; stale callbacks bail out
+
+// ── Stop / Reconnect button ──────────────────────────────────────────────────
+function updateStopBtn() {
+  const btn = document.getElementById('btnStop');
+  if (serverStopped) {
+    btn.textContent       = '↺ Reconnect';
+    btn.style.color       = 'var(--accent)';
+    btn.style.borderColor = 'var(--accent)';
+    btn.disabled          = false;
+  } else {
+    btn.textContent       = '■ Stop server';
+    btn.style.color       = 'var(--red)';
+    btn.style.borderColor = 'var(--border)';
+    btn.disabled          = false;
+  }
+}
+
+document.getElementById('btnStop').onclick = () => {
+  if (serverStopped) {
+    // ── RECONNECT ────────────────────────────────────────────────────────────
+    // Guard: only try if bridge is likely up (user must have run cfd-viewer start)
+    serverStopped = false;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    updateStopBtn();
+    document.getElementById('wsLabel').textContent   = 'connecting…';
+    document.getElementById('headerSub').textContent = 'Connecting to bridge…';
+    // Detach old socket completely, then open fresh
+    if (ws) {
+      ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+      try { ws.close(); } catch(_) {}
+      ws = null;
+    }
+    wsGen++;  // invalidate any pending timers from before
+    setTimeout(wsConnect, 100);
+  } else {
+    // ── STOP ─────────────────────────────────────────────────────────────────
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      alert('Not connected to bridge.');
+      return;
+    }
+    if (!confirm('Stop the bridge server?\nRestart with: ./cfd-viewer start')) return;
+    serverStopped = true;
+    updateStopBtn();
+    // Detach onclose so the auto-reconnect loop does NOT fire after shutdown
+    ws.onclose = () => {
+      document.getElementById('wsDot').classList.remove('connected');
+      document.getElementById('wsLabel').textContent   = 'stopped';
+      document.getElementById('headerSub').textContent = 'Bridge stopped — run ./cfd-viewer start, then click ↺';
+    };
+    ws.send(JSON.stringify({ type: 'shutdown' }));
+  }
+};
+
+// ── Core connect function ────────────────────────────────────────────────────
+function wsConnect() {
+  // Invalidate all callbacks from any previous socket
+  wsGen++;
+  const myGen = wsGen;
+
+  // Detach and close old socket cleanly (no spurious onclose)
+  if (ws) {
+    ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+    try { ws.close(); } catch(_) {}
+  }
+
+  ws = new WebSocket(WS_URL);
+
+  // Hard timeout: if the server isn't up within 1.5 s, give up and retry
+  const connectTimeout = setTimeout(() => {
+    if (wsGen !== myGen) return;
+    if (ws.readyState !== WebSocket.OPEN) {
+      ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+      try { ws.close(); } catch(_) {}
+      if (!serverStopped) {
+        document.getElementById('wsLabel').textContent = 'reconnecting…';
+        reconnectTimer = setTimeout(wsConnect, 400);
+      }
+    }
+  }, 1500);
+
+  ws.onopen = () => {
+    if (wsGen !== myGen) return;
+    clearTimeout(connectTimeout);
+    document.getElementById('wsDot').classList.add('connected');
+    document.getElementById('wsLabel').textContent   = 'connected';
+    document.getElementById('headerSub').textContent = 'live';
+    clearTimeout(reconnectTimer);
+    serverStopped = false;
+    updateStopBtn();
+  };
+
+  ws.onclose = () => {
+    if (wsGen !== myGen) return;   // stale — newer connection already owns ws
+    clearTimeout(connectTimeout);
+    document.getElementById('wsDot').classList.remove('connected');
+    // serverStopped path replaces this handler before shutdown — so here
+    // we are always in an unexpected-disconnect scenario → auto-retry
+    document.getElementById('wsLabel').textContent = 'reconnecting…';
+    reconnectTimer = setTimeout(wsConnect, 400);
+  };
+
+  ws.onerror = () => {
+    if (wsGen !== myGen) return;
+    ws.close();
+  };
+
+  ws.onmessage = (evt) => {
+    if (wsGen !== myGen) return;
+    if (evt.data instanceof Blob)        { evt.data.arrayBuffer().then(handleBinaryMessage); return; }
+    if (evt.data instanceof ArrayBuffer) { handleBinaryMessage(evt.data); return; }
+    let data;
+    try { data = JSON.parse(evt.data); } catch { return; }
+    if (data.error) { console.warn('[bridge error]', data.error); return; }
+    if (data.step != null) {
+      lastSliceStep = data.step;
+      updateKPIs(data);
+      if (data.KE       != null) chartPush(keChart,  data.step, data.KE);
+      if (data.residual != null) chartPush(resChart, data.step, data.residual);
+      logAppend(data);
+    }
+  };
+}
+
+wsConnect();
+drawColorbar(document.getElementById('cbGradient'));
+</script>
+</body>
+</html>
