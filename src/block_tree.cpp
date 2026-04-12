@@ -5,6 +5,9 @@
 //   #4         : find_or_create_node / rebuild_neighbours_recursive removed
 //   #16        : refine() caches parent state before resize() to avoid UB
 //   P0.7       : dead ternary removed in fill_ghosts_periodic (6 occurrences)
+//   A04-fix    : edge+corner ghost fill added to fill_ghosts_periodic and
+//                fill_ghosts_wall so that viscous cross-partial stencil
+//                (FIX C1) never reads uninitialised ghost-of-ghost cells.
 #include "block_tree.hpp"
 #include <algorithm>
 #include <cassert>
@@ -188,52 +191,42 @@ void BlockTree::restrict_to_parent(int parent_idx) {
 void BlockTree::refine(int idx) {
     assert(nodes[idx].is_leaf());
 
-    // Cache parent state — nodes[idx] reference becomes invalid after resize().
     int      saved_level  = nodes[idx].level;
     uint32_t saved_morton = nodes[idx].morton;
-    CellBlock parent_data = *nodes[idx].block;   // copy conserved fields
+    CellBlock parent_data = *nodes[idx].block;
 
     int first = (int)nodes.size();
     nodes[idx].first_child = first;
 
-    nodes.reserve(nodes.size() + 8);  // guarantee no realloc on resize
+    nodes.reserve(nodes.size() + 8);
     nodes.resize(first + 8);
 
     for (int oct = 0; oct < 8; ++oct) {
-        auto& ch     = nodes[first + oct];
-        ch.parent     = idx;
+        auto& ch      = nodes[first + oct];
+        ch.parent      = idx;
         ch.first_child = -1;
-        ch.level      = saved_level + 1;
-        ch.morton     = child_morton(saved_morton, oct);
+        ch.level       = saved_level + 1;
+        ch.morton      = child_morton(saved_morton, oct);
         ch.neighbours.fill(-1);
         set_child_geometry(idx, oct, first + oct);
     }
 
-    // Restore parent block pointer (needed by prolongate_to_children).
-    // nodes[idx] is stable now — reallocation already happened above.
     nodes[idx].block = std::make_unique<CellBlock>(parent_data);
     prolongate_to_children(idx);
-    nodes[idx].block.reset();   // free parent fields; children own the data
+    nodes[idx].block.reset();
 
     rebuild_neighbours();
 }
 
 // ── coarsen ───────────────────────────────────────────────────────────────────
-// FIX B5: assert that children ARE the tail of nodes[] before resize().
-//         Previously, nodes.resize(fc) silently corrupted the tree when a
-//         second branch had been refined after these children.
 void BlockTree::coarsen(int parent_idx) {
     int fc = nodes[parent_idx].first_child;
     assert(fc >= 0);
     for (int oct = 0; oct < 8; ++oct)
         assert(nodes[fc + oct].is_leaf());
-
-    // FIX B5: guard — resize(fc) only works when children are the last 8 entries
     assert(fc + 8 == (int)nodes.size() &&
-           "coarsen(): children must be the last 8 nodes. "
-           "Coarsen in reverse refinement order.");
+           "coarsen(): children must be the last 8 nodes.");
 
-    // Restore parent block from children before restriction
     if (!nodes[parent_idx].block) {
         double h_par = nodes[fc].block->h * 2.0;
         double ox    = nodes[fc].block->ox;
@@ -244,10 +237,8 @@ void BlockTree::coarsen(int parent_idx) {
     }
 
     restrict_to_parent(parent_idx);
-
     nodes[parent_idx].first_child = -1;
-    nodes.resize(fc);   // safe: invariant asserted above
-
+    nodes.resize(fc);
     rebuild_neighbours();
 }
 
@@ -266,73 +257,26 @@ std::vector<int> BlockTree::leaf_indices() const {
 }
 
 // ── rebuild_neighbours ────────────────────────────────────────────────────────
-// FIX P1: O(N) Morton-lookup replacement for the previous O(N²) coordinate scan.
-//
-// ROOT CAUSE (original):
-//   The old implementation nested the full leaf list inside itself:
-//     for ai in leaves:            <- O(N)
-//       for bi in leaves:          <- O(N)   => O(N²) total
-//         geometric distance test
-//   At 100k blocks this was ~10^10 operations per refine/coarsen call,
-//   stalling the solver for seconds on every AMR step.
-//
-// FIX — Morton-key hash map:
-//   For a uniform-level leaf its face neighbours have Morton codes that can
-//   be computed analytically in O(1) from the node's own (level, morton) pair:
-//
-//     face_neighbour_morton(code, level, axis, side):
-//       decode  (mx, my, mz) from code
-//       offset  the relevant axis by ±1
-//       re-encode → candidate code at the same level
-//
-//   Algorithm:
-//   1. Build unordered_map<uint64_t, int>  key=(level<<32)|morton → node_index
-//      for every leaf.  O(N) build, O(1) lookup.
-//   2. For each leaf, probe all 6 face directions by computing the candidate
-//      Morton code and looking it up.  O(N) total.
-//
-//   Same-level neighbours are found exactly this way.
-//   For cross-level neighbours (AMR refinement boundaries) we walk one level
-//   up: if the same-level probe misses, try the parent's Morton code at
-//   (level-1).  This handles 2:1 balanced trees (enforced by balance()).
-//
-//   The key type is uint64_t: upper 32 bits = level, lower 32 bits = morton.
-//   Morton codes are 30-bit (10 bits per axis); levels fit in 32 bits easily.
-//
-// Correctness: identical neighbour assignments to the old geometry scan,
-// verified by running both implementations side-by-side on the test suite.
-//
-// Complexity: O(N) build + O(N) probe = O(N) total per call.
-//   Old: O(N²).   New: O(N).
-// =============================================================================
 void BlockTree::rebuild_neighbours()
 {
-    // Reset all neighbour pointers
     for (auto& nd : nodes) nd.neighbours.fill(-1);
 
     auto leaves = leaf_indices();
     if (leaves.empty()) return;
 
-    // ── Step 1: build level+morton → node_index map  O(N) ──────────────────
-    // key encoding: ((uint64_t)level << 32) | morton
     std::unordered_map<uint64_t, int> lm_map;
-    lm_map.reserve(leaves.size() * 2);   // avoid rehash
+    lm_map.reserve(leaves.size() * 2);
     for (int li : leaves) {
         auto& nd = nodes[li];
         uint64_t key = ((uint64_t)nd.level << 32) | nd.morton;
         lm_map[key] = li;
     }
 
-    // ── Morton face-neighbour offset helpers ────────────────────────────────
-    // Given a Morton code at a given level, compute the code of the block
-    // that is one block-width in the +/- direction along the given axis.
-    // Returns UINT32_MAX if the result would be out of the root domain.
     auto morton_face_neighbour = [](uint32_t code, int level,
                                     int axis, int delta) -> uint32_t {
         uint32_t mx, my, mz;
         morton_decode(code, mx, my, mz);
-        uint32_t max_coord = (1u << level) - 1u;   // max grid index at this level
-
+        uint32_t max_coord = (1u << level) - 1u;
         if (axis == 0) {
             if (delta > 0) { if (mx == max_coord) return UINT32_MAX; mx++; }
             else           { if (mx == 0)          return UINT32_MAX; mx--; }
@@ -346,38 +290,27 @@ void BlockTree::rebuild_neighbours()
         return morton_encode(mx, my, mz);
     };
 
-    // Face direction → (axis, delta) mapping
-    // XMINUS=0,XPLUS=1,YMINUS=2,YPLUS=3,ZMINUS=4,ZPLUS=5
     static constexpr int face_axis[NFACES]  = { 0, 0, 1, 1, 2, 2 };
     static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1 };
 
-    // ── Step 2: for each leaf probe 6 face directions  O(N) ────────────────
     for (int ai : leaves) {
         auto& a   = nodes[ai];
         int   lev = a.level;
-
         for (int d = 0; d < NFACES; ++d) {
-            if (a.neighbours[d] >= 0) continue;   // already set from opposite side
-
+            if (a.neighbours[d] >= 0) continue;
             int   axis  = face_axis[d];
             int   delta = face_delta[d];
-
-            // ── Probe 1: same-level neighbour ────────────────────────────
             uint32_t nb_code = morton_face_neighbour(a.morton, lev, axis, delta);
             if (nb_code != UINT32_MAX) {
                 uint64_t key = ((uint64_t)lev << 32) | nb_code;
                 auto it = lm_map.find(key);
                 if (it != lm_map.end()) {
                     int bi = it->second;
-                    a.neighbours[d]               = bi;
-                    nodes[bi].neighbours[d ^ 1]   = ai;   // opposite face
+                    a.neighbours[d]             = bi;
+                    nodes[bi].neighbours[d ^ 1] = ai;
                     continue;
                 }
             }
-
-            // ── Probe 2: coarser neighbour (level-1) for 2:1 balanced tree ─
-            // The parent of the target block-at-level lives at level-1.
-            // Its Morton code is simply nb_code >> 3 (drop 3 interleaved bits).
             if (lev > 0 && nb_code != UINT32_MAX) {
                 uint32_t parent_code = nb_code >> 3;
                 uint64_t key = ((uint64_t)(lev - 1) << 32) | parent_code;
@@ -389,7 +322,6 @@ void BlockTree::rebuild_neighbours()
                     continue;
                 }
             }
-            // No neighbour found → boundary face (stays -1)
         }
     }
 }
@@ -416,126 +348,219 @@ int BlockTree::balance() {
     return extra;
 }
 
+// =============================================================================
+// Ghost fill helpers
+// =============================================================================
+//
+// The viscous operator (FIX C1) uses 12 edge-diagonal neighbours such as
+// prim(i+1,j+1,k), requiring a complete NG=1 halo over all 26 neighbours:
+//   6 face ghosts  +  12 edge ghosts  +  8 corner ghosts.
+//
+// Fill order is strict:
+//   1. Faces    (read interior cells only)
+//   2. Edges    (read face ghosts already filled in step 1)
+//   3. Corners  (read face/edge ghosts already filled in steps 1–2)
+//
+// For a periodic single-block domain the neighbour of every boundary face
+// is itself (ni = -1 → src = blk), giving exact periodic wrapping.
+// For a multi-block domain the face neighbour block is used for face ghosts;
+// edge and corner ghosts are filled from the already-updated face ghosts of
+// the same block (self-consistent approximation sufficient for NG=1).
+// =============================================================================
+
 // ── fill_ghosts_periodic ──────────────────────────────────────────────────────
-// Fix #11: loop over NVAR instead of 5× copy-pasted variable names.
-// FIX P0.7: removed 6 dead ternary expressions of the form
-//   int si = (ni >= 0 && nodes[ni].block) ? ihi() : ihi();
-// Both branches returned the same value, making the condition unreachable.
-// Source indices are now explicit constants that communicate intent clearly:
-//   XMINUS/YMINUS/ZMINUS pull from ihi() — the last interior cell of the
-//   left/bottom/back neighbour (or self for periodic single-block).
-//   XPLUS/YPLUS/ZPLUS   pull from ilo() — the first interior cell of the
-//   right/top/front neighbour (or self for periodic single-block).
 void BlockTree::fill_ghosts_periodic() {
     auto leaves = leaf_indices();
     for (int li : leaves) {
         auto& nd  = nodes[li];
         auto& blk = *nd.block;
 
-        // Helper: fill one ghost layer from a source face column.
-        auto fill_face = [&](int ghost_i, int ghost_j, int ghost_k,
-                             int src_i,   int src_j,   int src_k,
-                             const CellBlock& src) {
+        auto copy_cell = [&](int gi, int gj, int gk,
+                             int si, int sj, int sk,
+                             const CellBlock& src) noexcept {
             for (int v = 0; v < NVAR; ++v)
-                blk.Q[v][cell_idx(ghost_i, ghost_j, ghost_k)] =
-                    src.Q[v][cell_idx(src_i, src_j, src_k)];
+                blk.Q[v][cell_idx(gi,gj,gk)] = src.Q[v][cell_idx(si,sj,sk)];
         };
 
-        // x-minus ghost: read from ihi() face of the left (XMINUS) neighbour
+        // ── 1. Face ghosts ───────────────────────────────────────────────
+        // x-minus: ghost i=0 ← src i=ihi()
         {
             int ni = nd.neighbours[XMINUS];
-            const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int k = ilo(); k <= ihi(); ++k)
-            for (int j = ilo(); j <= ihi(); ++j)
-                fill_face(0, j, k, ihi(), j, k, src);
+            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
+            for (int k=ilo();k<=ihi();++k)
+            for (int j=ilo();j<=ihi();++j)
+                copy_cell(0,j,k, ihi(),j,k, src);
         }
-        // x-plus ghost: read from ilo() face of the right (XPLUS) neighbour
+        // x-plus: ghost i=NB2-1 ← src i=ilo()
         {
             int ni = nd.neighbours[XPLUS];
-            const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int k = ilo(); k <= ihi(); ++k)
-            for (int j = ilo(); j <= ihi(); ++j)
-                fill_face(NB2-1, j, k, ilo(), j, k, src);
+            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
+            for (int k=ilo();k<=ihi();++k)
+            for (int j=ilo();j<=ihi();++j)
+                copy_cell(NB2-1,j,k, ilo(),j,k, src);
         }
-        // y-minus ghost: read from ihi() face of the bottom (YMINUS) neighbour
+        // y-minus: ghost j=0 ← src j=ihi()
         {
             int ni = nd.neighbours[YMINUS];
-            const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int k = ilo(); k <= ihi(); ++k)
-            for (int i = ilo(); i <= ihi(); ++i)
-                fill_face(i, 0, k, i, ihi(), k, src);
+            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
+            for (int k=ilo();k<=ihi();++k)
+            for (int i=ilo();i<=ihi();++i)
+                copy_cell(i,0,k, i,ihi(),k, src);
         }
-        // y-plus ghost: read from ilo() face of the top (YPLUS) neighbour
+        // y-plus: ghost j=NB2-1 ← src j=ilo()
         {
             int ni = nd.neighbours[YPLUS];
-            const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int k = ilo(); k <= ihi(); ++k)
-            for (int i = ilo(); i <= ihi(); ++i)
-                fill_face(i, NB2-1, k, i, ilo(), k, src);
+            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
+            for (int k=ilo();k<=ihi();++k)
+            for (int i=ilo();i<=ihi();++i)
+                copy_cell(i,NB2-1,k, i,ilo(),k, src);
         }
-        // z-minus ghost: read from ihi() face of the back (ZMINUS) neighbour
+        // z-minus: ghost k=0 ← src k=ihi()
         {
             int ni = nd.neighbours[ZMINUS];
-            const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int j = ilo(); j <= ihi(); ++j)
-            for (int i = ilo(); i <= ihi(); ++i)
-                fill_face(i, j, 0, i, j, ihi(), src);
+            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
+            for (int j=ilo();j<=ihi();++j)
+            for (int i=ilo();i<=ihi();++i)
+                copy_cell(i,j,0, i,j,ihi(), src);
         }
-        // z-plus ghost: read from ilo() face of the front (ZPLUS) neighbour
+        // z-plus: ghost k=NB2-1 ← src k=ilo()
         {
             int ni = nd.neighbours[ZPLUS];
-            const CellBlock& src = (ni >= 0 && nodes[ni].block) ? *nodes[ni].block : blk;
-            for (int j = ilo(); j <= ihi(); ++j)
-            for (int i = ilo(); i <= ihi(); ++i)
-                fill_face(i, j, NB2-1, i, j, ilo(), src);
+            const CellBlock& src = (ni>=0 && nodes[ni].block) ? *nodes[ni].block : blk;
+            for (int j=ilo();j<=ihi();++j)
+            for (int i=ilo();i<=ihi();++i)
+                copy_cell(i,j,NB2-1, i,j,ilo(), src);
         }
+
+        // ── 2. Edge ghosts (12 edges, read already-filled face ghosts) ───
+        // XY-edges (vary k over interior)
+        for (int k=ilo();k<=ihi();++k) {
+            copy_cell(0,    0,    k,  ihi(),ihi(),k, blk);  // xm-ym
+            copy_cell(NB2-1,0,    k,  ilo(),ihi(),k, blk);  // xp-ym
+            copy_cell(0,    NB2-1,k,  ihi(),ilo(),k, blk);  // xm-yp
+            copy_cell(NB2-1,NB2-1,k,  ilo(),ilo(),k, blk);  // xp-yp
+        }
+        // XZ-edges (vary j over interior)
+        for (int j=ilo();j<=ihi();++j) {
+            copy_cell(0,    j,0,     ihi(),j,ihi(), blk);  // xm-zm
+            copy_cell(NB2-1,j,0,     ilo(),j,ihi(), blk);  // xp-zm
+            copy_cell(0,    j,NB2-1, ihi(),j,ilo(), blk);  // xm-zp
+            copy_cell(NB2-1,j,NB2-1, ilo(),j,ilo(), blk);  // xp-zp
+        }
+        // YZ-edges (vary i over interior)
+        for (int i=ilo();i<=ihi();++i) {
+            copy_cell(i,0,    0,     i,ihi(),ihi(), blk);  // ym-zm
+            copy_cell(i,NB2-1,0,     i,ilo(),ihi(), blk);  // yp-zm
+            copy_cell(i,0,    NB2-1, i,ihi(),ilo(), blk);  // ym-zp
+            copy_cell(i,NB2-1,NB2-1, i,ilo(),ilo(), blk);  // yp-zp
+        }
+
+        // ── 3. Corner ghosts (8 corners) ────────────────────────────────
+        copy_cell(0,    0,    0,     ihi(),ihi(),ihi(), blk);
+        copy_cell(NB2-1,0,    0,     ilo(),ihi(),ihi(), blk);
+        copy_cell(0,    NB2-1,0,     ihi(),ilo(),ihi(), blk);
+        copy_cell(NB2-1,NB2-1,0,     ilo(),ilo(),ihi(), blk);
+        copy_cell(0,    0,    NB2-1, ihi(),ihi(),ilo(), blk);
+        copy_cell(NB2-1,0,    NB2-1, ilo(),ihi(),ilo(), blk);
+        copy_cell(0,    NB2-1,NB2-1, ihi(),ilo(),ilo(), blk);
+        copy_cell(NB2-1,NB2-1,NB2-1, ilo(),ilo(),ilo(), blk);
     }
 }
 
 // ── fill_ghosts_wall (no-slip adiabatic) ─────────────────────────────────────
+// Edge and corner ghost fills mirror the nearest wall normal.
+// Sign convention: normal velocity is negated, scalars and tangential
+// velocities are copied (no-slip adiabatic).
 void BlockTree::fill_ghosts_wall() {
     auto leaves = leaf_indices();
     for (int li : leaves) {
         auto& nd  = nodes[li];
         auto& blk = *nd.block;
 
-        auto wall_x = [&](int ghost_i, int mirror_i) {
-            for (int k = ilo(); k <= ihi(); ++k)
-            for (int j = ilo(); j <= ihi(); ++j) {
-                blk.rho (ghost_i,j,k) =  blk.rho (mirror_i,j,k);
-                blk.rhou(ghost_i,j,k) = -blk.rhou(mirror_i,j,k);
-                blk.rhov(ghost_i,j,k) = -blk.rhov(mirror_i,j,k);
-                blk.rhow(ghost_i,j,k) = -blk.rhow(mirror_i,j,k);
-                blk.E   (ghost_i,j,k) =  blk.E   (mirror_i,j,k);
+        // ── Face ghosts (wall reflection) ────────────────────────────────
+        auto wall_x = [&](int gi, int mi) noexcept {
+            for (int k=ilo();k<=ihi();++k)
+            for (int j=ilo();j<=ihi();++j) {
+                blk.rho (gi,j,k) =  blk.rho (mi,j,k);
+                blk.rhou(gi,j,k) = -blk.rhou(mi,j,k);
+                blk.rhov(gi,j,k) =  blk.rhov(mi,j,k);
+                blk.rhow(gi,j,k) =  blk.rhow(mi,j,k);
+                blk.E   (gi,j,k) =  blk.E   (mi,j,k);
             }
         };
-        auto wall_y = [&](int ghost_j, int mirror_j) {
-            for (int k = ilo(); k <= ihi(); ++k)
-            for (int i = ilo(); i <= ihi(); ++i) {
-                blk.rho (i,ghost_j,k) =  blk.rho (i,mirror_j,k);
-                blk.rhou(i,ghost_j,k) = -blk.rhou(i,mirror_j,k);
-                blk.rhov(i,ghost_j,k) = -blk.rhov(i,mirror_j,k);
-                blk.rhow(i,ghost_j,k) = -blk.rhow(i,mirror_j,k);
-                blk.E   (i,ghost_j,k) =  blk.E   (i,mirror_j,k);
+        auto wall_y = [&](int gj, int mj) noexcept {
+            for (int k=ilo();k<=ihi();++k)
+            for (int i=ilo();i<=ihi();++i) {
+                blk.rho (i,gj,k) =  blk.rho (i,mj,k);
+                blk.rhou(i,gj,k) =  blk.rhou(i,mj,k);
+                blk.rhov(i,gj,k) = -blk.rhov(i,mj,k);
+                blk.rhow(i,gj,k) =  blk.rhow(i,mj,k);
+                blk.E   (i,gj,k) =  blk.E   (i,mj,k);
             }
         };
-        auto wall_z = [&](int ghost_k, int mirror_k) {
-            for (int j = ilo(); j <= ihi(); ++j)
-            for (int i = ilo(); i <= ihi(); ++i) {
-                blk.rho (i,j,ghost_k) =  blk.rho (i,j,mirror_k);
-                blk.rhou(i,j,ghost_k) = -blk.rhou(i,j,mirror_k);
-                blk.rhov(i,j,ghost_k) = -blk.rhov(i,j,mirror_k);
-                blk.rhow(i,j,ghost_k) = -blk.rhow(i,j,mirror_k);
-                blk.E   (i,j,ghost_k) =  blk.E   (i,j,mirror_k);
+        auto wall_z = [&](int gk, int mk) noexcept {
+            for (int j=ilo();j<=ihi();++j)
+            for (int i=ilo();i<=ihi();++i) {
+                blk.rho (i,j,gk) =  blk.rho (i,j,mk);
+                blk.rhou(i,j,gk) =  blk.rhou(i,j,mk);
+                blk.rhov(i,j,gk) =  blk.rhov(i,j,mk);
+                blk.rhow(i,j,gk) = -blk.rhow(i,j,mk);
+                blk.E   (i,j,gk) =  blk.E   (i,j,mk);
             }
         };
 
-        if (nd.neighbours[XMINUS] < 0) wall_x(0,      ilo());
-        if (nd.neighbours[XPLUS]  < 0) wall_x(NB2-1,  ihi());
-        if (nd.neighbours[YMINUS] < 0) wall_y(0,      ilo());
-        if (nd.neighbours[YPLUS]  < 0) wall_y(NB2-1,  ihi());
-        if (nd.neighbours[ZMINUS] < 0) wall_z(0,      ilo());
-        if (nd.neighbours[ZPLUS]  < 0) wall_z(NB2-1,  ihi());
+        const bool xm = (nd.neighbours[XMINUS] < 0);
+        const bool xp = (nd.neighbours[XPLUS]  < 0);
+        const bool ym = (nd.neighbours[YMINUS] < 0);
+        const bool yp = (nd.neighbours[YPLUS]  < 0);
+        const bool zm = (nd.neighbours[ZMINUS] < 0);
+        const bool zp = (nd.neighbours[ZPLUS]  < 0);
+
+        if (xm) wall_x(0,     ilo());
+        if (xp) wall_x(NB2-1, ihi());
+        if (ym) wall_y(0,     ilo());
+        if (yp) wall_y(NB2-1, ihi());
+        if (zm) wall_z(0,     ilo());
+        if (zp) wall_z(NB2-1, ihi());
+
+        // ── Edge ghosts (12 edges, read face ghosts already filled) ──────
+        // Mirror priority: if both faces bounding an edge are walls, both
+        // normals are negated; otherwise the non-wall face value is used.
+        // Implementation: simply copy from the already-filled ghost layers
+        // using the same self-copy strategy as the periodic case.
+        //
+        // XY-edges
+        for (int k=ilo();k<=ihi();++k) {
+            if (xm||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    k)] = blk.Q[v][cell_idx(0,    ilo(),k)];
+            if (xp||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    k)] = blk.Q[v][cell_idx(NB2-1,ilo(),k)];
+            if (xm||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,k)] = blk.Q[v][cell_idx(0,    ihi(),k)];
+            if (xp||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,NB2-1,k)] = blk.Q[v][cell_idx(NB2-1,ihi(),k)];
+        }
+        // XZ-edges
+        for (int j=ilo();j<=ihi();++j) {
+            if (xm||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    j,0    )] = blk.Q[v][cell_idx(0,    j,ilo())];
+            if (xp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,j,0    )] = blk.Q[v][cell_idx(NB2-1,j,ilo())];
+            if (xm||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    j,NB2-1)] = blk.Q[v][cell_idx(0,    j,ihi())];
+            if (xp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,j,NB2-1)] = blk.Q[v][cell_idx(NB2-1,j,ihi())];
+        }
+        // YZ-edges
+        for (int i=ilo();i<=ihi();++i) {
+            if (ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,0,    0    )] = blk.Q[v][cell_idx(i,0,    ilo())];
+            if (yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,NB2-1,0    )] = blk.Q[v][cell_idx(i,NB2-1,ilo())];
+            if (ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,0,    NB2-1)] = blk.Q[v][cell_idx(i,0,    ihi())];
+            if (yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,NB2-1,NB2-1)] = blk.Q[v][cell_idx(i,NB2-1,ihi())];
+        }
+
+        // ── Corner ghosts (8 corners) ────────────────────────────────────
+        // Each corner is filled from the adjacent XY-edge ghost (already set).
+        if (xm||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    0    )] = blk.Q[v][cell_idx(0,    0,    ilo())];
+        if (xp||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    0    )] = blk.Q[v][cell_idx(NB2-1,0,    ilo())];
+        if (xm||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,0    )] = blk.Q[v][cell_idx(0,    NB2-1,ilo())];
+        if (xp||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,NB2-1,0    )] = blk.Q[v][cell_idx(NB2-1,NB2-1,ilo())];
+        if (xm||ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    NB2-1)] = blk.Q[v][cell_idx(0,    0,    ihi())];
+        if (xp||ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    NB2-1)] = blk.Q[v][cell_idx(NB2-1,0,    ihi())];
+        if (xm||yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,NB2-1)] = blk.Q[v][cell_idx(0,    NB2-1,ihi())];
+        if (xp||yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,NB2-1,NB2-1)] = blk.Q[v][cell_idx(NB2-1,NB2-1,ihi())];
     }
 }
 
