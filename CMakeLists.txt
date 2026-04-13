@@ -2,7 +2,7 @@
 # CFD Solver — CMakeLists.txt
 #
 # One-time setup:
-#   cmake -S ~/cfd -B ~/cfd/build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+#   cmake -S $(pwd) -B $(pwd)/build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 #
 # Daily use:
 #   cmake --build build -t b     # incremental build (all targets)
