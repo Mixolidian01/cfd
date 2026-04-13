@@ -6,6 +6,8 @@
 //   h-field      : node.block->h used everywhere
 //   P0.6         : static ke_prev replaced by member ke_prev_
 //   P1.5         : regrid() full Berger-Colella protocol
+//   S07/S08/S03-fix : fill_ghosts refreshed before SGS apply() so stencil
+//                     reads Q^{n+1} ghosts, not stale Q^{(2)} from Stage 3
 #include "../include/sgs.hpp"
 #include "../include/amr_operators.hpp"
 #include "../include/ns_solver.hpp"
@@ -149,8 +151,16 @@ double NSSolver::advance() {
     if (cfg.regrid_interval > 0 && step % cfg.regrid_interval == 0)
         regrid();
 
-    // SGS operator-split
+    // S07/S08/S03-fix: refresh ghost cells before SGS operator-split.
+    // After copy_stage_to_tree() the interior holds Q^{n+1} but the ghost
+    // layers still carry Q^{(2)} from Stage 3's fill_ghosts call inside
+    // tree_rhs().  The SGS stencil reads ghosts for velocity gradients; the
+    // inconsistency breaks the periodic telescoping sum and injects a spurious
+    // O(dt*Delta_u) momentum error per step (S08) and can drive pressure
+    // negative via corrupted energy (S07 NaN, S03 wrong KE direction).
     if (cfg.sgs) {
+        if (periodic) tree.fill_ghosts_periodic();
+        else          tree.fill_ghosts_wall();
         for (int li : tree.leaf_indices())
             cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
     }

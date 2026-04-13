@@ -19,6 +19,8 @@
 //                so first_child+oct is always valid after free-list reuse
 //   A05-fix2   : averaged coarse ghost fill when ni is finer than nd;
 //                apply_flux_correction axis=0/1 ck/ci indexing corrected
+//   A05-fix3   : apply_flux_correction sign corrected: +face subtracts fine
+//                flux, -face adds it, matching dQ=(dt/h)*(F_left-F_right)
 #include "../include/block_tree.hpp"
 #include "../include/amr_operators.hpp"
 #include <algorithm>
@@ -815,17 +817,19 @@ void BlockTree::accumulate_fine_flux(int fine_leaf, FaceDir d,
 }
 
 // =============================================================================
-// A05-fix2: apply_flux_correction — axis=0/1 ck/ci index corrected
+// A05-fix3: apply_flux_correction — sign corrected per face direction
+//
+// Conservative update: dQ/dt = (1/h)*(F_left - F_right)
+//   -face (side=0, XMINUS/YMINUS/ZMINUS): F enters the cell  → ADD
+//   +face (side=1, XPLUS/YPLUS/ZPLUS):    F leaves the cell  → SUBTRACT
+//
+// Previous bug: all faces unconditionally added, giving wrong sign on
+// every +face and effectively double-counting on -faces.
 //
 // flux_reg layout: reg[v*NB*NB + jc*NB + ic]
-//   jc = first transverse index (y for axis=0, z for axis=1, y for axis=2)
-//   ic = second transverse index (z for axis=0, x for axis=1, x for axis=2)
-//
-// Previous bug: for axis=0, ck was hardcoded to ilo() instead of ilo()+ic
-//               for axis=1, ck was hardcoded to ilo() instead of ilo()+jc
-// This meant only the first row in the z-direction was corrected on x- and
-// y-faces; all other z-rows were silently skipped, leaving uncorrected mass
-// leaks at coarse-fine interfaces.
+//   axis=0 (x-face, YZ plane): jc→y, ic→z
+//   axis=1 (y-face, XZ plane): jc→z, ic→x
+//   axis=2 (z-face, XY plane): jc→y, ic→x
 // =============================================================================
 void BlockTree::apply_flux_correction(double dt) {
     for (int li : leaf_indices()) {
@@ -841,12 +845,14 @@ void BlockTree::apply_flux_correction(double dt) {
             if (nodes[ni].level <= nd.level) continue;
 
             const int axis = fd_axis(d);
+            // +face subtracts (flux leaves cell), -face adds (flux enters cell)
+            const double sign = (fd_side(d) == 1) ? -1.0 : +1.0;
             int g = (fd_side(d) == 0) ? ilo() : ihi();
 
             for (int v = 0; v < NVAR; ++v)
             for (int jc = 0; jc < NB; ++jc)
             for (int ic = 0; ic < NB; ++ic) {
-                double corr = (dt / h_c) * reg[v*NB*NB + jc*NB + ic];
+                double corr = sign * (dt / h_c) * reg[v*NB*NB + jc*NB + ic];
                 int ci, cj, ck;
                 // flux_reg[face][v*NB*NB + jc*NB + ic]:
                 //   axis=0 (x-face, YZ plane): jc→y, ic→z
