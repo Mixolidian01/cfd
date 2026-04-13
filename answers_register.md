@@ -16,3 +16,4 @@ Each entry contains the answer index, date, and a one-line description.
 | A11 | 2026-04-13 | T11c root-cause identified — wall_x/y/z lambdas only negated wall-normal momentum; tangential components copied instead of negated (wrong no-slip) |
 | A12 | 2026-04-13 | T11c fix committed — all three momentum components negated in wall_x/y/z lambdas (no-slip image method); commit 4ee1b38 |
 | A13 | 2026-04-13 | Phase 1 AMR foundation committed (P1.1–P1.6): free-list coarsen, work-queue balance, CF ghost dispatch, flux registers, full regrid(), leaf cache; commit 32dbfe7 |
+| A19 | 2026-04-13 | A05-fix2 committed — averaged coarse ghost fill (2×2 fine cells per coarse ghost slot) + apply_flux_correction axis=0/1 ck/ci index corrected; commit 6d4095e |
