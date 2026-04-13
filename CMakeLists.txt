@@ -50,18 +50,24 @@ endif()
 add_library(linalg STATIC src/linalg.cpp)
 target_include_directories(linalg PUBLIC include)
 
-# Layer 1: block tree, Morton encoding, AMR structure
-add_library(block STATIC src/block_tree.cpp)
+# Layer 1: block tree, Morton encoding, AMR structure.
+# amr_operators.cpp is included here because block_tree.cpp calls
+# fill_cf_ghosts() directly (coarse/fine ghost fill at CF interfaces).
+add_library(block STATIC
+    src/block_tree.cpp
+    src/amr_operators.cpp
+)
 target_link_libraries(block PUBLIC linalg)
 
 # Layer 2: HLLC Riemann solver, viscous RHS, operators
 add_library(operators STATIC src/operators.cpp)
 target_link_libraries(operators PUBLIC block)
 
-# Layer 3: SSP-RK3 time loop, AMR operators, SGS plug-in, I/O
+# Layer 3: SSP-RK3 time loop, SGS plug-in, I/O
+# amr_operators.cpp is already compiled in libblock; omit it here to
+# avoid duplicate-symbol ODR violations at link time.
 add_library(ns_solver STATIC
     src/ns_solver.cpp
-    src/amr_operators.cpp
     src/flux_register.cpp
     src/sgs.cpp
     src/checkpoint.cpp
