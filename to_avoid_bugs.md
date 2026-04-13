@@ -73,3 +73,46 @@ every struct/class member access against the current header. When a
 header comment says a field was removed or replaced (e.g. “BlockNode::h
 — use block->h”), grep test sources for the old field name and update
 them before committing.
+
+---
+
+## Rule 004 — Ghost cells for derived arrays (mu_t, etc.) must receive periodic/wall treatment identical to Q
+
+**Derived from:** Answer #21 (S07/S08 SGS momentum conservation failure)
+
+**Misbehaviour:** In `sgs.cpp`, the `mu_t` precomputation loop skipped
+ghost indices (`i<1 || i>NB2-2`), leaving `mu_t` at the `+x/+y/+z`
+ghost layer (index `NB2-1`) as 0. Face-centred stresses at the periodic
+boundary used `mu_t=0` on one side, halving the boundary stress. This
+broke the telescoping sum of `div(τ)` on the periodic domain, producing
+a non-zero net momentum source and failing S07/S08.
+
+**Rule:** Whenever a derived per-cell array (mu_t, nu_t, indicator
+functions, etc.) is computed from Q and then used with stencils that
+access neighbouring cells (including ghost layers), the ghost cells of
+that derived array MUST be filled with the same BC as Q (periodic wrap,
+wall reflection, CF interpolation). Always apply the ghost fill
+immediately after the interior computation loop, before any stencil
+operation that reads ghost neighbours.
+
+---
+
+## Rule 005 — Every defined inter-layer communication function must be wired into the call graph; verify with grep before committing
+
+**Derived from:** Answer #21 (A05 mass leak — accumulate_fine_flux never called)
+
+**Misbehaviour:** `BlockTree::accumulate_fine_flux()` was defined in
+`block_tree.cpp` and declared in `block_tree.hpp`, but was never called
+from `operators.cpp`, `tree_rhs()`, or any other site. Consequently the
+flux register was always empty, `apply_flux_correction()` was a no-op,
+and coarse cells at coarse-fine interfaces received zero net flux — a
+pure mass leak.
+
+**Rule:** After defining any new function that is part of a protocol
+(Berger-Colella reflux, ghost fill, restriction, etc.), immediately
+grep the entire codebase for the function name to confirm it is called
+from the correct site. A function that is defined but has zero call
+sites is a bug. Document the intended call site in a comment on the
+function declaration (`// called from tree_rhs() for each fine leaf at
+a CF face`). Do not commit until at least one call site exists and is
+verified to pass the associated test.
