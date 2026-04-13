@@ -15,6 +15,8 @@
 //   P1.6       : leaf_indices() returns cached vector; dirty flag set by
 //                refine(), coarsen(), rebuild_neighbours()
 //   build-fix  : #include paths corrected to ../include/ prefix
+//   A05-fix    : alloc_node_group(8) guarantees contiguous child allocation
+//                so first_child+oct is always valid after free-list reuse
 #include "../include/block_tree.hpp"
 #include "../include/amr_operators.hpp"
 #include <algorithm>
@@ -118,6 +120,41 @@ int BlockTree::alloc_node() {
     return (int)nodes.size() - 1;
 }
 
+// Allocate `n` consecutive node indices, guaranteeing nodes[first..first+n-1]
+// are a valid, contiguous, ascending run.  Used by refine() to keep the
+// first_child+oct indexing invariant valid even after free-list reuse.
+//
+// Strategy:
+//   1. Sort the free-list and look for a run of n consecutive indices.
+//   2. If found, remove them from the free_list_ and return the first.
+//   3. Otherwise append n new nodes to the end of nodes[] and return the first.
+//
+// This is O(F log F + F) where F = free_list_.size(), which is acceptable
+// because refine() is rare compared to per-cell flux computations.
+int BlockTree::alloc_node_group(int n) {
+    // Try to find n consecutive slots in the free list
+    if ((int)free_list_.size() >= n) {
+        std::sort(free_list_.begin(), free_list_.end());
+        for (int k = 0; k <= (int)free_list_.size() - n; ++k) {
+            bool run = true;
+            for (int j = 1; j < n; ++j) {
+                if (free_list_[k+j] != free_list_[k] + j) { run = false; break; }
+            }
+            if (run) {
+                int first = free_list_[k];
+                free_list_.erase(free_list_.begin() + k,
+                                 free_list_.begin() + k + n);
+                for (int j = 0; j < n; ++j) nodes[first + j].reset();
+                return first;
+            }
+        }
+    }
+    // No contiguous run found: append n new nodes
+    int first = (int)nodes.size();
+    nodes.resize(first + n);
+    return first;
+}
+
 void BlockTree::free_node(int idx) {
     nodes[idx].block.reset();
     nodes[idx].parent      = NODE_DEAD;
@@ -185,7 +222,7 @@ void BlockTree::prolongate_to_children(int parent_idx) {
     auto& par = nodes[parent_idx];
     if (!par.block) return;
     for (int oct = 0; oct < 8; ++oct) {
-        int ci = par.first_child + oct;
+        int ci = par.first_child + oct;   // guaranteed contiguous by alloc_node_group
         auto& ch_blk = *nodes[ci].block;
         int i0 = oct_ix(oct) ? NB/2 : 0;
         int j0 = oct_iy(oct) ? NB/2 : 0;
@@ -213,7 +250,7 @@ void BlockTree::restrict_to_parent(int parent_idx) {
         par.block->Q[v][cell_idx(i,j,k)] = 0.0;
 
     for (int oct = 0; oct < 8; ++oct) {
-        int ci = par.first_child + oct;
+        int ci = par.first_child + oct;   // guaranteed contiguous by alloc_node_group
         auto& ch_blk = *nodes[ci].block;
         int i0 = oct_ix(oct) ? NB/2 : 0;
         int j0 = oct_iy(oct) ? NB/2 : 0;
@@ -242,25 +279,20 @@ void BlockTree::refine(int idx) {
     uint32_t saved_morton = nodes[idx].morton;
     CellBlock parent_data = *nodes[idx].block;  // cache before any resize
 
-    // Allocate 8 children — free-list model; indices may not be contiguous
-    // but are stored as first_child .. first_child+7 only if from emplace_back.
-    // For correct oct-order, allocate all 8 before wiring topology.
-    int children[8];
-    int first = -1;
-    for (int oct = 0; oct < 8; ++oct) {
-        children[oct] = alloc_node();
-        if (oct == 0) first = children[oct];
-    }
+    // A05-fix: allocate 8 children as a CONTIGUOUS group so that
+    // first_child + oct is always valid regardless of free-list state.
+    int first = alloc_node_group(8);
     nodes[idx].first_child = first;
 
     for (int oct = 0; oct < 8; ++oct) {
-        auto& ch      = nodes[children[oct]];
+        int ci = first + oct;
+        auto& ch      = nodes[ci];
         ch.parent      = idx;
         ch.first_child = -1;
         ch.level       = saved_level + 1;
         ch.morton      = child_morton(saved_morton, oct);
         ch.neighbours.fill(-1);
-        set_child_geometry(idx, oct, children[oct]);
+        set_child_geometry(idx, oct, ci);
     }
 
     nodes[idx].block = std::make_unique<CellBlock>(parent_data);
@@ -277,6 +309,7 @@ void BlockTree::refine(int idx) {
 void BlockTree::coarsen(int parent_idx) {
     int fc = nodes[parent_idx].first_child;
     assert(fc >= 0);
+    // Children are always contiguous by alloc_node_group invariant.
     for (int oct = 0; oct < 8; ++oct)
         assert(nodes[fc + oct].is_leaf());
 
@@ -396,7 +429,7 @@ int BlockTree::balance() {
             if (nodes[ni].level < nodes[li].level - 1) {
                 refine(ni);
                 ++extra;
-                // Enqueue the 8 new children immediately
+                // Enqueue the 8 new children (contiguous by alloc_node_group)
                 int fc = nodes[ni].first_child;
                 for (int oct = 0; oct < 8; ++oct)
                     queue.push_back(fc + oct);
@@ -424,11 +457,13 @@ static inline int fd_axis(int d) { return d >> 1; }  // 0→x, 2→y, 4→z
 static inline int fd_side(int d) { return d & 1;  }  // 0→minus, 1→plus
 
 // Helper: octant of child li relative to its parent (needed for fill_cf_ghosts)
+// Children are contiguous by alloc_node_group invariant, so li - first_child
+// gives the correct octant index.
 static int child_octant_of(const std::vector<BlockNode>& nodes, int li) {
     int p = nodes[li].parent;
     if (p < 0) return 0;
     int fc = nodes[p].first_child;
-    return li - fc;  // valid because children are allocated in oct order
+    return li - fc;
 }
 
 // ── fill_ghosts_periodic ──────────────────────────────────────────────────────
@@ -445,7 +480,7 @@ void BlockTree::fill_ghosts_periodic() {
                 blk.Q[v][cell_idx(gi,gj,gk)] = src.Q[v][cell_idx(si,sj,sk)];
         };
 
-        // ── 1. Face ghosts ────────────────────────────────────────────────
+        // ── 1. Face ghosts ────────────────────────────────────────────────────
         struct FaceSpec { int ghost_g, mirror_s, axis, side; };
         static const FaceSpec specs[NFACES] = {
             {0,      ihi(), 0, 0},  // XMINUS
@@ -487,7 +522,7 @@ void BlockTree::fill_ghosts_periodic() {
             }
         }
 
-        // ── 2. Edge ghosts ────────────────────────────────────────────────
+        // ── 2. Edge ghosts ────────────────────────────────────────────────────
         for (int k=ilo();k<=ihi();++k) {
             copy_cell(0,    0,    k,  ihi(),ihi(),k, blk);
             copy_cell(NB2-1,0,    k,  ilo(),ihi(),k, blk);
@@ -507,7 +542,7 @@ void BlockTree::fill_ghosts_periodic() {
             copy_cell(i,NB2-1,NB2-1, i,ilo(),ilo(), blk);
         }
 
-        // ── 3. Corner ghosts ──────────────────────────────────────────────
+        // ── 3. Corner ghosts ───────────────────────────────────────────────────
         copy_cell(0,    0,    0,     ihi(),ihi(),ihi(), blk);
         copy_cell(NB2-1,0,    0,     ilo(),ihi(),ihi(), blk);
         copy_cell(0,    NB2-1,0,     ihi(),ilo(),ihi(), blk);
@@ -519,7 +554,7 @@ void BlockTree::fill_ghosts_periodic() {
     }
 }
 
-// ── fill_ghosts_wall (no-slip adiabatic) ─────────────────────────────────────
+// ── fill_ghosts_wall (no-slip adiabatic) ────────────────────────────────────
 void BlockTree::fill_ghosts_wall() {
     const auto& leaves = leaf_indices();
     for (int li : leaves) {
@@ -582,7 +617,7 @@ void BlockTree::fill_ghosts_wall() {
         if (zm) wall_z(0,     ilo());
         if (zp) wall_z(NB2-1, ihi());
 
-        // ── Edge ghosts ───────────────────────────────────────────────────
+        // ── Edge ghosts ─────────────────────────────────────────────────────
         for (int k=ilo();k<=ihi();++k) {
             if (xm||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    k)] = blk.Q[v][cell_idx(0,    ilo(),k)];
             if (xp||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    k)] = blk.Q[v][cell_idx(NB2-1,ilo(),k)];
@@ -602,7 +637,7 @@ void BlockTree::fill_ghosts_wall() {
             if (yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,NB2-1,NB2-1)] = blk.Q[v][cell_idx(i,NB2-1,ihi())];
         }
 
-        // ── Corner ghosts ─────────────────────────────────────────────────
+        // ── Corner ghosts ─────────────────────────────────────────────────────
         if (xm||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    0    )] = blk.Q[v][cell_idx(0,    0,    ilo())];
         if (xp||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    0    )] = blk.Q[v][cell_idx(NB2-1,0,    ilo())];
         if (xm||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,0    )] = blk.Q[v][cell_idx(0,    NB2-1,ilo())];

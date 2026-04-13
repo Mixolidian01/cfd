@@ -10,6 +10,8 @@
 // S06  VTK write produces non-empty .vtk file for each leaf
 // S07  Smagorinsky does not change global mass (mass-conservative SGS)
 // S08  Smagorinsky does not change global momentum (momentum-conservative)
+//
+// FIX #16a: node.h does not exist; cell size is in node.block->h
 
 #include "../include/ns_solver.hpp"
 #include "../include/sgs.hpp"
@@ -36,7 +38,7 @@ static double global_mass(const NSSolver& s) {
     for (int li : s.tree.leaf_indices()) {
         auto& node = s.tree.nodes[li];
         auto& blk  = *node.block;
-        double h3  = node.h * node.h * node.h;
+        double h3  = blk.h * blk.h * blk.h;   // FIX #16a: was node.h
         for (int k=NG;k<NG+NB;++k)
         for (int j=NG;j<NG+NB;++j)
         for (int i=NG;i<NG+NB;++i)
@@ -50,7 +52,7 @@ static double global_momx(const NSSolver& s) {
     for (int li : s.tree.leaf_indices()) {
         auto& node = s.tree.nodes[li];
         auto& blk  = *node.block;
-        double h3  = node.h * node.h * node.h;
+        double h3  = blk.h * blk.h * blk.h;   // FIX #16a: was node.h
         for (int k=NG;k<NG+NB;++k)
         for (int j=NG;j<NG+NB;++j)
         for (int i=NG;i<NG+NB;++i)
@@ -64,7 +66,7 @@ static double global_ke(const NSSolver& s) {
     for (int li : s.tree.leaf_indices()) {
         auto& node = s.tree.nodes[li];
         auto& blk  = *node.block;
-        double h3  = node.h * node.h * node.h;
+        double h3  = blk.h * blk.h * blk.h;   // FIX #16a: was node.h
         for (int k=NG;k<NG+NB;++k)
         for (int j=NG;j<NG+NB;++j)
         for (int i=NG;i<NG+NB;++i) {
@@ -105,7 +107,7 @@ static void s02_null_sgs_no_effect() {
     s.cfg.cfl = 0.5; s.cfg.bc = BCType::Periodic; s.cfg.verbose = false;
     s.cfg.sgs = std::make_shared<NullSGS>();
     s.init(2*acos(-1.0), tgv_ic);
-    double ke0 = global_ke(s);
+    (void)global_ke(s);  // suppress unused warning
 
     NSSolver s2;
     s2.cfg.cfl = 0.5; s2.cfg.bc = BCType::Periodic; s2.cfg.verbose = false;
@@ -144,6 +146,7 @@ static void s04_checkpoint_roundtrip() {
     NSSolver s;
     s.cfg.cfl = 0.5; s.cfg.bc = BCType::Periodic; s.cfg.verbose = false;
     s.init(1.0, [](double x,double y,double z)->Prim{
+        (void)z;
         double pi=acos(-1.0);
         Prim q; q.rho=1.225+0.05*sin(2*pi*x)*cos(2*pi*y);
         q.u=0.5*sin(2*pi*x)*cos(2*pi*y);
@@ -159,6 +162,7 @@ static void s04_checkpoint_roundtrip() {
     s2.cfg = s.cfg;
     // Re-init with same IC to create tree structure, then overwrite with checkpoint
     s2.init(1.0, [](double x,double y,double z)->Prim{
+        (void)x; (void)y; (void)z;
         Prim q; q.rho=1; q.u=0; q.v=0; q.w=0; q.p=1e5;
         q.T=q.p/(q.rho*R_GAS); q.c=sqrt(GAMMA*q.p/q.rho); return q;
     });
@@ -187,6 +191,7 @@ static void s05_checkpoint_metadata() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
     s.init(1.0,[](double x,double y,double z)->Prim{
+        (void)x; (void)y; (void)z;
         Prim q;q.rho=1.225;q.u=0;q.v=0;q.w=0;q.p=101325;
         q.T=q.p/(q.rho*R_GAS);q.c=sqrt(GAMMA*q.p/q.rho);return q;});
     for(int i=0;i<7;++i) s.advance();
@@ -197,6 +202,7 @@ static void s05_checkpoint_metadata() {
 
     NSSolver s2; s2.cfg=s.cfg;
     s2.init(1.0,[](double x,double y,double z)->Prim{
+        (void)x; (void)y; (void)z;
         Prim q;q.rho=1;q.u=0;q.v=0;q.w=0;q.p=1e5;
         q.T=q.p/(q.rho*R_GAS);q.c=sqrt(GAMMA*q.p/q.rho);return q;});
     checkpoint_load(s2, "/tmp/test_meta.bin");
@@ -211,6 +217,7 @@ static void s06_vtk_nonempty() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
     s.init(1.0,[](double x,double y,double z)->Prim{
+        (void)x; (void)y; (void)z;
         Prim q;q.rho=1.225;q.u=0;q.v=0;q.w=0;q.p=101325;
         q.T=q.p/(q.rho*R_GAS);q.c=sqrt(GAMMA*q.p/q.rho);return q;});
     s.advance();
