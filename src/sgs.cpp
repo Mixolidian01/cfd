@@ -15,6 +15,10 @@
 //             (dQ[4] -= dt*visc_work), lowering KE as required by S03.
 //             Previously the increment was +visc_work (energy injection),
 //             causing Smagorinsky KE > NullSGS KE.
+//   S08-fix2: Periodic ghost wrap applied to mu_t after the precomputation
+//             loop.  Without this, the +x/+y/+z ghost layer has mu_t=0,
+//             halving the face viscosity at block boundaries and breaking
+//             the telescoping sum => global momentum not conserved.
 #include "../include/sgs.hpp"
 #include <cmath>
 #include <algorithm>
@@ -84,6 +88,30 @@ void SmagorinskyModel::apply(CellBlock& blk, double h, double dt) const {
         double rho_ijk = blk.Q[0][cell_idx(i,j,k)];
         double S       = strain_rate(blk, h_inv, i, j, k);
         mu_t_arr[cell_idx(i,j,k)] = rho_ijk * CsD2 * S;
+    }
+
+    // S08-fix2: apply periodic wrap to mu_t ghost cells so that face
+    // averages mu_{i+1/2} = 0.5*(mu[i]+mu[i+1]) are correct at block
+    // boundaries.  Without this, the +x/+y/+z ghost layer (index NB2-1)
+    // has mu_t=0, halving the face viscosity and breaking the telescoping
+    // sum => global momentum not conserved (S07/S08).
+    // x-direction
+    for (int k = 0; k < NB2; ++k)
+    for (int j = 0; j < NB2; ++j) {
+        mu_t_arr[cell_idx(0,     j, k)] = mu_t_arr[cell_idx(NB2-2, j, k)];
+        mu_t_arr[cell_idx(NB2-1, j, k)] = mu_t_arr[cell_idx(1,     j, k)];
+    }
+    // y-direction
+    for (int k = 0; k < NB2; ++k)
+    for (int i = 0; i < NB2; ++i) {
+        mu_t_arr[cell_idx(i, 0,     k)] = mu_t_arr[cell_idx(i, NB2-2, k)];
+        mu_t_arr[cell_idx(i, NB2-1, k)] = mu_t_arr[cell_idx(i, 1,     k)];
+    }
+    // z-direction
+    for (int j = 0; j < NB2; ++j)
+    for (int i = 0; i < NB2; ++i) {
+        mu_t_arr[cell_idx(i, j, 0    )] = mu_t_arr[cell_idx(i, j, NB2-2)];
+        mu_t_arr[cell_idx(i, j, NB2-1)] = mu_t_arr[cell_idx(i, j, 1    )];
     }
 
     static thread_local double dQ[NVAR][1000];  // NB2^3 = 10^3 = 1000
@@ -235,10 +263,10 @@ void SmagorinskyModel::apply(CellBlock& blk, double h, double dt) const {
                          + tyz_c*(dvdz_c+dwdy_c);
 
         // Heat conduction: kap_t * Lap(T)
-        const double ih2 = h_inv * h_inv;
-        double lap_T = ih2*(blk.T(i+1,j,k)-2.0*q.T+blk.T(i-1,j,k)
-                          + blk.T(i,j+1,k)-2.0*q.T+blk.T(i,j-1,k)
-                          + blk.T(i,j,k+1)-2.0*q.T+blk.T(i,j,k-1));
+        const double ih2_loc = h_inv * h_inv;
+        double lap_T = ih2_loc*(blk.T(i+1,j,k)-2.0*q.T+blk.T(i-1,j,k)
+                              + blk.T(i,j+1,k)-2.0*q.T+blk.T(i,j-1,k)
+                              + blk.T(i,j,k+1)-2.0*q.T+blk.T(i,j,k-1));
         double kap_t = mu_c * kap_fac;
         double heat  = kap_t * lap_T;
 
