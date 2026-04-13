@@ -226,6 +226,88 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 }
 
 // =============================================================================
+// Berger-Colella reflux helper
+// =============================================================================
+// After compute_rhs() is called for a coarse leaf, the HLLC stencil has
+// already integrated a coarse-side flux at every face adjacent to a finer
+// neighbour.  apply_flux_correction() will later *add* the fine-side average
+// flux to that same cell face.  Without correction the cell would receive
+// both fluxes, violating conservation.
+//
+// This routine undoes the coarse HLLC contribution at each such CF face by
+// re-computing the same HLLC flux and adding it back with the opposite sign.
+// The net effect after apply_flux_correction() is:
+//
+//   dQ/dt += (1/h) * [F_fine_avg - F_coarse_own]
+//         =  0   +  F_fine_avg / h   (correct Berger-Colella reflux)
+//
+// Note: ghost cells at CF faces are filled by fill_coarse_ghost_from_fine()
+// (A05-fix2) before tree_rhs() is called, so the HLLC flux here is the same
+// one that was applied by convective_rhs().
+// =============================================================================
+static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
+                               CellBlock& rhs) noexcept
+{
+    const auto& nd  = tree.nodes[node_idx];
+    const auto& blk = *nd.block;
+    const double ih = 1.0 / blk.h;
+
+    // face_axis[d] and face_delta[d] match the NFACES layout
+    // XMINUS=0,XPLUS=1, YMINUS=2,YPLUS=3, ZMINUS=4,ZPLUS=5
+    static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
+    static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
+
+    for (int d = 0; d < NFACES; ++d) {
+        const int ni = nd.neighbours[d];
+        if (ni < 0 || !tree.nodes[ni].has_block()) continue;
+        if (tree.nodes[ni].level <= nd.level) continue;  // only fine neighbours
+
+        const int axis  = face_axis[d];
+        const int delta = face_delta[d];
+        // Interior boundary row adjacent to the CF face
+        const int bound = (delta > 0) ? ihi() : ilo();
+
+        for (int b = ilo(); b <= ihi(); ++b)
+        for (int a = ilo(); a <= ihi(); ++a) {
+            // Interior cell (i,j,k) and its ghost neighbour across the CF face
+            int ci, cj, ck;   // interior
+            int gi, gj, gk;   // ghost
+            if (axis == 0) {
+                ci=bound; cj=a;     ck=b;
+                gi=bound+delta; gj=a; gk=b;
+            } else if (axis == 1) {
+                ci=a;     cj=bound; ck=b;
+                gi=a; gj=bound+delta; gk=b;
+            } else {
+                ci=a;     cj=b;     ck=bound;
+                gi=a; gj=b; gk=bound+delta;
+            }
+
+            Prim interior = blk.prim(ci, cj, ck);
+            Prim ghost    = blk.prim(gi, gj, gk);
+
+            // Reconstruct the exact flux that convective_rhs applied.
+            // For delta>0 (+face): Fxp = hllc_flux(interior, ghost, axis)
+            //   convective_rhs subtracted ih*Fxp, so undo: add +ih*Fxp
+            // For delta<0 (-face): Fxm = hllc_flux(ghost, interior, axis)
+            //   convective_rhs added ih*Fxm (subtracted negative), so undo:
+            //   subtract +ih*Fxm, i.e. add -ih*Fxm  → sign = -1
+            std::array<double,5> F;
+            if (delta > 0)
+                F = hllc_flux(interior, ghost, axis);
+            else
+                F = hllc_flux(ghost, interior, axis);
+
+            // +1 for plus-face (undo -ih*F), -1 for minus-face (undo +ih*F)
+            const double sign = (delta > 0) ? +1.0 : -1.0;
+            const int idx = cell_idx(ci, cj, ck);
+            for (int v = 0; v < NVAR; ++v)
+                rhs.Q[v][idx] += sign * ih * F[v];
+        }
+    }
+}
+
+// =============================================================================
 // Tree-level RHS
 // =============================================================================
 void tree_rhs(BlockTree& tree,
@@ -237,10 +319,15 @@ void tree_rhs(BlockTree& tree,
     else
         tree.fill_ghosts_wall();
 
-    auto leaves = tree.leaf_indices();
+    const auto& leaves = tree.leaf_indices();
     assert((int)rhs_blocks.size() == (int)leaves.size());
-    for (int li = 0; li < (int)leaves.size(); ++li)
-        compute_rhs(*tree.nodes[leaves[li]].block, rhs_blocks[li]);
+    for (int li = 0; li < (int)leaves.size(); ++li) {
+        const int node_idx = leaves[li];
+        compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li]);
+        // Berger-Colella reflux: remove the coarse HLLC flux at every CF face
+        // so that apply_flux_correction() can add the correct fine-side flux.
+        undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
+    }
 }
 
 // =============================================================================
@@ -253,4 +340,3 @@ double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept
         dt = std::min(dt, tree.nodes[li].block->cfl_dt(cfl));
     return dt;
 }
-
