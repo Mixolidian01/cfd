@@ -19,6 +19,7 @@
 //   P1.4 : flux register implemented (accumulate_fine_flux / apply_flux_correction)
 //   P1.5 : regrid() full Berger-Colella protocol
 //   P1.6 : leaf cache with dirty flag (leaf_cache_ / leaf_dirty_)
+//   A05  : alloc_node_group(n) — contiguous group allocation for refine()
 
 #include "cell_block.hpp"
 #include <vector>
@@ -28,11 +29,11 @@
 #include <cstdint>
 #include <deque>
 
-// ── Morton encoding (10 bits per axis) ───────────────────────────────────────
+// ── Morton encoding (10 bits per axis) ────────────────────────────────────────────
 uint32_t morton_encode(uint32_t x, uint32_t y, uint32_t z) noexcept;
 void     morton_decode(uint32_t code, uint32_t& x, uint32_t& y, uint32_t& z) noexcept;
 
-// ── Face direction enum ───────────────────────────────────────────────────────
+// ── Face direction enum ─────────────────────────────────────────────────────────────
 enum FaceDir : int {
     XMINUS = 0, XPLUS  = 1,
     YMINUS = 2, YPLUS  = 3,
@@ -51,10 +52,10 @@ inline int  oct_ix(int oct) noexcept { return  oct     & 1; }
 inline int  oct_iy(int oct) noexcept { return (oct>>1) & 1; }
 inline int  oct_iz(int oct) noexcept { return (oct>>2) & 1; }
 
-// ── Sentinel for dead (freed) nodes ──────────────────────────────────────────
+// ── Sentinel for dead (freed) nodes ────────────────────────────────────────────
 static constexpr int NODE_DEAD = -2;
 
-// ── Tree node ─────────────────────────────────────────────────────────────────
+// ── Tree node ───────────────────────────────────────────────────────────────────
 struct BlockNode {
     // Tree topology
     int parent      = -1;   // index in BlockTree::nodes (-1 = root)
@@ -89,25 +90,25 @@ struct BlockNode {
     }
 };
 
-// ── BlockTree ─────────────────────────────────────────────────────────────────
+// ── BlockTree ────────────────────────────────────────────────────────────────────
 struct BlockTree {
     std::vector<BlockNode> nodes;
 
-    // ── Construction ─────────────────────────────────────────────────────
+    // ── Construction ────────────────────────────────────────────────────
     void init(double L);
 
-    // ── Refinement / coarsening ───────────────────────────────────────────────
+    // ── Refinement / coarsening ─────────────────────────────────────────────────
     // refine: leaf → 8 children (prolongates Q piecewise-constant)
     void refine(int idx);
     // coarsen: 8 siblings → parent (restricts Q volume-averaged)
     // P1.1: no tail assumption — uses free-list
     void coarsen(int parent_idx);
 
-    // ── 2:1 balance ───────────────────────────────────────────────────────
+    // ── 2:1 balance ──────────────────────────────────────────────────────────
     // P1.2: work-queue model — correct after any topology change
     int balance();
 
-    // ── Accessors ─────────────────────────────────────────────────────────
+    // ── Accessors ──────────────────────────────────────────────────────────
     int  n_leaves() const noexcept;
     int  root()     const noexcept { return 0; }
     bool valid()    const noexcept { return !nodes.empty(); }
@@ -115,21 +116,21 @@ struct BlockTree {
     // P1.6: cached leaf index list; invalidated by refine/coarsen/rebuild.
     const std::vector<int>& leaf_indices() const;
 
-    // ── Neighbour topology ────────────────────────────────────────────────
+    // ── Neighbour topology ────────────────────────────────────────────────────
     void rebuild_neighbours();
 
-    // ── Ghost fill ────────────────────────────────────────────────────────
+    // ── Ghost fill ─────────────────────────────────────────────────────────────
     // P1.3: dispatches fill_cf_ghosts for coarse-fine faces
     void fill_ghosts_periodic();
     void fill_ghosts_wall();
 
-    // ── Flux register management (P1.4) ───────────────────────────────────
+    // ── Flux register management (P1.4) ───────────────────────────────────────
     void zero_flux_registers();
     void accumulate_fine_flux(int fine_leaf, FaceDir d,
                               const std::vector<double>& flux);
     void apply_flux_correction(double dt);
 
-    // ── Morton utilities ──────────────────────────────────────────────────
+    // ── Morton utilities ──────────────────────────────────────────────────────────
     static uint32_t child_morton(uint32_t parent_code, int oct) noexcept;
 
     double domain_L() const noexcept { return domain_L_; }
@@ -138,8 +139,12 @@ private:
     double domain_L_ = 1.0;
 
     // P1.1: free-list allocator
+    // alloc_node()       — pop one slot (or append)
+    // alloc_node_group(n)— pop/append n CONTIGUOUS slots; required by refine()
+    //                       so that first_child+oct is always valid.
     std::vector<int> free_list_;
     int  alloc_node();
+    int  alloc_node_group(int n);   // A05-fix: contiguous group allocation
     void free_node(int idx);
 
     // P1.6: leaf cache
