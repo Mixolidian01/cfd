@@ -14,8 +14,9 @@
 //   P1.4       : accumulate_fine_flux / apply_flux_correction implemented
 //   P1.6       : leaf_indices() returns cached vector; dirty flag set by
 //                refine(), coarsen(), rebuild_neighbours()
-#include "block_tree.hpp"
-#include "amr_operators.hpp"
+//   build-fix  : #include paths corrected to ../include/ prefix
+#include "../include/block_tree.hpp"
+#include "../include/amr_operators.hpp"
 #include <algorithm>
 #include <cassert>
 #include <unordered_map>
@@ -445,7 +446,6 @@ void BlockTree::fill_ghosts_periodic() {
         };
 
         // ── 1. Face ghosts ────────────────────────────────────────────────
-        // Face direction table: {ghost_coord, mirror_coord, axis, side}
         struct FaceSpec { int ghost_g, mirror_s, axis, side; };
         static const FaceSpec specs[NFACES] = {
             {0,      ihi(), 0, 0},  // XMINUS
@@ -520,15 +520,12 @@ void BlockTree::fill_ghosts_periodic() {
 }
 
 // ── fill_ghosts_wall (no-slip adiabatic) ─────────────────────────────────────
-// No-slip image method: u_ghost = -u_interior for ALL velocity components.
-// Adiabatic: rho and E are copied (zero normal gradient).
 void BlockTree::fill_ghosts_wall() {
     const auto& leaves = leaf_indices();
     for (int li : leaves) {
         auto& nd  = nodes[li];
         auto& blk = *nd.block;
 
-        // All three momentum components negated (T11c fix + P1.3 CF dispatch).
         auto wall_x = [&](int gi, int mi) noexcept {
             for (int k=ilo();k<=ihi();++k)
             for (int j=ilo();j<=ihi();++j) {
@@ -628,26 +625,22 @@ void BlockTree::zero_flux_registers() {
     }
 }
 
-// Store fine-level face fluxes in the coarse neighbour's flux register.
-// flux layout: flux[var * NB*NB + jf*NB + if_], fine-face coordinates.
 void BlockTree::accumulate_fine_flux(int fine_leaf, FaceDir d,
                                      const std::vector<double>& flux) {
     int ni = nodes[fine_leaf].neighbours[d];
-    if (ni < 0) return;  // boundary — no coarse neighbour
-    if (nodes[ni].level >= nodes[fine_leaf].level) return;  // same or finer — no register
+    if (ni < 0) return;
+    if (nodes[ni].level >= nodes[fine_leaf].level) return;
 
     auto& reg = nodes[ni].flux_reg[opposite(d)];
     const int face_size = NVAR * NB * NB;
     if (reg.size() != (size_t)face_size)
         reg.assign(face_size, 0.0);
 
-    // Each fine face covers a 1×NB×NB area in the coarse face; accumulate.
-    const double area_ratio = 0.25;  // (h_f/h_c)^2 = 1/4 for 2:1
+    const double area_ratio = 0.25;
     for (int idx = 0; idx < face_size; ++idx)
         reg[idx] += flux[idx] * area_ratio;
 }
 
-// Apply correction: dQ_coarse = (dt/h_c) * (F_fine_accumulated - F_coarse)
 void BlockTree::apply_flux_correction(double dt) {
     for (int li : leaf_indices()) {
         auto& nd  = nodes[li];
@@ -659,13 +652,10 @@ void BlockTree::apply_flux_correction(double dt) {
             if (reg.empty()) continue;
             int ni = nd.neighbours[d];
             if (ni < 0 || !nodes[ni].has_block()) continue;
-            if (nodes[ni].level <= nd.level) continue;  // only correct coarse side
+            if (nodes[ni].level <= nd.level) continue;
 
-            // reg[v*NB*NB + jc*NB + ic] = accumulated fine flux sum * area_ratio
-            // coarse flux not subtracted here (would require storing coarse flux too);
-            // correction = dt/h_c * reg  (Berger-Colella net flux mismatch)
             const int axis = fd_axis(d);
-            int g = (fd_side(d) == 0) ? ilo() : ihi();  // coarse face row
+            int g = (fd_side(d) == 0) ? ilo() : ihi();
 
             for (int v = 0; v < NVAR; ++v)
             for (int jc = 0; jc < NB; ++jc)
