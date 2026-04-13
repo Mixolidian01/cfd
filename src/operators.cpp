@@ -308,6 +308,79 @@ static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
 }
 
 // =============================================================================
+// A05-fix3: accumulate_cf_fine_fluxes
+//
+// For each FINE leaf, re-compute the HLLC flux at every coarse-fine (CF)
+// face and store it in the coarse neighbour's flux register via
+// BlockTree::accumulate_fine_flux().  Must be called AFTER all
+// compute_rhs() calls in tree_rhs() so that ghost values are consistent.
+//
+// The flux register is zeroed at the START of tree_rhs() (one call per
+// RK3 stage) so that apply_flux_correction(dt) in advance() receives only
+// the LAST RK3 stage's fine fluxes.  Together with undo_cf_face_flux() the
+// net Berger-Colella correction on the coarse cell is:
+//
+//   dQ_coarse += (dt/h_c) * (F_fine_avg - F_coarse_own)  [mass-conservative]
+//
+// Register layout (must match apply_flux_correction in block_tree.cpp):
+//   reg[v*NB*NB + jc*NB + ic]
+//   axis=0 (x-face, YZ plane): jc = a-ilo() (y-index), ic = b-ilo() (z-index)
+//   axis=1 (y-face, XZ plane): jc = b-ilo() (z-index), ic = a-ilo() (x-index)
+//   axis=2 (z-face, XY plane): jc = a-ilo() (y-index), ic = b-ilo() (x-index)
+// =============================================================================
+static void accumulate_cf_fine_fluxes(BlockTree& tree) noexcept
+{
+    static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
+    static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
+
+    for (int li : tree.leaf_indices()) {
+        const auto& nd  = tree.nodes[li];
+        const auto& blk = *nd.block;
+
+        for (int d = 0; d < NFACES; ++d) {
+            const int ni = nd.neighbours[d];
+            if (ni < 0 || !tree.nodes[ni].has_block()) continue;
+            if (tree.nodes[ni].level >= nd.level) continue;  // only coarser neighbours
+
+            const int axis  = face_axis[d];
+            const int delta = face_delta[d];
+            const int bound = (delta > 0) ? ihi() : ilo();
+
+            std::vector<double> face_flux(NVAR * NB * NB, 0.0);
+
+            for (int b = ilo(); b <= ihi(); ++b)
+            for (int a = ilo(); a <= ihi(); ++a) {
+                int ci, cj, ck, gi, gj, gk;
+                if (axis == 0) {
+                    ci=bound; cj=a;     ck=b;
+                    gi=bound+delta; gj=a; gk=b;
+                } else if (axis == 1) {
+                    ci=a;     cj=bound; ck=b;
+                    gi=a; gj=bound+delta; gk=b;
+                } else {
+                    ci=a;     cj=b;     ck=bound;
+                    gi=a; gj=b; gk=bound+delta;
+                }
+
+                Prim interior = blk.prim(ci, cj, ck);
+                Prim ghost    = blk.prim(gi, gj, gk);
+
+                std::array<double,5> F;
+                if (delta > 0) F = hllc_flux(interior, ghost, axis);
+                else           F = hllc_flux(ghost, interior, axis);
+
+                // Layout matches apply_flux_correction in block_tree.cpp
+                int jc = (axis == 1) ? (b - ilo()) : (a - ilo());
+                int ic = (axis == 1) ? (a - ilo()) : (b - ilo());
+                for (int v = 0; v < NVAR; ++v)
+                    face_flux[v*NB*NB + jc*NB + ic] = F[v];
+            }
+            tree.accumulate_fine_flux(li, static_cast<FaceDir>(d), face_flux);
+        }
+    }
+}
+
+// =============================================================================
 // Tree-level RHS
 // =============================================================================
 void tree_rhs(BlockTree& tree,
@@ -319,6 +392,11 @@ void tree_rhs(BlockTree& tree,
     else
         tree.fill_ghosts_wall();
 
+    // A05-fix3: zero registers at the start of EVERY RK3 stage so that
+    // apply_flux_correction(dt) in advance() receives only THIS stage's
+    // fine fluxes with weight dt (not the accumulated sum of all 3 stages).
+    tree.zero_flux_registers();
+
     const auto& leaves = tree.leaf_indices();
     assert((int)rhs_blocks.size() == (int)leaves.size());
     for (int li = 0; li < (int)leaves.size(); ++li) {
@@ -328,6 +406,10 @@ void tree_rhs(BlockTree& tree,
         // so that apply_flux_correction() can add the correct fine-side flux.
         undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
     }
+
+    // A05-fix3: accumulate fine-side CF face fluxes into the coarse register.
+    // Runs AFTER all compute_rhs() calls so ghost values are consistent.
+    accumulate_cf_fine_fluxes(tree);
 }
 
 // =============================================================================
