@@ -23,7 +23,6 @@
 // ── Single-face HLLC flux (5 conserved variables) ────────────────────────────
 // Returns F_hllc at the interface between state L (left) and R (right).
 // Both states are given as primitive variables (rho,u,v,w,p).
-// face_vel = velocity component normal to the face (u for x-face, etc.)
 std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept;
 
 // ── Per-block convective RHS  dQ/dt|_conv = -(1/h)(dF/dx + dG/dy + dH/dz) ──
@@ -42,9 +41,16 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 // ── Tree-level RHS (loops over all leaves) ───────────────────────────────────
 // Fills ghost cells, then calls compute_rhs for every leaf block.
 // rhs_blocks must have same size and order as tree.leaf_indices().
+//
+// A05-fix4: stage_weight is the SSP-RK3 quadrature weight for this sub-step:
+//   stage 1: 1/6,  stage 2: 1/6,  stage 3: 2/3
+// The caller must zero flux registers once before stage 1 and must NOT zero
+// them between stages.  apply_flux_correction(dt) is called after stage 3.
+// Default value 1.0 preserves backward-compatibility for single-stage calls.
 void tree_rhs(BlockTree& tree,
               std::vector<CellBlock>& rhs_blocks,
-              bool periodic) noexcept;
+              bool periodic,
+              double stage_weight = 1.0) noexcept;
 
 // ── CFL time step over entire tree ───────────────────────────────────────────
 double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept;

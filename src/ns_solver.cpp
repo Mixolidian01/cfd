@@ -8,6 +8,9 @@
 //   P1.5         : regrid() full Berger-Colella protocol
 //   S07/S08/S03-fix : fill_ghosts refreshed before SGS apply() so stencil
 //                     reads Q^{n+1} ghosts, not stale Q^{(2)} from Stage 3
+//   A05-fix4     : flux registers zeroed once before RK3; each stage passes
+//                  its SSP-RK3 quadrature weight (1/6, 1/6, 2/3) to tree_rhs
+//                  so apply_flux_correction(dt) uses the time-averaged flux
 #include "../include/sgs.hpp"
 #include "../include/amr_operators.hpp"
 #include "../include/ns_solver.hpp"
@@ -43,7 +46,7 @@ void NSSolver::init(double domain_L,
     tree.init(domain_L);
     t = 0.0; step = 0;
     history.clear();
-    ke_prev_ = -1.0;   // FIX P0.6: reset sentinel on every init()
+    ke_prev_ = -1.0;
 
     auto& blk = *tree.nodes[0].block;
     for (int k = 0; k < NB2; ++k)
@@ -89,7 +92,17 @@ void NSSolver::copy_stage_to_tree(const std::vector<CellBlock>& stage) {
 void NSSolver::save_Qn() { copy_tree_to_stage(Qn_); }
 
 // =============================================================================
-// NSSolver::advance — alias-free SSP-RK3
+// NSSolver::advance — alias-free SSP-RK3 with weighted Berger-Colella reflux
+//
+// SSP-RK3 (Shu-Osher) expands as:
+//   Q^{n+1} = Q^n + (1/6)*dt*L^{(1)} + (1/6)*dt*L^{(2)} + (2/3)*dt*L^{(3)}
+//
+// The Berger-Colella flux correction uses the same time-averaged fine flux:
+//   1. Zero flux registers ONCE before stage 1.
+//   2. Pass stage weight w_s to tree_rhs (w = 1/6, 1/6, 2/3).
+//      accumulate_cf_fine_fluxes adds w_s * F_fine to the register.
+//   3. apply_flux_correction(dt) once after stage 3.
+// Register holds sum_s(w_s * F_fine_s) = time-averaged fine flux. ✓
 // =============================================================================
 double NSSolver::advance() {
     bool periodic = (cfg.bc == BCType::Periodic);
@@ -100,8 +113,11 @@ double NSSolver::advance() {
     const auto& leaves = tree.leaf_indices();
     int NL = (int)leaves.size();
 
-    // Stage 1: Q^(1) = Q^n + dt*L(Q^n)
-    tree_rhs(tree, rhs_, periodic);
+    // A05-fix4: zero registers once, then accumulate weighted fluxes per stage
+    tree.zero_flux_registers();
+
+    // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int k  = ilo(); k <= ihi(); ++k)
@@ -112,8 +128,8 @@ double NSSolver::advance() {
     }
     copy_stage_to_tree(Qs_);
 
-    // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))
-    tree_rhs(tree, rhs_, periodic);
+    // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int k  = ilo(); k <= ihi(); ++k)
@@ -126,8 +142,8 @@ double NSSolver::advance() {
     }
     copy_stage_to_tree(Qs_);
 
-    // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))
-    tree_rhs(tree, rhs_, periodic);
+    // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
+    tree_rhs(tree, rhs_, periodic, 2.0/3.0);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int k  = ilo(); k <= ihi(); ++k)
@@ -140,9 +156,8 @@ double NSSolver::advance() {
     }
     copy_stage_to_tree(Qs_);
 
-    // P1.4: apply flux correction after each full RK3 step
+    // A05-fix4: apply time-averaged Berger-Colella correction once
     tree.apply_flux_correction(dt);
-    tree.zero_flux_registers();
 
     t    += dt;
     step += 1;
@@ -152,12 +167,8 @@ double NSSolver::advance() {
         regrid();
 
     // S07/S08/S03-fix: refresh ghost cells before SGS operator-split.
-    // After copy_stage_to_tree() the interior holds Q^{n+1} but the ghost
-    // layers still carry Q^{(2)} from Stage 3's fill_ghosts call inside
-    // tree_rhs().  The SGS stencil reads ghosts for velocity gradients; the
-    // inconsistency breaks the periodic telescoping sum and injects a spurious
-    // O(dt*Delta_u) momentum error per step (S08) and can drive pressure
-    // negative via corrupted energy (S07 NaN, S03 wrong KE direction).
+    // After copy_stage_to_tree() the interior holds Q^{n+1} but ghosts
+    // still carry Q^{(2)} from Stage 3's fill_ghosts call inside tree_rhs().
     if (cfg.sgs) {
         if (periodic) tree.fill_ghosts_periodic();
         else          tree.fill_ghosts_wall();
@@ -262,7 +273,6 @@ void NSSolver::regrid() {
 
     // ── Pass 1: refinement ────────────────────────────────────────────────
     {
-        // Snapshot current leaves before topology changes
         std::vector<int> to_refine;
         for (int li : tree.leaf_indices()) {
             auto& node = tree.nodes[li];
@@ -271,16 +281,14 @@ void NSSolver::regrid() {
                 to_refine.push_back(li);
         }
         for (int li : to_refine) {
-            if (!tree.nodes[li].is_leaf()) continue;  // already refined by balance
+            if (!tree.nodes[li].is_leaf()) continue;
             tree.refine(li);
             topology_changed = true;
         }
     }
 
-    // ── Pass 2: coarsening (sibling groups where ALL 8 should_coarsen) ────
+    // ── Pass 2: coarsening ────────────────────────────────────────────────
     {
-        // Build set of candidate parent nodes whose 8 children are all leaves
-        // and all pass should_coarsen.
         std::vector<int> to_coarsen;
         for (int li : tree.leaf_indices()) {
             int p = tree.nodes[li].parent;
@@ -296,14 +304,12 @@ void NSSolver::regrid() {
                                    tree.nodes[ci].block->h)) { all_coarse = false; }
             }
             if (all_leaf && all_coarse) {
-                // Avoid duplicates
                 if (std::find(to_coarsen.begin(), to_coarsen.end(), p)
                     == to_coarsen.end())
                     to_coarsen.push_back(p);
             }
         }
         for (int p : to_coarsen) {
-            // Re-check: topology may have changed in refinement pass
             int fc = tree.nodes[p].first_child;
             if (fc < 0) continue;
             bool all_leaf = true;
@@ -317,17 +323,13 @@ void NSSolver::regrid() {
 
     if (!topology_changed) return;
 
-    // ── 2:1 balance ───────────────────────────────────────────────────────
     tree.balance();
-
-    // ── Rebuild neighbours + ghost fill ───────────────────────────────────
     tree.rebuild_neighbours();
     if (periodic)
         tree.fill_ghosts_periodic();
     else
         tree.fill_ghosts_wall();
 
-    // ── Resize scratch arrays ─────────────────────────────────────────────
-    scratch_leaf_count_ = -1;  // force realloc
+    scratch_leaf_count_ = -1;
     alloc_scratch();
 }
