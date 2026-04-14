@@ -25,6 +25,13 @@
 //                -1 sentinel.  -1 & 1 == 1 in C++, silently selecting the wrong
 //                fine block on y-face and z-face CF interfaces → mass leak in A05.
 //                Now uses `side` directly in each axis branch.
+//   A05-fix5   : fill_coarse_ghost_from_fine: guard against stale `ni` pointer.
+//                rebuild_neighbours() only stores the LAST fine leaf that sets
+//                nodes[coarse].neighbours[d^1], so after a regrid `ni` may belong
+//                to a different refinement patch (different parent → wrong
+//                first_child → wrong fine blocks read for all NB×NB ghost positions).
+//                Fix: check that nodes[first_child].block->h == coarse_blk.h/2
+//                before proceeding; skip silently if sizes disagree.
 #include "../include/block_tree.hpp"
 #include "../include/amr_operators.hpp"
 #include <algorithm>
@@ -497,6 +504,16 @@ static int child_octant_of(const std::vector<BlockNode>& nodes, int li) {
 //   fine_ta_local = 2 * ((ta - ilo()) % (NB/2))  → first of the two fine cells
 //   fine_tb_local = 2 * ((tb - ilo()) % (NB/2))
 //   Average of fine cells at (face_interior, NG+fine_ta_local+{0,1}, NG+fine_tb_local+{0,1})
+//
+// A05-fix5: guard against stale `ni` pointer.
+//   rebuild_neighbours() writes nodes[coarse].neighbours[d^1] = ai for every fine
+//   leaf ai that faces the coarse block on direction d.  With 4 fine blocks per
+//   coarse face, only the LAST one processed survives.  After a regrid the
+//   surviving ni may belong to a completely different refinement patch, so
+//   nodes[ni].parent → first_child gives the wrong set of 8 children.
+//   We detect this by checking that the fine children's cell size equals
+//   coarse_blk.h / 2.  If the sizes disagree the pointer is stale and we
+//   skip the ghost fill rather than corrupt mass conservation.
 // =============================================================================
 static void fill_coarse_ghost_from_fine(
     CellBlock& coarse_blk,
@@ -514,6 +531,18 @@ static void fill_coarse_ghost_from_fine(
     if (fine_parent < 0) return;  // ni is root level, no averaging possible
     int first_child = nodes[fine_parent].first_child;
     if (first_child < 0) return;
+
+    // A05-fix5: verify that the fine children have the expected cell size.
+    // If nodes[first_child] has no block or its h != coarse_blk.h/2, the `ni`
+    // pointer is stale (left over from a previous regrid topology) and reading
+    // from it would corrupt ghost values and break mass conservation.
+    if (!nodes[first_child].has_block()) return;
+    {
+        const double h_fine_expected = coarse_blk.h * 0.5;
+        const double h_fine_actual   = nodes[first_child].block->h;
+        if (std::fabs(h_fine_actual - h_fine_expected) > 1e-12 * coarse_blk.h)
+            return;  // stale pointer — skip rather than corrupt
+    }
 
     // The octant component along the face axis is simply `side` (0 or 1).
     // A05-fix4: removed ix_fixed/iy_fixed/iz_fixed with -1 sentinel.
