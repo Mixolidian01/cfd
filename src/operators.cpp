@@ -278,17 +278,21 @@ static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
 //   axis=1 (y-face, XZ plane): jc = coarse_z_idx,           ic = coarse_x_idx
 //   axis=2 (z-face, XY plane): jc = coarse_y_idx,           ic = coarse_x_idx
 //
-// FIX A05-fix6: correct fine-to-coarse index mapping.
-// A fine block at octant `oct` (relative to the coarse parent) covers a
-// quadrant of the coarse face.  The coarse-cell index corresponding to fine
-// cell (a_local, b_local) within that fine block is:
-//   off1 = octant component in the 1st transverse direction
-//   off2 = octant component in the 2nd transverse direction
-//   jc = off1 * (NB/2) + a_local/2
-//   ic = off2 * (NB/2) + b_local/2
-// Two fine cells at a_local=2m and 2m+1 both map to jc=off1*(NB/2)+m,
-// so face_flux MUST use += (not =) to accumulate all 4 fine contributions
-// per coarse slot.  accumulate_fine_flux then applies area_ratio=0.25. ✓
+// A05-fix7: correct fine-to-coarse index mapping for axis=1 and axis=2.
+//
+// The face loop runs `a` over the first transverse direction and `b` over the
+// second.  The physical direction these represent depends on the face axis:
+//   axis=0 (x-face): a→y (j), b→z (k)  → jc uses a_local, ic uses b_local ✓
+//   axis=1 (y-face): a→x (i), b→z (k)  → jc (→z) must use b_local,
+//                                          ic (→x) must use a_local
+//   axis=2 (z-face): a→x (i), b→y (j)  → jc (→y) must use b_local,
+//                                          ic (→x) must use a_local
+//
+// The previous code (A05-fix6) used a_local for jc and b_local for ic
+// uniformly across all axes.  This was correct only for axis=0; for axis=1
+// and axis=2 the a/b roles are swapped, sending fine fluxes from non-diagonal
+// octants to the wrong coarse register slots and producing a systematic mass
+// leak whenever y- or z-face CF interfaces exist.
 // =============================================================================
 static void accumulate_cf_fine_fluxes(BlockTree& tree,
                                        double stage_weight) noexcept
@@ -322,13 +326,11 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
             const int bound = (delta > 0) ? ihi() : ilo();
 
             // Transverse octant offsets for this face axis.
-            // axis=0 (x-face, a→y, b→z): off1=o_iy, off2=o_iz
-            // axis=1 (y-face, a→x, b→z): off1=o_iz, off2=o_ix
-            // axis=2 (z-face, a→x, b→y): off1=o_iy, off2=o_ix
-            // These match the apply_flux_correction layout:
-            //   axis=0: jc→y, ic→z
-            //   axis=1: jc→z, ic→x
-            //   axis=2: jc→y, ic→x
+            // off1 is the octant component in the jc direction (1st register index).
+            // off2 is the octant component in the ic direction (2nd register index).
+            //   axis=0: jc→y, ic→z  → off1=o_iy, off2=o_iz
+            //   axis=1: jc→z, ic→x  → off1=o_iz, off2=o_ix
+            //   axis=2: jc→y, ic→x  → off1=o_iy, off2=o_ix
             int off1, off2;
             if      (axis == 0) { off1 = o_iy; off2 = o_iz; }
             else if (axis == 1) { off1 = o_iz; off2 = o_ix; }
@@ -362,15 +364,23 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
                 else           F = hllc_flux(ghost, interior, axis);
 
                 // Map fine cell (a,b) to the coarse-cell register index.
-                // a_local, b_local ∈ [0, NB-1] within this fine block.
-                // Two fine cells (m=0,1 or m=2,3) share the same coarse slot
-                // (a_local/2 = 0 or 1 within the half-NB quadrant).
-                // The quadrant offset places this fine block correctly on
-                // the full NB×NB coarse face.
+                // The mapping depends on which physical direction a and b
+                // represent for this face axis (A05-fix7):
+                //   axis=0: a→y→jc, b→z→ic  → jc uses a_local, ic uses b_local
+                //   axis=1: a→x→ic, b→z→jc  → jc uses b_local, ic uses a_local
+                //   axis=2: a→x→ic, b→y→jc  → jc uses b_local, ic uses a_local
                 const int a_local = a - ilo();
                 const int b_local = b - ilo();
-                const int jc = off1 * HALF + a_local / 2;
-                const int ic = off2 * HALF + b_local / 2;
+                int jc, ic;
+                if (axis == 0) {
+                    jc = off1 * HALF + a_local / 2;
+                    ic = off2 * HALF + b_local / 2;
+                } else {
+                    // axis=1 and axis=2: a→x, b→(z or y); jc indexes the
+                    // non-x transverse direction, so it must use b_local.
+                    jc = off1 * HALF + b_local / 2;
+                    ic = off2 * HALF + a_local / 2;
+                }
 
                 // Accumulate (+=): 4 fine cells contribute to the same coarse
                 // slot; area_ratio=0.25 in accumulate_fine_flux completes the
