@@ -274,28 +274,43 @@ static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
 //
 // Register layout (must match apply_flux_correction in block_tree.cpp):
 //   reg[v*NB*NB + jc*NB + ic]
-//   axis=0 (x-face, YZ plane): jc = a-ilo() (y), ic = b-ilo() (z)
-//   axis=1 (y-face, XZ plane): jc = b-ilo() (z), ic = a-ilo() (x)
-//   axis=2 (z-face, XY plane): jc = b-ilo() (y), ic = a-ilo() (x)
+//   axis=0 (x-face, YZ plane): jc = coarse_y_idx (0..NB-1), ic = coarse_z_idx
+//   axis=1 (y-face, XZ plane): jc = coarse_z_idx,           ic = coarse_x_idx
+//   axis=2 (z-face, XY plane): jc = coarse_y_idx,           ic = coarse_x_idx
 //
-// FIX A05-fix5: the branch condition for jc/ic was (axis==1), which put
-// axis=2 (z-face, a→x, b→y) into the else branch and stored
-// jc=a-ilo()=x-offset, ic=b-ilo()=y-offset — transposing x↔y in every
-// z-face register entry.  apply_flux_correction reads ic as x and jc as y,
-// so the correction landed on the wrong (ci,cj) cell pair, breaking mass
-// conservation on any non-isotropic 3-D field.
-// Corrected: use (axis==0) as the branch so axis=1 and axis=2 both take
-// the b→first-index, a→second-index path, matching the documented layout.
+// FIX A05-fix6: correct fine-to-coarse index mapping.
+// A fine block at octant `oct` (relative to the coarse parent) covers a
+// quadrant of the coarse face.  The coarse-cell index corresponding to fine
+// cell (a_local, b_local) within that fine block is:
+//   off1 = octant component in the 1st transverse direction
+//   off2 = octant component in the 2nd transverse direction
+//   jc = off1 * (NB/2) + a_local/2
+//   ic = off2 * (NB/2) + b_local/2
+// Two fine cells at a_local=2m and 2m+1 both map to jc=off1*(NB/2)+m,
+// so face_flux MUST use += (not =) to accumulate all 4 fine contributions
+// per coarse slot.  accumulate_fine_flux then applies area_ratio=0.25. ✓
 // =============================================================================
 static void accumulate_cf_fine_fluxes(BlockTree& tree,
                                        double stage_weight) noexcept
 {
     static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
     static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
+    static constexpr int HALF = NB / 2;
 
     for (int li : tree.leaf_indices()) {
         const auto& nd  = tree.nodes[li];
         const auto& blk = *nd.block;
+
+        // Octant of this fine leaf relative to its parent.
+        // Needed to compute the quadrant offset on the coarse face.
+        // oct ∈ {0..7}: bit0=ix, bit1=iy, bit2=iz.
+        const int parent_idx = nd.parent;
+        const int oct = (parent_idx >= 0)
+                        ? li - tree.nodes[parent_idx].first_child
+                        : 0;
+        const int o_ix = oct_ix(oct);  // 0 or 1
+        const int o_iy = oct_iy(oct);
+        const int o_iz = oct_iz(oct);
 
         for (int d = 0; d < NFACES; ++d) {
             const int ni = nd.neighbours[d];
@@ -306,6 +321,23 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
             const int delta = face_delta[d];
             const int bound = (delta > 0) ? ihi() : ilo();
 
+            // Transverse octant offsets for this face axis.
+            // axis=0 (x-face, a→y, b→z): off1=o_iy, off2=o_iz
+            // axis=1 (y-face, a→x, b→z): off1=o_iz, off2=o_ix
+            // axis=2 (z-face, a→x, b→y): off1=o_iy, off2=o_ix
+            // These match the apply_flux_correction layout:
+            //   axis=0: jc→y, ic→z
+            //   axis=1: jc→z, ic→x
+            //   axis=2: jc→y, ic→x
+            int off1, off2;
+            if      (axis == 0) { off1 = o_iy; off2 = o_iz; }
+            else if (axis == 1) { off1 = o_iz; off2 = o_ix; }
+            else                { off1 = o_iy; off2 = o_ix; }
+
+            // Accumulate into a NB×NB register of COARSE-cell averaged fluxes.
+            // Each fine block contributes to one (NB/2)×(NB/2) quadrant.
+            // Four fine cells per coarse slot → each contributes 1/4 (applied
+            // by area_ratio=0.25 inside accumulate_fine_flux).
             std::vector<double> face_flux(NVAR * NB * NB, 0.0);
 
             for (int b = ilo(); b <= ihi(); ++b)
@@ -329,13 +361,22 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
                 if (delta > 0) F = hllc_flux(interior, ghost, axis);
                 else           F = hllc_flux(ghost, interior, axis);
 
-                // FIX A05-fix5: use (axis==0) instead of (axis==1) so that
-                // axis=2 (z-face, a→x, b→y) maps jc=b-ilo()=y, ic=a-ilo()=x,
-                // consistent with apply_flux_correction (ci=ilo()+ic, cj=ilo()+jc).
-                int jc = (axis == 0) ? (a - ilo()) : (b - ilo());
-                int ic = (axis == 0) ? (b - ilo()) : (a - ilo());
+                // Map fine cell (a,b) to the coarse-cell register index.
+                // a_local, b_local ∈ [0, NB-1] within this fine block.
+                // Two fine cells (m=0,1 or m=2,3) share the same coarse slot
+                // (a_local/2 = 0 or 1 within the half-NB quadrant).
+                // The quadrant offset places this fine block correctly on
+                // the full NB×NB coarse face.
+                const int a_local = a - ilo();
+                const int b_local = b - ilo();
+                const int jc = off1 * HALF + a_local / 2;
+                const int ic = off2 * HALF + b_local / 2;
+
+                // Accumulate (+=): 4 fine cells contribute to the same coarse
+                // slot; area_ratio=0.25 in accumulate_fine_flux completes the
+                // area-weighted average.
                 for (int v = 0; v < NVAR; ++v)
-                    face_flux[v*NB*NB + jc*NB + ic] = stage_weight * F[v];
+                    face_flux[v*NB*NB + jc*NB + ic] += stage_weight * F[v];
             }
             tree.accumulate_fine_flux(li, static_cast<FaceDir>(d), face_flux);
         }
