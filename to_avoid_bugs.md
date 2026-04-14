@@ -65,13 +65,13 @@ required by callers.
 
 **Misbehaviour B — test_step7 (stale API):**
 `test_step7.cpp` used `node.h` which was removed from `BlockNode` in
-an earlier fix (“Cell size h is always read from block->h”). The
+an earlier fix ("Cell size h is always read from block->h"). The
 test was written against the old API and never updated.
 
 **Rule B:** Before writing or committing any test file, cross-check
 every struct/class member access against the current header. When a
-header comment says a field was removed or replaced (e.g. “BlockNode::h
-— use block->h”), grep test sources for the old field name and update
+header comment says a field was removed or replaced (e.g. "BlockNode::h
+— use block->h"), grep test sources for the old field name and update
 them before committing.
 
 ---
@@ -116,3 +116,33 @@ sites is a bug. Document the intended call site in a comment on the
 function declaration (`// called from tree_rhs() for each fine leaf at
 a CF face`). Do not commit until at least one call site exists and is
 verified to pass the associated test.
+
+---
+
+## Rule 006 — regrid() must run BEFORE the RK3+Berger-Colella cycle, never after apply_flux_correction()
+
+**Derived from:** Answer #35 (A05-fix5 — mass leak ~2.69e-8 per coarsening event)
+
+**Misbehaviour:** `regrid()` was called at the END of `advance()`, after
+`apply_flux_correction(dt)`. When `regrid()` triggered `coarsen()` →
+`restrict_to_parent()`, the coarse parent cell was re-averaged from its
+8 fine children. This overwrote the flux-corrected value that
+`apply_flux_correction` had just written into the coarse CF boundary
+cell, discarding the Berger-Colella correction entirely. Each coarsening
+event leaked the exact magnitude of the correction (~2.69e-8 relative
+mass), accumulating monotonically over regrid steps and failing A05.
+
+**Rule:** `regrid()` must always be called at the **top** of `advance()`,
+operating on `Q^n` BEFORE `zero_flux_registers()`, the RK3 stages, and
+`apply_flux_correction()`. The correct invariant is:
+
+```
+regrid(Q^n)  →  zero_regs  →  RK3 stages  →  apply_flux_correction(dt)
+```
+
+This guarantees the tree topology is immutable during the entire
+zero→accumulate→correct sequence, and that `apply_flux_correction` is
+the **last write** to every leaf cell in each `advance()` call. Never
+place `regrid()` after `apply_flux_correction()`. Add a `step > 0`
+guard so that regrid is not triggered at step 0 (initial conditions,
+no dynamics yet).

@@ -11,7 +11,7 @@ Each entry contains the answer index, date, and a one-line description.
 | A4 | 2026-04-12 | Consolidated bug register merging Perplexity A3, claude_analysis_20260409, Code_technical_review_v2, and supplementary Claude analysis — 16 critical/moderate/minor items |
 | A5 | 2026-04-12 | Cross-domain improvement proposals — WENO5-Z, skew-symmetric convection, entropy-stable fluxes, persistent GPU kernels, AoSoA, CUDA Graph, LTS, IMEX-ARK, neural SGS |
 | A6 | 2026-04-12 | Combined roadmap — compatibility analysis + 5-phase plan (P0 emergency fixes through P4 HPC features); dependency graph; expected performance table |
-| A9 | 2026-04-13 | A04 root-cause diagnosis — BlockNode constructor, ghost-fill logic and viscous stencil traced; edge/corner ghosts identified as the mass-conservation leak |
+| A9 | 2026-04-13 | A04 root-cause diagnosis — BlockNode constructor, ghost-fill logic and viscous stencil traced; edge+corner ghosts identified as the mass-conservation leak |
 | A10 | 2026-04-13 | A04 fix committed — edge+corner ghost fill added to fill_ghosts_periodic and fill_ghosts_wall in block_tree.cpp; Python-verified; commit 7f17be9 |
 | A11 | 2026-04-13 | T11c root-cause identified — wall_x/y/z lambdas only negated wall-normal momentum; tangential components copied instead of negated (wrong no-slip) |
 | A12 | 2026-04-13 | T11c fix committed — all three momentum components negated in wall_x/y/z lambdas (no-slip image method); commit 4ee1b38 |
@@ -19,3 +19,6 @@ Each entry contains the answer index, date, and a one-line description.
 | A19 | 2026-04-13 | A05-fix2 committed — averaged coarse ghost fill (2×2 fine cells per coarse ghost slot) + apply_flux_correction axis=0/1 ck/ci index corrected; commit 6d4095e |
 | A20 | 2026-04-13 | Custom instructions summary — Space role, solver features, answer format, code rules, companion files, self-correction protocol |
 | A21 | 2026-04-13 | Root-cause analysis + fixes for S03/S07/S08 (sgs.cpp: mu_t ghost cells zero, periodic wrap missing) and A05 (accumulate_fine_flux never called, register always empty) |
+| A28 | 2026-04-15 | Solver iteration call graph — Mermaid diagram of full advance() sequence: RK3 stages, Berger-Colella reflux, regrid, SGS split |
+| A34 | 2026-04-15 | A05 root-cause confirmed from test_amr6.cpp: coarsen()->restrict_to_parent() overwrote flux-corrected coarse cells; fix is to move regrid() before RK3 |
+| A35 | 2026-04-15 | A05-fix5 committed — regrid() moved to top of advance() (on Q^n) so topology is frozen during RK3+Berger-Colella; apply_flux_correction is last write per step; commit 8bdf893 |
