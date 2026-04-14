@@ -11,6 +11,10 @@
 //   A05-fix4     : flux registers zeroed once before RK3; each stage passes
 //                  its SSP-RK3 quadrature weight (1/6, 1/6, 2/3) to tree_rhs
 //                  so apply_flux_correction(dt) uses the time-averaged flux
+//   P1.5-fix     : regrid() now calls rebuild_neighbours()+fill_ghosts after
+//                  Pass 1 (refine) and before Pass 2 (coarsen) so that
+//                  should_coarsen() sees initialised ghost cells on new fine
+//                  blocks and cannot spuriously coarsen freshly refined leaves.
 #include "../include/sgs.hpp"
 #include "../include/amr_operators.hpp"
 #include "../include/ns_solver.hpp"
@@ -285,6 +289,17 @@ void NSSolver::regrid() {
             tree.refine(li);
             topology_changed = true;
         }
+    }
+
+    // P1.5-fix: rebuild neighbours and fill ghosts after Pass 1 so that
+    // the new fine blocks have initialised ghost cells before Pass 2
+    // calls should_coarsen().  Without this, should_coarsen() reads zero
+    // (or uninitialised) ghost data on freshly refined leaves and may
+    // spuriously coarsen them immediately in the same regrid cycle.
+    if (topology_changed) {
+        tree.rebuild_neighbours();
+        if (periodic) tree.fill_ghosts_periodic();
+        else          tree.fill_ghosts_wall();
     }
 
     // ── Pass 2: coarsening ────────────────────────────────────────────────
