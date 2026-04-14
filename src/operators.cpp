@@ -276,7 +276,16 @@ static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
 //   reg[v*NB*NB + jc*NB + ic]
 //   axis=0 (x-face, YZ plane): jc = a-ilo() (y), ic = b-ilo() (z)
 //   axis=1 (y-face, XZ plane): jc = b-ilo() (z), ic = a-ilo() (x)
-//   axis=2 (z-face, XY plane): jc = a-ilo() (y), ic = b-ilo() (x)
+//   axis=2 (z-face, XY plane): jc = b-ilo() (y), ic = a-ilo() (x)
+//
+// FIX A05-fix5: the branch condition for jc/ic was (axis==1), which put
+// axis=2 (z-face, a→x, b→y) into the else branch and stored
+// jc=a-ilo()=x-offset, ic=b-ilo()=y-offset — transposing x↔y in every
+// z-face register entry.  apply_flux_correction reads ic as x and jc as y,
+// so the correction landed on the wrong (ci,cj) cell pair, breaking mass
+// conservation on any non-isotropic 3-D field.
+// Corrected: use (axis==0) as the branch so axis=1 and axis=2 both take
+// the b→first-index, a→second-index path, matching the documented layout.
 // =============================================================================
 static void accumulate_cf_fine_fluxes(BlockTree& tree,
                                        double stage_weight) noexcept
@@ -320,8 +329,11 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
                 if (delta > 0) F = hllc_flux(interior, ghost, axis);
                 else           F = hllc_flux(ghost, interior, axis);
 
-                int jc = (axis == 1) ? (b - ilo()) : (a - ilo());
-                int ic = (axis == 1) ? (a - ilo()) : (b - ilo());
+                // FIX A05-fix5: use (axis==0) instead of (axis==1) so that
+                // axis=2 (z-face, a→x, b→y) maps jc=b-ilo()=y, ic=a-ilo()=x,
+                // consistent with apply_flux_correction (ci=ilo()+ic, cj=ilo()+jc).
+                int jc = (axis == 0) ? (a - ilo()) : (b - ilo());
+                int ic = (axis == 0) ? (b - ilo()) : (a - ilo());
                 for (int v = 0; v < NVAR; ++v)
                     face_flux[v*NB*NB + jc*NB + ic] = stage_weight * F[v];
             }
