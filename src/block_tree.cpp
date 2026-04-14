@@ -32,6 +32,13 @@
 //                first_child → wrong fine blocks read for all NB×NB ghost positions).
 //                Fix: check that nodes[first_child].block->h == coarse_blk.h/2
 //                before proceeding; skip silently if sizes disagree.
+//   A05-fix6   : accumulate_fine_flux: store flux into nodes[ni].flux_reg[d]
+//                instead of nodes[ni].flux_reg[opposite(d)].
+//                apply_flux_correction reads nd.flux_reg[d] for each face d of
+//                the coarse node nd.  Using opposite(d) wrote every fine flux into
+//                the wrong slot (the one for the opposite face), which
+//                apply_flux_correction never read — silently discarding all fine
+//                fluxes and leaving the coarse budget uncorrected (~2.69e-8 A05).
 #include "../include/block_tree.hpp"
 #include "../include/amr_operators.hpp"
 #include <algorithm>
@@ -487,24 +494,6 @@ static int child_octant_of(const std::vector<BlockNode>& nodes, int li) {
 // on face direction `d`.  For each coarse ghost slot, average the 2×2 fine
 // interior cells that cover it.
 //
-// For axis=0 (x-face), coarse ghost row is at i=g.
-// The two transverse directions are y (j) and z (k).
-// Four fine blocks on that face are identified via:
-//   parent of ni = nodes[ni].parent
-//   The fine blocks that face the coarse on direction d are those whose octant
-//   has the correct ix half: oct_ix = 1 for d=XPLUS, oct_ix = 0 for d=XMINUS.
-//   The four fine blocks are: parent.first_child + oct  for oct in the 4 matching octants.
-//
-// For coarse interior cell at transverse position (ta, tb):
-//   ta, tb ∈ [ilo(), ihi()]  (the two directions perpendicular to the face axis)
-//   iy_blk = (ta - ilo()) / (NB/2)   → which fine block in the 1st transverse dir
-//   iz_blk = (tb - ilo()) / (NB/2)   → which fine block in the 2nd transverse dir
-//   oct of the fine block = oct_from_xyz(ix_fixed, iy_blk, iz_blk)  where
-//     ix_fixed depends on the face direction (see below)
-//   fine_ta_local = 2 * ((ta - ilo()) % (NB/2))  → first of the two fine cells
-//   fine_tb_local = 2 * ((tb - ilo()) % (NB/2))
-//   Average of fine cells at (face_interior, NG+fine_ta_local+{0,1}, NG+fine_tb_local+{0,1})
-//
 // A05-fix5: guard against stale `ni` pointer.
 //   rebuild_neighbours() writes nodes[coarse].neighbours[d^1] = ai for every fine
 //   leaf ai that faces the coarse block on direction d.  With 4 fine blocks per
@@ -533,9 +522,6 @@ static void fill_coarse_ghost_from_fine(
     if (first_child < 0) return;
 
     // A05-fix5: verify that the fine children have the expected cell size.
-    // If nodes[first_child] has no block or its h != coarse_blk.h/2, the `ni`
-    // pointer is stale (left over from a previous regrid topology) and reading
-    // from it would corrupt ghost values and break mass conservation.
     if (!nodes[first_child].has_block()) return;
     {
         const double h_fine_expected = coarse_blk.h * 0.5;
@@ -544,33 +530,21 @@ static void fill_coarse_ghost_from_fine(
             return;  // stale pointer — skip rather than corrupt
     }
 
-    // The octant component along the face axis is simply `side` (0 or 1).
-    // A05-fix4: removed ix_fixed/iy_fixed/iz_fixed with -1 sentinel.
-    //   In C++, -1 & 1 == 1 (signed int truncated to bit mask), so passing -1 to
-    //   oct_from_xyz() silently selected the wrong fine block on y-face and z-face
-    //   CF interfaces, corrupting the coarse ghost fill and leaking mass in A05.
-
     // The fine interior cell closest to the coarse face:
     //   side=1 means coarse face is on the + side → fine interior at iLO of fine block
     //   side=0 means coarse face is on the - side → fine interior at iHI of fine block
     const int face_i = (side == 1) ? ilo() : ihi();
 
     // Loop over coarse interior face positions (the two transverse directions)
-    for (int a = ilo(); a <= ihi(); ++a)   // 1st transverse direction
-    for (int b = ilo(); b <= ihi(); ++b) { // 2nd transverse direction
-        // Determine which fine block owns this (a,b) position.
-        // The transverse directions for each axis:
-        //   axis=0: a=j, b=k  → transverse iy and iz
-        //   axis=1: a=i, b=k  → transverse ix and iz
-        //   axis=2: a=i, b=j  → transverse ix and iy
-        int a_local = a - ilo();  // 0..NB-1
+    for (int a = ilo(); a <= ihi(); ++a)
+    for (int b = ilo(); b <= ihi(); ++b) {
+        int a_local = a - ilo();
         int b_local = b - ilo();
 
-        int ia_blk = a_local / half;  // 0 or 1 → which fine block in 'a' direction
-        int ib_blk = b_local / half;  // 0 or 1 → which fine block in 'b' direction
+        int ia_blk = a_local / half;
+        int ib_blk = b_local / half;
 
-        // Map ia_blk, ib_blk back to oct_ix/iy/iz.
-        // The fixed dimension is always `side`; no -1 sentinel needed.  (A05-fix4)
+        // A05-fix4: use `side` directly — no -1 sentinel
         int oix, oiy, oiz;
         if (axis == 0) {
             oix = side;     oiy = ia_blk;  oiz = ib_blk;
@@ -582,18 +556,13 @@ static void fill_coarse_ghost_from_fine(
         int fine_oct = oct_from_xyz(oix, oiy, oiz);
         int fi = first_child + fine_oct;
 
-        // Verify this fine block exists and has a block
         if (fi < 0 || fi >= (int)nodes.size()) continue;
         if (!nodes[fi].has_block()) continue;
         const CellBlock& fsrc = *nodes[fi].block;
 
-        // Fine cell local position within fine block:
-        // a_local % half gives the position within the fine block's half
-        // Multiply by 2 to get the fine-cell index (fine has 2× the resolution).
         int fa_start = NG + 2 * (a_local % half);
         int fb_start = NG + 2 * (b_local % half);
 
-        // Average the 2×2 fine cells
         for (int v = 0; v < NVAR; ++v) {
             double avg = 0.0;
             for (int da = 0; da < 2; ++da)
@@ -608,7 +577,6 @@ static void fill_coarse_ghost_from_fine(
             }
             avg *= 0.25;
 
-            // Write to coarse ghost
             int gi, gj, gk;
             if (axis == 0) { gi=g; gj=a; gk=b; }
             else if (axis==1) { gi=a; gj=g; gk=b; }
@@ -764,11 +732,9 @@ void BlockTree::fill_ghosts_wall() {
             if (ni < 0 || !nodes[ni].has_block()) continue;
             int axis = fd_axis(d), side = fd_side(d);
             if (nodes[ni].level < nd.level) {
-                // fine→coarse: use fill_cf_ghosts
                 int oct = child_octant_of(nodes, li);
                 fill_cf_ghosts(blk, *nodes[ni].block, oct, axis, side);
             } else if (nodes[ni].level > nd.level) {
-                // A05-fix2: coarse→fine: averaged ghost fill
                 int g = (side == 1) ? NB2-1 : 0;
                 fill_coarse_ghost_from_fine(blk, nodes, ni, d, g);
             }
@@ -824,13 +790,23 @@ void BlockTree::zero_flux_registers() {
     }
 }
 
+// =============================================================================
+// A05-fix6: accumulate_fine_flux — store into flux_reg[d], not flux_reg[opposite(d)]
+//
+// apply_flux_correction reads nd.flux_reg[d] for each face direction d of the
+// coarse node nd.  The previous code used opposite(d), writing the fine flux
+// into the slot for the OPPOSITE face — which apply_flux_correction never reads
+// for this CF interface.  Every fine flux was silently discarded, leaving the
+// coarse cell budget uncorrected and producing the ~2.69e-8 mass residual in A05.
+// =============================================================================
 void BlockTree::accumulate_fine_flux(int fine_leaf, FaceDir d,
                                      const std::vector<double>& flux) {
     int ni = nodes[fine_leaf].neighbours[d];
     if (ni < 0) return;
     if (nodes[ni].level >= nodes[fine_leaf].level) return;
 
-    auto& reg = nodes[ni].flux_reg[opposite(d)];
+    // A05-fix6: store at flux_reg[d] so apply_flux_correction finds it
+    auto& reg = nodes[ni].flux_reg[d];
     const int face_size = NVAR * NB * NB;
     if (reg.size() != (size_t)face_size)
         reg.assign(face_size, 0.0);
@@ -846,9 +822,6 @@ void BlockTree::accumulate_fine_flux(int fine_leaf, FaceDir d,
 // Conservative update: dQ/dt = (1/h)*(F_left - F_right)
 //   -face (side=0, XMINUS/YMINUS/ZMINUS): F enters the cell  → ADD
 //   +face (side=1, XPLUS/YPLUS/ZPLUS):    F leaves the cell  → SUBTRACT
-//
-// Previous bug: all faces unconditionally added, giving wrong sign on
-// every +face and effectively double-counting on -faces.
 //
 // flux_reg layout: reg[v*NB*NB + jc*NB + ic]
 //   axis=0 (x-face, YZ plane): jc→y, ic→z
@@ -878,10 +851,6 @@ void BlockTree::apply_flux_correction(double dt) {
             for (int ic = 0; ic < NB; ++ic) {
                 double corr = sign * (dt / h_c) * reg[v*NB*NB + jc*NB + ic];
                 int ci, cj, ck;
-                // flux_reg[face][v*NB*NB + jc*NB + ic]:
-                //   axis=0 (x-face, YZ plane): jc→y, ic→z
-                //   axis=1 (y-face, XZ plane): jc→z, ic→x
-                //   axis=2 (z-face, XY plane): jc→y, ic→x
                 if      (axis == 0) { ci = g;         cj = ilo()+jc; ck = ilo()+ic; }
                 else if (axis == 1) { ci = ilo()+ic;  cj = g;        ck = ilo()+jc; }
                 else                { ci = ilo()+ic;  cj = ilo()+jc; ck = g;        }
