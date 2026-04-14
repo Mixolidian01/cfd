@@ -15,6 +15,10 @@
 //                  Pass 1 (refine) and before Pass 2 (coarsen) so that
 //                  should_coarsen() sees initialised ghost cells on new fine
 //                  blocks and cannot spuriously coarsen freshly refined leaves.
+//   A05-fix5     : regrid() moved to TOP of advance() (on Q^n) so that
+//                  coarsen()->restrict_to_parent() can never overwrite cells
+//                  that were already corrected by apply_flux_correction().
+//                  Protocol: regrid(Q^n) → zero_regs → RK3 → apply_correction.
 #include "../include/sgs.hpp"
 #include "../include/amr_operators.hpp"
 #include "../include/ns_solver.hpp"
@@ -99,17 +103,31 @@ void NSSolver::save_Qn() { copy_tree_to_stage(Qn_); }
 // NSSolver::advance — alias-free SSP-RK3 with weighted Berger-Colella reflux
 //
 // SSP-RK3 (Shu-Osher) expands as:
-//   Q^{n+1} = Q^n + (1/6)*dt*L^{(1)} + (1/6)*dt*L^{(2)} + (2/3)*dt*L^{(3)}
-//
+//   Q^{n+1} = Q^n + (1/6)*dt*L^{(1)} + (1/6)*dt*L^{(2)} + (2/3)*dt*L^{(3)}\n//
 // The Berger-Colella flux correction uses the same time-averaged fine flux:
 //   1. Zero flux registers ONCE before stage 1.
 //   2. Pass stage weight w_s to tree_rhs (w = 1/6, 1/6, 2/3).
 //      accumulate_cf_fine_fluxes adds w_s * F_fine to the register.
 //   3. apply_flux_correction(dt) once after stage 3.
 // Register holds sum_s(w_s * F_fine_s) = time-averaged fine flux. ✓
+//
+// Regrid order (A05-fix5):
+//   regrid() is called at the TOP of advance() on Q^n, BEFORE any RK3 stage.
+//   This guarantees that the tree topology is fixed for the entire
+//   zero_regs → RK3 → apply_correction sequence.  In particular, coarsen()
+//   → restrict_to_parent() can never overwrite cells already written by
+//   apply_flux_correction(), eliminating the ~2.69e-8 mass leak.
 // =============================================================================
 double NSSolver::advance() {
     bool periodic = (cfg.bc == BCType::Periodic);
+
+    // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
+    // topology is immutable during zero_regs → stages → apply_correction.
+    // step > 0 guard: skip at step 0 (initial IC, no dynamics yet).
+    if (cfg.regrid_interval > 0 && step > 0 &&
+        step % cfg.regrid_interval == 0)
+        regrid();
+
     double dt = tree_cfl_dt(tree, cfg.cfl);
 
     save_Qn();
@@ -117,7 +135,7 @@ double NSSolver::advance() {
     const auto& leaves = tree.leaf_indices();
     int NL = (int)leaves.size();
 
-    // A05-fix4: zero registers once, then accumulate weighted fluxes per stage
+    // Zero registers once; each stage accumulates its SSP-RK3 weight.
     tree.zero_flux_registers();
 
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
@@ -160,15 +178,12 @@ double NSSolver::advance() {
     }
     copy_stage_to_tree(Qs_);
 
-    // A05-fix4: apply time-averaged Berger-Colella correction once
+    // Apply time-averaged Berger-Colella correction once — last write to
+    // every leaf cell this step; topology is frozen until next advance().
     tree.apply_flux_correction(dt);
 
     t    += dt;
     step += 1;
-
-    // Regrid
-    if (cfg.regrid_interval > 0 && step % cfg.regrid_interval == 0)
-        regrid();
 
     // S07/S08/S03-fix: refresh ghost cells before SGS operator-split.
     // After copy_stage_to_tree() the interior holds Q^{n+1} but ghosts
