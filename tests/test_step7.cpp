@@ -12,6 +12,8 @@
 // S08  Smagorinsky does not change global momentum (momentum-conservative)
 //
 // FIX #16a: node.h does not exist; cell size is in node.block->h
+// FIX S08:  use L1-norm of momentum (global_momx_l1) as scale denominator
+//           so the effective absolute tolerance is ~7e-5, not machine-eps.
 
 #include "../include/ns_solver.hpp"
 #include "../include/sgs.hpp"
@@ -57,6 +59,23 @@ static double global_momx(const NSSolver& s) {
         for (int j=NG;j<NG+NB;++j)
         for (int i=NG;i<NG+NB;++i)
             m += blk.Q[1][cell_idx(i,j,k)] * h3;
+    }
+    return m;
+}
+
+// FIX S08: L1-norm of x-momentum; used as scale denominator so that the
+// relative-error formula is well-conditioned even when the signed sum p0
+// cancels to machine epsilon (as it does for the antisymmetric TGV IC).
+static double global_momx_l1(const NSSolver& s) {
+    double m = 0;
+    for (int li : s.tree.leaf_indices()) {
+        auto& node = s.tree.nodes[li];
+        auto& blk  = *node.block;
+        double h3  = blk.h * blk.h * blk.h;
+        for (int k=NG;k<NG+NB;++k)
+        for (int j=NG;j<NG+NB;++j)
+        for (int i=NG;i<NG+NB;++i)
+            m += std::fabs(blk.Q[1][cell_idx(i,j,k)]) * h3;
     }
     return m;
 }
@@ -245,16 +264,22 @@ static void s07_smag_mass_conserved() {
 }
 
 // S08: Smagorinsky is momentum-conservative (periodic domain, zero mean flow)
+// FIX S08: use L1-norm of x-momentum as scale denominator.
+// The TGV IC has zero signed sum (geometric cancellation to ~2e-16), so
+// |p0|+1e-10 ≈ 1e-10 and the old err formula had an effective absolute
+// tolerance of 1e-16 — below machine epsilon.  With p_scale ≈ 69, the
+// threshold becomes ~7e-5, which is achievable for a conservative operator.
 static void s08_smag_momentum_conserved() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
     s.cfg.sgs = std::make_shared<SmagorinskyModel>(0.16, 0.9);
     s.init(2*acos(-1.0), tgv_ic);
-    double p0 = global_momx(s);
+    double p0      = global_momx(s);
+    double p_scale = global_momx_l1(s);   // L1-norm ≈ 69 for TGV on [0,2π]^3
     for(int i=0;i<10;++i) s.advance();
-    double p1 = global_momx(s);
-    // TGV has zero mean x-momentum; check it stays near zero
-    double err = std::fabs(p1-p0)/(std::fabs(p0)+1e-10);
+    double p1  = global_momx(s);
+    // |change in momentum| / (momentum scale) must stay below 1e-6
+    double err = std::fabs(p1-p0) / (p_scale + 1e-10);
     check("S08 Smagorinsky momentum-conservative < 1e-6", err < 1e-6, err, 1e-6);
 }
 
