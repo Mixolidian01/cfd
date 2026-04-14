@@ -21,6 +21,10 @@
 //                apply_flux_correction axis=0/1 ck/ci indexing corrected
 //   A05-fix3   : apply_flux_correction sign corrected: +face subtracts fine
 //                flux, -face adds it, matching dQ=(dt/h)*(F_left-F_right)
+//   A05-fix4   : fill_coarse_ghost_from_fine: removed ix_fixed/iy_fixed/iz_fixed
+//                -1 sentinel.  -1 & 1 == 1 in C++, silently selecting the wrong
+//                fine block on y-face and z-face CF interfaces → mass leak in A05.
+//                Now uses `side` directly in each axis branch.
 #include "../include/block_tree.hpp"
 #include "../include/amr_operators.hpp"
 #include <algorithm>
@@ -511,25 +515,15 @@ static void fill_coarse_ghost_from_fine(
     int first_child = nodes[fine_parent].first_child;
     if (first_child < 0) return;
 
-    // ix_fixed: for the fine blocks on this coarse face,
-    //   XPLUS (d=1): fine blocks have oct_ix = 1  (they are in the +x half of parent)
-    //   XMINUS(d=0): fine blocks have oct_ix = 0
-    //   YPLUS (d=3): fine blocks have oct_iy = 1
-    //   YMINUS(d=2): fine blocks have oct_iy = 0
-    //   ZPLUS (d=5): fine blocks have oct_iz = 1
-    //   ZMINUS(d=4): fine blocks have oct_iz = 0
-    const int ix_fixed = (axis == 0) ? side : -1;  // -1 = not constrained
-    const int iy_fixed = (axis == 1) ? side : -1;
-    const int iz_fixed = (axis == 2) ? side : -1;
+    // The octant component along the face axis is simply `side` (0 or 1).
+    // A05-fix4: removed ix_fixed/iy_fixed/iz_fixed with -1 sentinel.
+    //   In C++, -1 & 1 == 1 (signed int truncated to bit mask), so passing -1 to
+    //   oct_from_xyz() silently selected the wrong fine block on y-face and z-face
+    //   CF interfaces, corrupting the coarse ghost fill and leaking mass in A05.
 
     // The fine interior cell closest to the coarse face:
-    //   for d=XPLUS (coarse+x, fine -x): fine interior at i = ilo()
-    //   for d=XMINUS(coarse-x, fine +x): fine interior at i = ihi()
-    //   similarly for y and z.
-    // side=1 means the coarse face is on the + side → fine is to the + side of coarse
-    //   → fine interior cell is at iLO of the fine block
-    // side=0 means coarse face is on the - side → fine is to the - side of coarse
-    //   → fine interior cell is at iHI of the fine block
+    //   side=1 means coarse face is on the + side → fine interior at iLO of fine block
+    //   side=0 means coarse face is on the - side → fine interior at iHI of fine block
     const int face_i = (side == 1) ? ilo() : ihi();
 
     // Loop over coarse interior face positions (the two transverse directions)
@@ -546,14 +540,15 @@ static void fill_coarse_ghost_from_fine(
         int ia_blk = a_local / half;  // 0 or 1 → which fine block in 'a' direction
         int ib_blk = b_local / half;  // 0 or 1 → which fine block in 'b' direction
 
-        // Map ia_blk, ib_blk back to oct_ix/iy/iz
+        // Map ia_blk, ib_blk back to oct_ix/iy/iz.
+        // The fixed dimension is always `side`; no -1 sentinel needed.  (A05-fix4)
         int oix, oiy, oiz;
         if (axis == 0) {
-            oix = ix_fixed;  oiy = ia_blk;  oiz = ib_blk;
+            oix = side;     oiy = ia_blk;  oiz = ib_blk;
         } else if (axis == 1) {
-            oix = ia_blk;   oiy = iy_fixed; oiz = ib_blk;
+            oix = ia_blk;   oiy = side;    oiz = ib_blk;
         } else {
-            oix = ia_blk;   oiy = ib_blk;  oiz = iz_fixed;
+            oix = ia_blk;   oiy = ib_blk;  oiz = side;
         }
         int fine_oct = oct_from_xyz(oix, oiy, oiz);
         int fi = first_child + fine_oct;
