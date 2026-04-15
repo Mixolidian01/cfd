@@ -182,6 +182,7 @@ double NSSolver::advance() {
     // every leaf cell this step; topology is frozen until next advance().
     tree.apply_flux_correction(dt);
 
+    last_dt_ = dt;
     t    += dt;
     step += 1;
 
@@ -247,7 +248,7 @@ void NSSolver::run() {
 // =============================================================================
 StepDiag NSSolver::compute_diag() const {
     StepDiag d;
-    d.step = step; d.t = t; d.dt = 0.0;
+    d.step = step; d.t = t; d.dt = last_dt_;
     d.mass = 0; d.momentum_x = 0; d.kinetic_energy = 0; d.total_energy = 0;
     for (int li : tree.leaf_indices()) {
         const auto& b = *tree.nodes[li].block;

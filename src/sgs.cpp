@@ -74,11 +74,9 @@ void SmagorinskyModel::apply(CellBlock& blk, double h, double dt) const {
     const double CsD2    = (Cs * h) * (Cs * h);
     const double kap_fac = SGS_CP / Pr_t;  // kap_t = mu_t * kap_fac
 
-    const int NC = NB2 * NB2 * NB2;
-
     // Precompute mu_t at every cell (interior + 1-ghost layer for face averages)
     static thread_local std::vector<double> mu_t_arr;
-    mu_t_arr.assign(NC, 0.0);
+    mu_t_arr.assign(NCELL, 0.0);
     for (int k = NG-1; k < NG+NB+1; ++k)
     for (int j = NG-1; j < NG+NB+1; ++j)
     for (int i = NG-1; i < NG+NB+1; ++i) {
@@ -114,9 +112,9 @@ void SmagorinskyModel::apply(CellBlock& blk, double h, double dt) const {
         mu_t_arr[cell_idx(i, j, NB2-1)] = mu_t_arr[cell_idx(i, j, 1    )];
     }
 
-    static thread_local double dQ[NVAR][1000];  // NB2^3 = 10^3 = 1000
+    static thread_local std::array<std::array<double,NCELL>,NVAR> dQ;
     for (int v = 0; v < NVAR; ++v)
-        for (int idx = 0; idx < NC; ++idx)
+        for (int idx = 0; idx < NCELL; ++idx)
             dQ[v][idx] = 0.0;
 
     for (int k = NG; k < NG+NB; ++k)
@@ -263,8 +261,7 @@ void SmagorinskyModel::apply(CellBlock& blk, double h, double dt) const {
                          + tyz_c*(dvdz_c+dwdy_c);
 
         // Heat conduction: kap_t * Lap(T)
-        const double ih2_loc = h_inv * h_inv;
-        double lap_T = ih2_loc*(blk.T(i+1,j,k)-2.0*q.T+blk.T(i-1,j,k)
+        double lap_T = ih2*(blk.T(i+1,j,k)-2.0*q.T+blk.T(i-1,j,k)
                               + blk.T(i,j+1,k)-2.0*q.T+blk.T(i,j-1,k)
                               + blk.T(i,j,k+1)-2.0*q.T+blk.T(i,j,k-1));
         double kap_t = mu_c * kap_fac;

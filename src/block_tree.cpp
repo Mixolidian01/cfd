@@ -32,13 +32,12 @@
 //                first_child → wrong fine blocks read for all NB×NB ghost positions).
 //                Fix: check that nodes[first_child].block->h == coarse_blk.h/2
 //                before proceeding; skip silently if sizes disagree.
-//   A05-fix6   : accumulate_fine_flux: store flux into nodes[ni].flux_reg[d]
-//                instead of nodes[ni].flux_reg[opposite(d)].
-//                apply_flux_correction reads nd.flux_reg[d] for each face d of
-//                the coarse node nd.  Using opposite(d) wrote every fine flux into
-//                the wrong slot (the one for the opposite face), which
-//                apply_flux_correction never read — silently discarding all fine
-//                fluxes and leaving the coarse budget uncorrected (~2.69e-8 A05).
+//   A05-fix6   : accumulate_fine_flux: store at nodes[ni].flux_reg[d^1]
+//                (= opposite(d)).  d is the FINE→COARSE direction; apply_flux_correction
+//                reads coarse.flux_reg[d_coarse_to_fine] = coarse.flux_reg[d^1].
+//                The prior A05-fix6 incorrectly used flux_reg[d] (fine→coarse slot),
+//                which apply_flux_correction never reads, silently discarding all
+//                fine fluxes and leaving the coarse budget uncorrected (~2.69e-8 A05).
 #include "../include/block_tree.hpp"
 #include "../include/amr_operators.hpp"
 #include <algorithm>
@@ -589,6 +588,48 @@ static void fill_coarse_ghost_from_fine(
 // ── fill_ghosts_periodic ──────────────────────────────────────────────────────
 void BlockTree::fill_ghosts_periodic() {
     const auto& leaves = leaf_indices();
+
+    // Build (level, morton) → leaf index map for periodic boundary lookup.
+    // When rebuild_neighbours() finds no same-level neighbor (domain edge),
+    // it leaves neighbours[d]=-1.  On a periodic multi-block domain the correct
+    // source is the leaf at the wrapped Morton code, not `this` block.
+    std::unordered_map<uint64_t, int> lm_map;
+    lm_map.reserve(leaves.size() * 2);
+    for (int li : leaves) {
+        auto& nd_tmp = nodes[li];
+        lm_map[((uint64_t)nd_tmp.level << 32) | nd_tmp.morton] = li;
+    }
+
+    // Helper: find periodic-wrap block for face d of node nd when ni==-1.
+    // Returns pointer to the leaf block, or nullptr if not found (fall back to self).
+    auto periodic_src = [&](const BlockNode& nd, int d) -> const CellBlock* {
+        static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
+        static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
+        int axis  = face_axis[d];
+        int delta = face_delta[d];
+        int lev   = nd.level;
+        if (lev == 0) return nullptr;  // single-block root → wrap to self
+        uint32_t mx, my, mz;
+        morton_decode(nd.morton, mx, my, mz);
+        uint32_t max_coord = (1u << lev) - 1u;
+        if (axis == 0) mx = (delta > 0) ? 0 : max_coord;
+        else if (axis == 1) my = (delta > 0) ? 0 : max_coord;
+        else               mz = (delta > 0) ? 0 : max_coord;
+        uint64_t key = ((uint64_t)lev << 32) | morton_encode(mx, my, mz);
+        auto it = lm_map.find(key);
+        if (it != lm_map.end() && nodes[it->second].has_block())
+            return nodes[it->second].block.get();
+        // Coarser periodic neighbor (2:1 balance): check level-1
+        if (lev > 1) {
+            uint32_t pc = morton_encode(mx, my, mz) >> 3;
+            uint64_t pk = ((uint64_t)(lev-1) << 32) | pc;
+            auto it2 = lm_map.find(pk);
+            if (it2 != lm_map.end() && nodes[it2->second].has_block())
+                return nodes[it2->second].block.get();
+        }
+        return nullptr;
+    };
+
     for (int li : leaves) {
         auto& nd  = nodes[li];
         auto& blk = *nd.block;
@@ -631,9 +672,12 @@ void BlockTree::fill_ghosts_periodic() {
                 }
             }
 
-            // Same level or no neighbour (periodic wrap to self)
+            // Same level neighbour, or domain boundary → resolve periodic source.
+            // When ni==-1 (domain boundary), look up the periodically-wrapped leaf.
+            const CellBlock* periodic_blk = (ni < 0) ? periodic_src(nd, d) : nullptr;
             const CellBlock& src = (ni>=0 && nodes[ni].has_block())
-                                   ? *nodes[ni].block : blk;
+                                   ? *nodes[ni].block
+                                   : (periodic_blk ? *periodic_blk : blk);
             if (sp.axis == 0) {
                 for (int k=ilo();k<=ihi();++k)
                 for (int j=ilo();j<=ihi();++j)
@@ -726,17 +770,50 @@ void BlockTree::fill_ghosts_wall() {
         const bool zm = (nd.neighbours[ZMINUS] < 0);
         const bool zp = (nd.neighbours[ZPLUS]  < 0);
 
-        // P1.3 / A05-fix2: CF ghost fill on non-wall faces
+        // P1.3 / A05-fix2 / B2: CF and same-level ghost fill on non-wall faces
+        struct FaceSpec { int ghost_g, mirror_s, axis, side; };
+        static const FaceSpec specs[NFACES] = {
+            {0,      ihi(), 0, 0},  // XMINUS
+            {NB2-1,  ilo(), 0, 1},  // XPLUS
+            {0,      ihi(), 1, 0},  // YMINUS
+            {NB2-1,  ilo(), 1, 1},  // YPLUS
+            {0,      ihi(), 2, 0},  // ZMINUS
+            {NB2-1,  ilo(), 2, 1},  // ZPLUS
+        };
+
+        auto copy_cell_wall = [&](int gi, int gj, int gk,
+                                  int si, int sj, int sk,
+                                  const CellBlock& src) noexcept {
+            for (int v = 0; v < NVAR; ++v)
+                blk.Q[v][cell_idx(gi,gj,gk)] = src.Q[v][cell_idx(si,sj,sk)];
+        };
+
         for (int d = 0; d < NFACES; ++d) {
             int ni = nd.neighbours[d];
             if (ni < 0 || !nodes[ni].has_block()) continue;
-            int axis = fd_axis(d), side = fd_side(d);
+            const FaceSpec& sp = specs[d];
+            int g = sp.ghost_g;
             if (nodes[ni].level < nd.level) {
                 int oct = child_octant_of(nodes, li);
-                fill_cf_ghosts(blk, *nodes[ni].block, oct, axis, side);
+                fill_cf_ghosts(blk, *nodes[ni].block, oct, sp.axis, sp.side);
             } else if (nodes[ni].level > nd.level) {
-                int g = (side == 1) ? NB2-1 : 0;
                 fill_coarse_ghost_from_fine(blk, nodes, ni, d, g);
+            } else {
+                // B2: same-level interior neighbour — direct face copy
+                const CellBlock& src = *nodes[ni].block;
+                if (sp.axis == 0) {
+                    for (int k=ilo();k<=ihi();++k)
+                    for (int j=ilo();j<=ihi();++j)
+                        copy_cell_wall(g,j,k, sp.mirror_s,j,k, src);
+                } else if (sp.axis == 1) {
+                    for (int k=ilo();k<=ihi();++k)
+                    for (int i=ilo();i<=ihi();++i)
+                        copy_cell_wall(i,g,k, i,sp.mirror_s,k, src);
+                } else {
+                    for (int j=ilo();j<=ihi();++j)
+                    for (int i=ilo();i<=ihi();++i)
+                        copy_cell_wall(i,j,g, i,j,sp.mirror_s, src);
+                }
             }
         }
 
@@ -791,13 +868,13 @@ void BlockTree::zero_flux_registers() {
 }
 
 // =============================================================================
-// A05-fix6: accumulate_fine_flux — store into flux_reg[d], not flux_reg[opposite(d)]
+// accumulate_fine_flux — direction convention:
+//   d           = direction from FINE leaf to COARSE neighbour (fine's view)
+//   d^1         = opposite = direction from COARSE to FINE (coarse's view)
 //
-// apply_flux_correction reads nd.flux_reg[d] for each face direction d of the
-// coarse node nd.  The previous code used opposite(d), writing the fine flux
-// into the slot for the OPPOSITE face — which apply_flux_correction never reads
-// for this CF interface.  Every fine flux was silently discarded, leaving the
-// coarse cell budget uncorrected and producing the ~2.69e-8 mass residual in A05.
+// apply_flux_correction iterates over coarse face directions d_c and reads
+//   coarse.flux_reg[d_c] where d_c = coarse-to-fine direction.
+// Since d = fine-to-coarse, d_c = d^1 = opposite(d).
 // =============================================================================
 void BlockTree::accumulate_fine_flux(int fine_leaf, FaceDir d,
                                      const std::vector<double>& flux) {
@@ -805,8 +882,9 @@ void BlockTree::accumulate_fine_flux(int fine_leaf, FaceDir d,
     if (ni < 0) return;
     if (nodes[ni].level >= nodes[fine_leaf].level) return;
 
-    // A05-fix6: store at flux_reg[d] so apply_flux_correction finds it
-    auto& reg = nodes[ni].flux_reg[d];
+    // Correct direction: d is fine→coarse; apply_flux_correction reads
+    // coarse.flux_reg[d_coarse_to_fine] = coarse.flux_reg[d^1] = opposite(d).
+    auto& reg = nodes[ni].flux_reg[d ^ 1];
     const int face_size = NVAR * NB * NB;
     if (reg.size() != (size_t)face_size)
         reg.assign(face_size, 0.0);

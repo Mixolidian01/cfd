@@ -59,9 +59,18 @@ add_library(block STATIC
 )
 target_link_libraries(block PUBLIC linalg)
 
+# ── OpenMP (optional — silently degrades to serial if not found) ──────────────
+find_package(OpenMP)
+
 # Layer 2: HLLC Riemann solver, viscous RHS, operators
 add_library(operators STATIC src/operators.cpp)
 target_link_libraries(operators PUBLIC block)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(operators PUBLIC OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP found — leaf loop will be parallelised")
+else()
+    message(STATUS "OpenMP not found — leaf loop runs serially")
+endif()
 
 # Layer 3: SSP-RK3 time loop, SGS plug-in, I/O
 # amr_operators.cpp is already compiled in libblock; omit it here to

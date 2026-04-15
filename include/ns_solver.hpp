@@ -75,7 +75,8 @@ private:
     // FIX P0.6: was a static local inside advance(); promoted to member so
     // that multiple NSSolver instances do not share state, and so that
     // reset on init() is explicit. Sentinel -1.0 → first step residual=0.
-    double ke_prev_ = -1.0;
+    double ke_prev_  = -1.0;
+    double last_dt_  = 0.0;   // B4: populated by advance(), exposed via compute_diag()
 
     void save_Qn();
     void copy_stage_to_tree(const std::vector<CellBlock>& stage);
