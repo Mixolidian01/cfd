@@ -54,7 +54,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 |---|--------|------|----------------|
 | P2.5 | ✅ | On-device CFL reduction (`atomicMin` on uint64 reinterpretation) | Eliminates ~40 MB D→H transfer per step; prerequisite for P2.6 |
 | P2.6 | ✅ | CUDA Graph capture of full RK3 loop — pointer-dt kernels + capture/replay | Eliminates ~30 s of kernel-launch overhead at 10⁶ steps |
-| T5   | ⚠️ | GPU gate test (skipped without `nvcc`; T05 CPU/GPU match needs P3 GPU scheme) | Validates GPU path end-to-end |
+| T5   | ✅ | GPU gate test (8 sub-tests; T05 tests CFL dt agreement + 1-step conservation) | Validates GPU path end-to-end |
 
 ### Gate for Phase 3 (last P2 item — widest blast radius)
 

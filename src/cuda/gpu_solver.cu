@@ -48,23 +48,34 @@
 // =============================================================================
 // Ghost-fill kernels (B6: blockIdx.z = CFD block index)
 // =============================================================================
+// Ghost fill for NG layers on each side (periodic).
+// Pattern for each layer g = 0..GPU_NG-1:
+//   left  ghost GPU_NG-1-g  ←  interior GPU_NB+GPU_NG-1-g  (inward from right)
+//   right ghost GPU_NB+GPU_NG+g  ←  interior GPU_NG+g      (outward from left)
+// Correctly handles any GPU_NG (1 or 2).
 __global__ void gpu_ghost_x(double* __restrict__ Q, int n_blocks) {
     int v = blockIdx.x, j = threadIdx.x, k = blockIdx.y, b = blockIdx.z;
     double* Qv = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b * GPU_NCELL;
-    Qv[gpu_cell_idx(0,         j, k)] = Qv[gpu_cell_idx(GPU_NB2-2, j, k)];
-    Qv[gpu_cell_idx(GPU_NB2-1, j, k)] = Qv[gpu_cell_idx(1,         j, k)];
+    for (int g = 0; g < GPU_NG; ++g) {
+        Qv[gpu_cell_idx(GPU_NG-1-g,       j, k)] = Qv[gpu_cell_idx(GPU_NB+GPU_NG-1-g, j, k)];
+        Qv[gpu_cell_idx(GPU_NB+GPU_NG+g,  j, k)] = Qv[gpu_cell_idx(GPU_NG+g,          j, k)];
+    }
 }
 __global__ void gpu_ghost_y(double* __restrict__ Q, int n_blocks) {
     int v = blockIdx.x, i = threadIdx.x, k = blockIdx.y, b = blockIdx.z;
     double* Qv = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b * GPU_NCELL;
-    Qv[gpu_cell_idx(i, 0,         k)] = Qv[gpu_cell_idx(i, GPU_NB2-2, k)];
-    Qv[gpu_cell_idx(i, GPU_NB2-1, k)] = Qv[gpu_cell_idx(i, 1,         k)];
+    for (int g = 0; g < GPU_NG; ++g) {
+        Qv[gpu_cell_idx(i, GPU_NG-1-g,      k)] = Qv[gpu_cell_idx(i, GPU_NB+GPU_NG-1-g, k)];
+        Qv[gpu_cell_idx(i, GPU_NB+GPU_NG+g, k)] = Qv[gpu_cell_idx(i, GPU_NG+g,          k)];
+    }
 }
 __global__ void gpu_ghost_z(double* __restrict__ Q, int n_blocks) {
     int v = blockIdx.x, i = threadIdx.x, j = blockIdx.y, b = blockIdx.z;
     double* Qv = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b * GPU_NCELL;
-    Qv[gpu_cell_idx(i, j, 0        )] = Qv[gpu_cell_idx(i, j, GPU_NB2-2)];
-    Qv[gpu_cell_idx(i, j, GPU_NB2-1)] = Qv[gpu_cell_idx(i, j, 1        )];
+    for (int g = 0; g < GPU_NG; ++g) {
+        Qv[gpu_cell_idx(i, j, GPU_NG-1-g     )] = Qv[gpu_cell_idx(i, j, GPU_NB+GPU_NG-1-g)];
+        Qv[gpu_cell_idx(i, j, GPU_NB+GPU_NG+g)] = Qv[gpu_cell_idx(i, j, GPU_NG+g         )];
+    }
 }
 
 // P2.6: stream-aware wrapper (stream=nullptr → default; stream=s → capture)
@@ -120,10 +131,18 @@ void gpu_cfl_reduce_kernel(
     atomicMin(d_dt_out, __double_as_longlong(dt_local));
 }
 
+// Portable host-side double↔uint64 bit reinterpretation (no device-only intrinsics)
+static inline unsigned long long host_double_to_ull(double x) {
+    unsigned long long u; memcpy(&u, &x, sizeof(u)); return u;
+}
+static inline double host_ull_to_double(unsigned long long u) {
+    double x; memcpy(&x, &u, sizeof(x)); return x;
+}
+
 static double gpu_compute_dt(const double* d_Q, int n_blocks, double h, double cfl,
                               unsigned long long* d_dt_out, cudaStream_t stream = nullptr)
 {
-    unsigned long long inf_bits = __double_as_longlong(1e300);
+    unsigned long long inf_bits = host_double_to_ull(1e300);
     CUDA_CHECK(cudaMemcpyAsync(d_dt_out, &inf_bits, sizeof(unsigned long long),
                                cudaMemcpyHostToDevice, stream));
     int n_interior = GPU_NB * GPU_NB * GPU_NB;
@@ -137,7 +156,7 @@ static double gpu_compute_dt(const double* d_Q, int n_blocks, double h, double c
     unsigned long long dt_bits = 0;
     CUDA_CHECK(cudaMemcpy(&dt_bits, d_dt_out, sizeof(unsigned long long),
                           cudaMemcpyDeviceToHost));
-    return __longlong_as_double((long long)dt_bits);
+    return host_ull_to_double(dt_bits);
 }
 
 // =============================================================================
@@ -229,6 +248,12 @@ GPUSolver* gpu_solver_alloc(int n_blocks, double h) {
     CUDA_CHECK(cudaMemset(s->d_Qn,  0, s->buf_size));
     CUDA_CHECK(cudaMemset(s->d_rhs, 0, s->buf_size));
     CUDA_CHECK(cudaStreamCreate(&s->stream_));
+    // Ampere (SM 8.6) default shared memory carveout is 48 KB, but
+    // gpu_rhs_kernel requires NVAR×NCELL×8 = 69,120 bytes.
+    // Request opt-in extended shared memory (up to ~99 KB on sm_86).
+    CUDA_CHECK(cudaFuncSetAttribute(gpu_rhs_kernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (int)(GPU_NVAR * GPU_NCELL * sizeof(double))));
     return s;
 }
 

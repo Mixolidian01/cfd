@@ -5,18 +5,20 @@
 #include <cstdint>
 
 // Block geometry — must match cell_block.hpp
-static constexpr int GPU_NB  = 8;      // cells per block per axis (interior)
-static constexpr int GPU_NG  = 2;      // ghost layers per side
-static constexpr int GPU_NB2 = GPU_NB + 2*GPU_NG;   // 12
+static constexpr int GPU_NB   = 8;      // cells per block per axis (interior)
+static constexpr int GPU_NG   = 2;      // ghost layers per side
+static constexpr int GPU_NB2  = GPU_NB + 2*GPU_NG;            // 12
 static constexpr int GPU_NCELL = GPU_NB2 * GPU_NB2 * GPU_NB2; // 1728
 
-// Shared-memory budget check: NVAR × NCELL × 8 bytes = 5×1728×8 = 69,120 bytes
-// A100 recommended limit: 96 KB = 98,304 bytes → OK
-static_assert(GPU_NVAR * GPU_NCELL * sizeof(double) <= 98304,
-              "Block state exceeds 96 KB shared memory — reduce NB or NG");
-
 // Number of conserved variables: rho, rhou, rhov, rhow, E
+// Defined BEFORE static_assert that uses it.
 static constexpr int GPU_NVAR = 5;
+
+// Shared-memory budget check: NVAR × NCELL × 8 bytes = 5×1728×8 = 69,120 bytes
+// Ampere SM 8.6 opt-in limit (cudaFuncAttributeMaxDynamicSharedMemorySize): ~99 KB
+// Default carveout is 48 KB — caller must invoke cudaFuncSetAttribute to raise it.
+static_assert(GPU_NVAR * GPU_NCELL * sizeof(double) <= 99328,
+              "Block state exceeds Ampere opt-in shared memory limit — reduce NB or NG");
 
 // Thermodynamic constants — must match cell_block.hpp
 static constexpr double GPU_GAMMA = 1.4;
