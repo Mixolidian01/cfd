@@ -75,10 +75,13 @@ struct MGLevel {
 struct MGSolver {
     std::vector<MGLevel> levels;   // levels[0] = finest
 
-    // Build 3-level hierarchy for a single NxNxN block (N must be divisible by 4).
-    void build(int N, double h);
+    // Build n_levels-level hierarchy for a single NxNxN block.
+    // N must satisfy N % 2^(n_levels-1) == 0.
+    // Note: MGLevel::hy/hz are set but unused (reserved for future anisotropic grids).
+    void build(int N, double h, int n_levels = 3);
 
-    // Single V-cycle.  u is updated in-place.
+    // Single V-cycle for Laplacian equation  A u = f  (A = +Laplacian).
+    // u is updated in-place.
     void vcycle(std::vector<double>&       u,
                 const std::vector<double>& f,
                 int n_pre  = 2,
@@ -91,6 +94,22 @@ struct MGSolver {
               int    max_cycles = 100,
               double tol        = 1e-10);
 
+    // ── P3.5: Helmholtz solver  (I - alpha·∇²) u = f ─────────────────────────
+    // alpha = dt · (mu/rho)  [kinematic viscosity × dt, units m²]
+    // Uses modified Gauss-Seidel smoother adapted for the shifted operator.
+    // No mean subtraction (Helmholtz is invertible for alpha > 0).
+    void vcycle_helmholtz(std::vector<double>&       u,
+                          const std::vector<double>& f,
+                          double                     alpha,
+                          int n_pre  = 2,
+                          int n_post = 2);
+
+    int solve_helmholtz(std::vector<double>&       u,
+                        const std::vector<double>& f,
+                        double                     alpha,
+                        int    max_cycles = 50,
+                        double tol        = 1e-8);
+
     // Exposed for testing.
     double residual_norm  (const MGLevel& lv) const;
     void   apply_laplacian(const MGLevel& lv,
@@ -98,9 +117,10 @@ struct MGSolver {
                            std::vector<double>&       Lu) const;
 
 private:
-    void smooth_rb   (MGLevel& lv, int n_sweeps, bool zero_mean);
-    void restrict3   (const MGLevel& fine,   MGLevel& coarse);
-    void prolongate3 (const MGLevel& coarse, MGLevel& fine);
+    void smooth_rb        (MGLevel& lv, int n_sweeps, bool zero_mean);
+    void smooth_helmholtz (MGLevel& lv, double alpha, int n_sweeps);
+    void restrict3        (const MGLevel& fine,   MGLevel& coarse);
+    void prolongate3      (const MGLevel& coarse, MGLevel& fine);
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

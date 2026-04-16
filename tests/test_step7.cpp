@@ -283,6 +283,33 @@ static void s08_smag_momentum_conserved() {
     check("S08 Smagorinsky momentum-conservative < 1e-6", err < 1e-6, err, 1e-6);
 }
 
+// S09: DynamicSmagorinsky is mass-conservative
+static void s09_dynsmag_mass_conserved() {
+    NSSolver s;
+    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.sgs = std::make_shared<DynamicSmagorinskyModel>(0.9);
+    s.init(2*acos(-1.0), tgv_ic);
+    double m0 = global_mass(s);
+    for(int i=0;i<10;++i) s.advance();
+    double m1 = global_mass(s);
+    double err = std::fabs(m1-m0)/std::fabs(m0);
+    check("S09 DynamicSmagorinsky mass-conservative < 1e-10", err < 1e-10, err, 1e-10);
+}
+
+// S10: DynamicSmagorinsky is momentum-conservative (periodic domain)
+static void s10_dynsmag_momentum_conserved() {
+    NSSolver s;
+    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.sgs = std::make_shared<DynamicSmagorinskyModel>(0.9);
+    s.init(2*acos(-1.0), tgv_ic);
+    double p0      = global_momx(s);
+    double p_scale = global_momx_l1(s);
+    for(int i=0;i<10;++i) s.advance();
+    double p1  = global_momx(s);
+    double err = std::fabs(p1-p0) / (p_scale + 1e-10);
+    check("S10 DynamicSmagorinsky momentum-conservative < 1e-6", err < 1e-6, err, 1e-6);
+}
+
 int main() {
     printf("=== Step 7: SGS + Checkpoint + VTK ===\n\n");
     s01_sgs_is_plugin();
@@ -293,6 +320,8 @@ int main() {
     s06_vtk_nonempty();
     s07_smag_mass_conserved();
     s08_smag_momentum_conserved();
+    s09_dynsmag_mass_conserved();
+    s10_dynsmag_momentum_conserved();
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail==0) printf("==> PASS  Step 7 gate cleared\n");
     else           printf("==> FAIL  Step 7 gate NOT cleared\n");

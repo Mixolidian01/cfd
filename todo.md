@@ -71,8 +71,8 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | P3.1 | ✅ | WENO5-Z reconstruction with characteristic decomposition | Borges et al. (2008) |
 | P3.2 | ✅ | Ducros sensor + hybrid skew-symmetric/WENO5 switch | Pirozzoli (2011), Morinishi (2010) |
 | P3.3 | ✅ | Entropy-stable HLLC-ES flux (Chandrashekar 2013) | Chandrashekar (2013) |
-| P3.4 | 🔲 | Dynamic Smagorinsky SGS (Germano identity, Lilly LS) | Germano et al. (1991) |
-| P3.5 | 🔲 | IMEX-ARK + connect existing `MGSolver::vcycle()` for implicit viscous solve | Kennedy & Carpenter (2003) |
+| P3.4 | ✅ | Dynamic Smagorinsky SGS (Germano identity, Lilly LS) | Germano et al. (1991) |
+| P3.5 | ✅ | IMEX-ARK + connect existing `MGSolver::vcycle()` for implicit viscous solve | Kennedy & Carpenter (2003) |
 
 ---
 

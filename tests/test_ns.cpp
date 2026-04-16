@@ -220,6 +220,30 @@ static void t08_diagnostics() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// T09  IMEX mass conservation: use_imex=true, 20 steps, periodic BC
+// Gate: global mass change < 1e-10 (density Q[0] never modified by Helmholtz)
+// ─────────────────────────────────────────────────────────────────────────────
+static void t09_imex_mass_conservation() {
+    NSSolver s;
+    s.cfg.cfl=0.3; s.cfg.max_steps=20; s.cfg.t_end=1e30;
+    s.cfg.bc=BCType::Periodic; s.cfg.verbose=false; s.cfg.diag_interval=20;
+    s.cfg.use_imex=true; s.cfg.mg_levels=3;
+    double pi = std::acos(-1.0);
+    s.init(1.0, [&](double x, double y, double z) {
+        (void)z;
+        Prim q; q.rho=1.225+0.1*std::sin(2*pi*x)*std::cos(2*pi*y);
+        q.u=10.0; q.v=5.0; q.w=0.0;
+        q.p=101325.0; q.T=q.p/(q.rho*R_GAS); q.c=std::sqrt(GAMMA*q.p/q.rho);
+        return q;
+    });
+    auto d0 = s.compute_diag();
+    s.run();
+    auto d1 = s.compute_diag();
+    double err = std::abs(d1.mass - d0.mass) / std::abs(d0.mass);
+    check("T09 IMEX mass conserved over 20 steps < 1e-10", err < 1e-10, err, 1e-10);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 4: Layer 3 — Time Loop ===\n");
     printf("    Gate: mass/momentum/total-energy conserved < 1e-10\n");
@@ -234,6 +258,7 @@ int main() {
     t06_tgv_ke_decay();
     t07_cfl_bound();
     t08_diagnostics();
+    t09_imex_mass_conservation();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail>0)

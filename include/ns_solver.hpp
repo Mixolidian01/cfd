@@ -44,6 +44,13 @@ struct SolverConfig {
     int    max_level       = 2;
     std::shared_ptr<SGSModel> sgs = nullptr;
     bool verbose_json = false;
+
+    // P3.5: IMEX-ARK implicit viscous solve
+    // When use_imex == true, advance() applies an implicit Helmholtz correction
+    // for each velocity component after the explicit SSP-RK3 step using
+    // MGSolver::solve_helmholtz (V-cycle multigrid, alpha = dt*mu/rho).
+    bool use_imex  = false;
+    int  mg_levels = 3;   // multigrid levels for the per-block Helmholtz solver
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────
@@ -81,4 +88,7 @@ private:
     void save_Qn();
     void copy_stage_to_tree(const std::vector<CellBlock>& stage);
     void copy_tree_to_stage(std::vector<CellBlock>& stage);
+
+    // P3.5: IMEX advance — implicit viscous Helmholtz correction after RK3.
+    double advance_imex();
 };

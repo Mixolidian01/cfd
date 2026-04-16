@@ -68,3 +68,35 @@ private:
     static double strain_rate(const CellBlock& b, double h_inv,
                               int i, int j, int k);
 };
+
+// ── Dynamic Smagorinsky (Germano 1991, Lilly 1992) ───────────────────────────
+//
+// The Smagorinsky constant Cs² is computed locally via the Germano identity
+// with a 3×3×3 box test filter at scale 2Δ.  Requires NG ≥ 2 (P2.1 gate).
+//
+// Algorithm per block:
+//   1. Compute grid-scale S_ij and |S̄| for cells [1..NB2-2] (full stencil).
+//   2. Apply test filter (1/27 box average over 3×3×3) to:
+//        - velocities  ũ_i
+//        - products    (u_i u_j)~  (resolved stress)
+//        - products    (|S̄| S_ij)~  (model stress at grid scale)
+//   3. Compute test-scale strain S̃_ij from ũ via central differences.
+//   4. Germano / Lilly LS over block:
+//        L_ij = (u_i u_j)~ - ũ_i ũ_j
+//        M_ij = 2Δ²(4|S̃|S̃_ij - (|S̄|S_ij)~)
+//        Cs²  = max(0, Σ_block L:M / (Σ_block M:M + ε))
+//   5. mu_t = ρ · Cs² · Δ² · |S̄|  →  same face-centred div(τ) as Smagorinsky.
+//
+// Backscatter is suppressed (Cs² clipped at 0).
+// References: Germano et al. (1991) Phys. Fluids A 3:1760;
+//             Lilly (1992) Phys. Fluids A 4:633.
+class DynamicSmagorinskyModel : public SGSModel {
+public:
+    double Pr_t;  // turbulent Prandtl number (default 0.9)
+
+    explicit DynamicSmagorinskyModel(double Pr_t_ = 0.9) : Pr_t(Pr_t_) {}
+
+    const char* name() const override { return "DynamicSmagorinsky"; }
+
+    void apply(CellBlock& blk, double h, double dt) const override;
+};
