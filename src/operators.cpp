@@ -31,6 +31,14 @@
 //         to conservative space.  Applied to interior faces [ilo, ihi-1] per
 //         axis (full 6-cell stencil fits within NG=2 ghost layers).  Ghost
 //         faces ilo-1 and ihi fall back to 1st-order PCM + HLLC-ES.
+//   P3.2: Ducros sensor + hybrid KE-preserving/WENO5-ES switch.
+//         Ducros (1999): Φ = (div u)²/((div u)²+|curl u|²+ε).
+//         In smooth/vortex-dominated regions (Φ≈0) the KE-consistent flux
+//         F_KEP (Pirozzoli 2011 arithmetic-mean form) preserves discrete KE
+//         and reduces aliasing.  Near shocks (Φ≈1) the WENO5+HLLC-ES flux
+//         ensures entropy stability and monotonicity.
+//         Blend: F = (1−θ)·F_KEP + θ·F_WENO_ES,  θ = max(Φ_L, Φ_R).
+//         When θ < 1e-8 (smooth), WENO5 is skipped entirely (pure KEP path).
 
 #include "operators.hpp"
 #include <cmath>
@@ -212,6 +220,94 @@ static void fill_mu_cache(const Prim* pc, double* mu_arr) noexcept {
     for (int i = 0; i < NB2; ++i) {
         const int idx = cell_idx(i,j,k);
         mu_arr[idx] = sutherland(pc[idx].T);
+    }
+}
+
+// =============================================================================
+// P3.2 — KE-consistent (skew-symmetric) flux  (Pirozzoli 2011)
+// =============================================================================
+// Physical basis:
+//   The skew-symmetric / KE-consistent form splits the convective derivative
+//   symmetrically between divergence and advective form.  The resulting flux
+//   conserves discrete kinetic energy (dKE/dt = −work done by pressure)
+//   to machine precision on smooth, periodic grids, eliminating the spurious
+//   KE production that plagues standard upwind schemes in DNS/LES.
+//
+// Flux components (all arithmetic means, no upwinding):
+//   F[0] = ρ̄ · ū_n
+//   F[mom] = ρ̄ · ū_n · ū_i + p̄ · δ_{in}
+//   F[4]   = ρ̄ · ū_n · H̄   where H̄ = ½(H_L + H_R), H = (E+p)/ρ
+static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
+                                         int axis) noexcept
+{
+    const double rho_a = 0.5*(L.rho + R.rho);
+    const double u_a   = 0.5*(L.u   + R.u  );
+    const double v_a   = 0.5*(L.v   + R.v  );
+    const double w_a   = 0.5*(L.w   + R.w  );
+    const double p_a   = 0.5*(L.p   + R.p  );
+    const double E_L   = L.p/(GAMMA-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
+    const double E_R   = R.p/(GAMMA-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
+    const double H_L   = (E_L + L.p) / L.rho;
+    const double H_R   = (E_R + R.p) / R.rho;
+    const double H_a   = 0.5*(H_L + H_R);
+    const double un_a  = (axis==0)?u_a:(axis==1)?v_a:w_a;
+    const double mass  = rho_a * un_a;
+
+    std::array<double,NVAR> F;
+    F[0] = mass;
+    F[1] = mass*u_a + (axis==0 ? p_a : 0.0);
+    F[2] = mass*v_a + (axis==1 ? p_a : 0.0);
+    F[3] = mass*w_a + (axis==2 ? p_a : 0.0);
+    F[4] = mass*H_a;
+    return F;
+}
+
+// =============================================================================
+// P3.2 — Ducros shock sensor  (Ducros et al. 1999)
+// =============================================================================
+// Physical basis:
+//   Φ = (div u)² / ((div u)² + |curl u|² + ε)
+//   Near a compression shock: |div u| ≫ |curl u|  → Φ → 1
+//   In turbulent/vortex-dominated regions: |curl u| ≫ |div u| → Φ → 0
+//   Uniform flow: both → 0, ε dominates → Φ = 0
+//
+// Computed for cells in [1, NB2-2] per axis (needs one ghost layer beyond
+// the interior for the central-difference stencil at the first ghost cell).
+// Absolute boundary cells (0, NB2-1) are set to 0 (no shock detection
+// at the second ghost layer — ghost data there is a copy with no gradient info).
+//
+// Output range: duc[cell_idx(i,j,k)] ∈ [0,1] for all valid cells.
+static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
+{
+    constexpr double eps_duc = 1.0e-30;
+    const double ih2 = 0.5 / h;   // 1/(2h)
+
+    // Zero all cells first (covers absolute ghost boundary 0 and NB2-1)
+    std::fill(duc, duc + NCELL, 0.0);
+
+    // Compute for all cells one layer inside the absolute boundary
+    for (int k = 1; k < NB2-1; ++k)
+    for (int j = 1; j < NB2-1; ++j)
+    for (int i = 1; i < NB2-1; ++i) {
+        // Central-difference velocity gradients (all 9 components)
+        const double dudx = ih2*(pc[cell_idx(i+1,j,k)].u - pc[cell_idx(i-1,j,k)].u);
+        const double dudy = ih2*(pc[cell_idx(i,j+1,k)].u - pc[cell_idx(i,j-1,k)].u);
+        const double dudz = ih2*(pc[cell_idx(i,j,k+1)].u - pc[cell_idx(i,j,k-1)].u);
+        const double dvdx = ih2*(pc[cell_idx(i+1,j,k)].v - pc[cell_idx(i-1,j,k)].v);
+        const double dvdy = ih2*(pc[cell_idx(i,j+1,k)].v - pc[cell_idx(i,j-1,k)].v);
+        const double dvdz = ih2*(pc[cell_idx(i,j,k+1)].v - pc[cell_idx(i,j,k-1)].v);
+        const double dwdx = ih2*(pc[cell_idx(i+1,j,k)].w - pc[cell_idx(i-1,j,k)].w);
+        const double dwdy = ih2*(pc[cell_idx(i,j+1,k)].w - pc[cell_idx(i,j-1,k)].w);
+        const double dwdz = ih2*(pc[cell_idx(i,j,k+1)].w - pc[cell_idx(i,j,k-1)].w);
+
+        // Dilatation (div u) and vorticity magnitude squared
+        const double divu = dudx + dvdy + dwdz;
+        const double ox   = dwdy - dvdz;   // ω_x = ∂w/∂y − ∂v/∂z
+        const double oy   = dudz - dwdx;   // ω_y = ∂u/∂z − ∂w/∂x
+        const double oz   = dvdx - dudy;   // ω_z = ∂v/∂x − ∂u/∂y
+        const double d2   = divu*divu;
+        const double c2   = ox*ox + oy*oy + oz*oz;
+        duc[cell_idx(i,j,k)] = d2 / (d2 + c2 + eps_duc);
     }
 }
 
@@ -442,73 +538,123 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
 }
 
 // =============================================================================
-// P2.2 — Convective RHS: face-centred loop
+// P2.2/P3.2 — Convective RHS: face-centred hybrid loop
 // =============================================================================
 // Iterates over faces rather than cells.  For axis d, there are
 // (NB+1)*NB*NB interior+boundary faces; each evaluated exactly once.
 //
-// Flux sign: F is positive leaving the left cell:
-//   rhs[left]  -= ih * F   (divergence: flux out → subtract)
-//   rhs[right] += ih * F   (divergence: flux in  → add)
-// This telescopes exactly to the standard finite-volume divergence.
-static void convective_rhs_impl(const Prim* pc, CellBlock& rhs, double h) noexcept
+// Hybrid scheme (P3.2):
+//   θ = max(Ducros_L, Ducros_R) ∈ [0,1]
+//   F = (1−θ)·F_KEP + θ·F_shock
+//
+//   F_KEP  : Pirozzoli (2011) KE-preserving flux (zero added dissipation)
+//   F_shock: WENO5+HLLC-ES for interior faces; PCM+HLLC-ES for ghost faces
+//
+// Fast path (θ < 1e-8): smooth/turbulent region → pure KEP, skip WENO5.
+// Shock path (θ ≥ 1e-8): compute WENO5 and blend with KEP.
+//
+// Flux sign: F positive leaving the left cell:
+//   rhs[left] -= ih*F,  rhs[right] += ih*F  (telescopes for conservation)
+static void convective_rhs_impl(const Prim* pc, const double* duc,
+                                 CellBlock& rhs, double h) noexcept
 {
     const double ih = 1.0 / h;
+    constexpr double kep_threshold = 1.0e-8;  // below → pure KEP, no WENO5
 
-    // WENO5-Z + HLLC-ES on interior faces; 1st-order PCM + HLLC-ES on ghost faces.
-    //
-    // WENO5 requires a 6-cell stencil {i-2,...,i+3}.  With NG=2 this fits exactly
-    // when ilo() <= i && i < ihi() (i.e. both stencil ends stay within [0,NB2-1]).
-    // Ghost faces i=ilo()-1 and i=ihi() use cell-centred PCM as fallback.
+    // Helper: blend two flux arrays
+    auto blend = [](const std::array<double,NVAR>& Fk,
+                    const std::array<double,NVAR>& Fs,
+                    double th) -> std::array<double,NVAR>
+    {
+        std::array<double,NVAR> F;
+        const double om = 1.0 - th;
+        for (int v = 0; v < NVAR; ++v) F[v] = om*Fk[v] + th*Fs[v];
+        return F;
+    };
 
-    // X-direction: face between (i,j,k) and (i+1,j,k), i ∈ [ilo-1, ihi]
+    // ── X-direction ────────────────────────────────────────────────────────────
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo()-1; i <= ihi(); ++i) {
-        Prim qL, qR;
-        if (i >= ilo() && i < ihi())
-            weno5_face(pc, i, j, k, 0, qL, qR);
-        else {
-            qL = pc[cell_idx(i,   j, k)];
-            qR = pc[cell_idx(i+1, j, k)];
+        const Prim& pL = pc[cell_idx(i,  j,k)];
+        const Prim& pR = pc[cell_idx(i+1,j,k)];
+        const double theta = std::max(duc[cell_idx(i,  j,k)],
+                                      duc[cell_idx(i+1,j,k)]);
+        std::array<double,NVAR> F;
+        if (theta < kep_threshold) {
+            // Pure KEP: smooth/turbulent region, no reconstruction needed
+            F = kep_flux(pL, pR, 0);
+        } else {
+            // Shock region: blend KEP with WENO5+ES (or PCM+ES at ghost faces)
+            const auto Fk = kep_flux(pL, pR, 0);
+            std::array<double,NVAR> Fs;
+            if (i >= ilo() && i < ihi()) {
+                Prim qL, qR;
+                weno5_face(pc, i, j, k, 0, qL, qR);
+                Fs = hllc_es_flux(qL, qR, 0);
+            } else {
+                Fs = hllc_es_flux(pL, pR, 0);
+            }
+            F = blend(Fk, Fs, theta);
         }
-        const auto F = hllc_es_flux(qL, qR, 0);
         if (i >= ilo())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,  j,k)] -= ih * F[v];
         if (i+1 <= ihi())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i+1,j,k)] += ih * F[v];
     }
 
-    // Y-direction: face between (i,j,k) and (i,j+1,k), j ∈ [ilo-1, ihi]
+    // ── Y-direction ────────────────────────────────────────────────────────────
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo()-1; j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i) {
-        Prim qL, qR;
-        if (j >= ilo() && j < ihi())
-            weno5_face(pc, i, j, k, 1, qL, qR);
-        else {
-            qL = pc[cell_idx(i, j,   k)];
-            qR = pc[cell_idx(i, j+1, k)];
+        const Prim& pL = pc[cell_idx(i,j,  k)];
+        const Prim& pR = pc[cell_idx(i,j+1,k)];
+        const double theta = std::max(duc[cell_idx(i,j,  k)],
+                                      duc[cell_idx(i,j+1,k)]);
+        std::array<double,NVAR> F;
+        if (theta < kep_threshold) {
+            F = kep_flux(pL, pR, 1);
+        } else {
+            const auto Fk = kep_flux(pL, pR, 1);
+            std::array<double,NVAR> Fs;
+            if (j >= ilo() && j < ihi()) {
+                Prim qL, qR;
+                weno5_face(pc, i, j, k, 1, qL, qR);
+                Fs = hllc_es_flux(qL, qR, 1);
+            } else {
+                Fs = hllc_es_flux(pL, pR, 1);
+            }
+            F = blend(Fk, Fs, theta);
         }
-        const auto F = hllc_es_flux(qL, qR, 1);
         if (j >= ilo())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j,  k)] -= ih * F[v];
         if (j+1 <= ihi())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j+1,k)] += ih * F[v];
     }
 
-    // Z-direction: face between (i,j,k) and (i,j,k+1), k ∈ [ilo-1, ihi]
+    // ── Z-direction ────────────────────────────────────────────────────────────
     for (int k = ilo()-1; k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i) {
-        Prim qL, qR;
-        if (k >= ilo() && k < ihi())
-            weno5_face(pc, i, j, k, 2, qL, qR);
-        else {
-            qL = pc[cell_idx(i, j, k  )];
-            qR = pc[cell_idx(i, j, k+1)];
+        const Prim& pL = pc[cell_idx(i,j,k  )];
+        const Prim& pR = pc[cell_idx(i,j,k+1)];
+        const double theta = std::max(duc[cell_idx(i,j,k  )],
+                                      duc[cell_idx(i,j,k+1)]);
+        std::array<double,NVAR> F;
+        if (theta < kep_threshold) {
+            F = kep_flux(pL, pR, 2);
+        } else {
+            const auto Fk = kep_flux(pL, pR, 2);
+            std::array<double,NVAR> Fs;
+            if (k >= ilo() && k < ihi()) {
+                Prim qL, qR;
+                weno5_face(pc, i, j, k, 2, qL, qR);
+                Fs = hllc_es_flux(qL, qR, 2);
+            } else {
+                Fs = hllc_es_flux(pL, pR, 2);
+            }
+            F = blend(Fk, Fs, theta);
         }
-        const auto F = hllc_es_flux(qL, qR, 2);
         if (k >= ilo())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j,k  )] -= ih * F[v];
         if (k+1 <= ihi())
@@ -703,9 +849,11 @@ static void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
 // =============================================================================
 void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 {
-    static thread_local std::array<Prim, NCELL> pc;
+    static thread_local std::array<Prim,   NCELL> pc;
+    static thread_local std::array<double, NCELL> duc;
     fill_prim_cache(blk, pc.data());
-    convective_rhs_impl(pc.data(), rhs_blk, blk.h);
+    fill_ducros_cache(pc.data(), duc.data(), blk.h);
+    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h);
 }
 
 void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
@@ -718,14 +866,16 @@ void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 }
 
 // =============================================================================
-// Full RHS — P2.3 + B5: build prim and µ caches once, shared by both operators
+// Full RHS — P2.3 + B5 + P3.2: prim, µ, and Ducros caches built once
 // =============================================================================
 void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 {
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> mu_arr;
+    static thread_local std::array<double, NCELL> duc;
     fill_prim_cache(blk, pc.data());
     fill_mu_cache(pc.data(), mu_arr.data());
+    fill_ducros_cache(pc.data(), duc.data(), blk.h);
 
     for (int v = 0; v < NVAR; ++v)
         for (int k = ilo(); k <= ihi(); ++k)
@@ -733,8 +883,8 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
         for (int i = ilo(); i <= ihi(); ++i)
             rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
 
-    convective_rhs_impl(pc.data(),             rhs_blk, blk.h);
-    viscous_rhs_impl   (pc.data(), mu_arr.data(), rhs_blk, blk.h);
+    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h);
+    viscous_rhs_impl   (pc.data(), mu_arr.data(),         rhs_blk, blk.h);
 }
 
 // =============================================================================
