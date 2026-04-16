@@ -20,6 +20,17 @@
 //         alongside the prim cache, adding NCELL Sutherland calls (1000)
 //         at negligible cost relative to the gradient evaluation.
 //         Energy: cell-centred tau:S and κ·ΔT are unchanged (O(h²)).
+//   P3.3: Entropy-stable HLLC-ES flux (Chandrashekar 2013).
+//         EC base uses log-mean ρ_ln, β_ln where β=ρ/(2p); face pressure
+//         p̂ = ρ̄/(2β̄) from arithmetic means.  Lax-Friedrichs dissipation
+//         (λ_max/2)*ΔQ restores entropy stability.  Replaces hllc_flux in
+//         convective_rhs_impl, undo_cf_face_flux, accumulate_cf_fine_fluxes.
+//   P3.1: WENO5-Z reconstruction with characteristic decomposition
+//         (Borges et al. 2008).  Roe-eigenvector projection of 6-cell
+//         stencil; scalar WENO5-Z per characteristic variable; back-project
+//         to conservative space.  Applied to interior faces [ilo, ihi-1] per
+//         axis (full 6-cell stencil fits within NG=2 ghost layers).  Ghost
+//         faces ilo-1 and ihi fall back to 1st-order PCM + HLLC-ES.
 
 #include "operators.hpp"
 #include <cmath>
@@ -96,6 +107,93 @@ std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept
 }
 
 // =============================================================================
+// P3.3 — Entropy-stable HLLC-ES flux (Chandrashekar 2013)
+// =============================================================================
+// Reference: Chandrashekar, "Kinetic Energy Preserving and Entropy Stable
+//            Finite Volume Schemes", Comm. Comput. Phys. 14(5), 2013.
+//
+// Physical basis:
+//   Entropy variable: η = -ρ·s/(γ-1) where s = ln(p·ρ^{-γ}).
+//   The entropy-CONSERVATIVE flux F_EC satisfies (w_R-w_L)·F_EC = ψ_R-ψ_L
+//   exactly, where w = ∂η/∂Q are the entropy variables.
+//   Adding the non-negative LF dissipation −(λ_max/2)·ΔQ converts this
+//   to an entropy-STABLE flux: the discrete entropy inequality holds
+//   cell-by-cell without any additional limiting.
+//
+// Key quantities:
+//   β      = ρ/(2p)  (proportional to inverse temperature: β=1/(2RT))
+//   ρ_ln   = log-mean(ρ_L, ρ_R)
+//   β_ln   = log-mean(β_L, β_R)
+//   p̂      = ρ̄/(2β̄)  with ρ̄, β̄ = arithmetic means  (Eq. 3.10)
+//   Ĥ      = 1/(2(γ-1)β_ln) + ½(ū²+v̄²+w̄²) + p̂/ρ_ln
+
+static inline double sq(double x) noexcept { return x * x; }
+
+// Numerically stable log-mean using Ismail-Roe series near a≈b.
+// For |u|² < 1e-4 the Taylor series  F = 1 + u²/3 + u⁴/5 + u⁶/7 + ...
+// (where u=(a-b)/(a+b)) is used; otherwise the exact log formula.
+static inline double log_mean(double a, double b) noexcept {
+    const double xi = a / b;
+    const double f  = (xi - 1.0) / (xi + 1.0);
+    const double u2 = f * f;
+    const double F  = (u2 < 1.0e-4)
+                    ? 1.0 + u2 * (1.0/3.0 + u2 * (1.0/5.0 + u2 / 7.0))
+                    : std::log(xi) / (2.0 * f);
+    return (a + b) / (2.0 * F);
+}
+
+std::array<double,NVAR> hllc_es_flux(const Prim& L, const Prim& R, int axis) noexcept
+{
+    // Arithmetic means of primitive quantities
+    const double rho_a  = 0.5*(L.rho + R.rho);
+    const double u_a    = 0.5*(L.u   + R.u  );
+    const double v_a    = 0.5*(L.v   + R.v  );
+    const double w_a    = 0.5*(L.w   + R.w  );
+    const double beta_L = L.rho / (2.0*L.p);
+    const double beta_R = R.rho / (2.0*R.p);
+    const double beta_a = 0.5*(beta_L + beta_R);
+
+    // Log-mean quantities (entropy-variable averages)
+    const double rho_ln  = log_mean(L.rho,  R.rho );
+    const double beta_ln = log_mean(beta_L, beta_R);
+
+    // Face pressure (Chandrashekar Eq. 3.10): ρ̄/(2β̄)
+    const double p_hat = rho_a / (2.0 * beta_a);
+
+    // Normal velocity
+    const double un_L = (axis==0)?L.u:(axis==1)?L.v:L.w;
+    const double un_R = (axis==0)?R.u:(axis==1)?R.v:R.w;
+    const double un_a = 0.5*(un_L + un_R);
+
+    const double mass = rho_ln * un_a;
+
+    // Face total enthalpy: Ĥ = 1/(2(γ-1)β_ln) + KE_hat + p̂/ρ_ln
+    const double KE_hat = 0.5*(u_a*u_a + v_a*v_a + w_a*w_a);
+    const double H_hat  = 1.0/(2.0*(GAMMA-1.0)*beta_ln) + KE_hat + p_hat/rho_ln;
+
+    // Entropy-conservative flux (Chandrashekar Eq. 3.10)
+    std::array<double,NVAR> F_EC;
+    F_EC[0] = mass;
+    F_EC[1] = mass*u_a + (axis==0 ? p_hat : 0.0);
+    F_EC[2] = mass*v_a + (axis==1 ? p_hat : 0.0);
+    F_EC[3] = mass*w_a + (axis==2 ? p_hat : 0.0);
+    F_EC[4] = mass*H_hat;
+
+    // Lax-Friedrichs scalar dissipation: F_ES = F_EC − (λ_max/2)·ΔQ
+    const double lam = std::max(std::abs(un_L)+L.c, std::abs(un_R)+R.c);
+    const double E_L = L.p/(GAMMA-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
+    const double E_R = R.p/(GAMMA-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
+
+    std::array<double,NVAR> F_ES;
+    F_ES[0] = F_EC[0] - 0.5*lam*(R.rho       - L.rho      );
+    F_ES[1] = F_EC[1] - 0.5*lam*(R.rho*R.u   - L.rho*L.u  );
+    F_ES[2] = F_EC[2] - 0.5*lam*(R.rho*R.v   - L.rho*L.v  );
+    F_ES[3] = F_EC[3] - 0.5*lam*(R.rho*R.w   - L.rho*L.w  );
+    F_ES[4] = F_EC[4] - 0.5*lam*(E_R         - E_L         );
+    return F_ES;
+}
+
+// =============================================================================
 // P2.3 — Primitive variable and viscosity caches
 // =============================================================================
 // Pre-compute all NCELL primitive states (and Sutherland µ) once per
@@ -118,6 +216,232 @@ static void fill_mu_cache(const Prim* pc, double* mu_arr) noexcept {
 }
 
 // =============================================================================
+// P3.1 — WENO5-Z scalar reconstruction (Borges et al. 2008)
+// =============================================================================
+// Reconstructs left (vL) and right (vR) states at the face between v0 and vp1
+// from the 6-cell stencil {vm2, vm1, v0, vp1, vp2, vp3}.
+//
+// Mathematical basis:
+//   Three 3rd-order candidate polynomials per side, combined with non-linear
+//   WENO-Z weights α_k = d_k·(1 + (τ₅/(β_k+ε))²), ε=1e-36.
+//   τ₅ = |β₀−β₂| (Borges global smoothness indicator).  At smooth extrema
+//   WENO-Z reduces the artificial dissipation of WENO-JS (Jiang-Shu 1996),
+//   recovering close to the 5th-order optimal stencil weight.
+//
+// Optimal weights (Shu 2009 lecture notes):
+//   Left:  d₀=1/10, d₁=3/5, d₂=3/10   (bias toward right-of-face)
+//   Right: same values (bias toward left-of-face, mirrored stencil)
+static void weno5z_scalar(double vm2, double vm1, double v0,
+                           double vp1, double vp2, double vp3,
+                           double& vL, double& vR) noexcept
+{
+    constexpr double eps = 1.0e-36;
+    constexpr double d0 = 0.1, d1 = 0.6, d2 = 0.3;
+
+    // ── Left state (reconstructed from the left side of face v0|vp1) ─────────
+    // Candidate 3rd-order polynomials (Shu 2009 Eq. 2.16–2.18)
+    const double L0 = ( 2.0*vm2 -  7.0*vm1 + 11.0*v0 ) * (1.0/6.0);
+    const double L1 = (     -vm1 +  5.0*v0  +  2.0*vp1) * (1.0/6.0);
+    const double L2 = ( 2.0*v0  +  5.0*vp1  -      vp2) * (1.0/6.0);
+
+    // Jiang-Shu smoothness indicators (Eq. 2.61–2.63)
+    const double b0L = (13.0/12.0)*sq(vm2 - 2.0*vm1 + v0 )
+                     +  (1.0/ 4.0)*sq(vm2 - 4.0*vm1 + 3.0*v0);
+    const double b1L = (13.0/12.0)*sq(vm1 - 2.0*v0  + vp1)
+                     +  (1.0/ 4.0)*sq(vm1 - vp1);
+    const double b2L = (13.0/12.0)*sq(v0  - 2.0*vp1 + vp2)
+                     +  (1.0/ 4.0)*sq(3.0*v0 - 4.0*vp1 + vp2);
+
+    const double tau5L = std::abs(b0L - b2L);
+    const double a0L = d0 * (1.0 + sq(tau5L / (b0L + eps)));
+    const double a1L = d1 * (1.0 + sq(tau5L / (b1L + eps)));
+    const double a2L = d2 * (1.0 + sq(tau5L / (b2L + eps)));
+    vL = (a0L*L0 + a1L*L1 + a2L*L2) / (a0L + a1L + a2L);
+
+    // ── Right state (reconstructed from the right side, mirrored stencil) ────
+    const double R0 = ( 2.0*vp3 -  7.0*vp2 + 11.0*vp1) * (1.0/6.0);
+    const double R1 = (     -vp2 +  5.0*vp1 +  2.0*v0 ) * (1.0/6.0);
+    const double R2 = ( 2.0*vp1 +  5.0*v0   -      vm1) * (1.0/6.0);
+
+    const double b0R = (13.0/12.0)*sq(vp1  - 2.0*vp2 + vp3)
+                     +  (1.0/ 4.0)*sq(3.0*vp1 - 4.0*vp2 + vp3);
+    const double b1R = (13.0/12.0)*sq(v0   - 2.0*vp1 + vp2)
+                     +  (1.0/ 4.0)*sq(v0 - vp2);
+    const double b2R = (13.0/12.0)*sq(vm1  - 2.0*v0  + vp1)
+                     +  (1.0/ 4.0)*sq(vm1 - 4.0*v0 + 3.0*vp1);
+
+    const double tau5R = std::abs(b0R - b2R);
+    const double a0R = d0 * (1.0 + sq(tau5R / (b0R + eps)));
+    const double a1R = d1 * (1.0 + sq(tau5R / (b1R + eps)));
+    const double a2R = d2 * (1.0 + sq(tau5R / (b2R + eps)));
+    vR = (a0R*R0 + a1R*R1 + a2R*R2) / (a0R + a1R + a2R);
+}
+
+// =============================================================================
+// P3.1 — WENO5 face reconstruction with Roe characteristic decomposition
+// =============================================================================
+// Reconstructs left primitive state qL and right primitive state qR at the
+// face between cells (i,j,k) and (i+1,j,k) [axis=0] etc.
+//
+// Mathematical basis:
+//   1. Convert 6-cell stencil to conservative variables Q[m], m=0..5.
+//   2. Compute Roe-averaged state at face: ρ̃, ũ, H̃, c̃.
+//   3. Left eigenvectors L_k (rows of R^{-1}) project each Q[m] to the
+//      k-th characteristic variable  w_{k,m} = L_k · Q[m].
+//   4. Apply weno5z_scalar independently to each characteristic sequence.
+//   5. Back-project with right eigenvectors R_k (columns):
+//      Q_face = Σ_k w_k * r_k.
+//   6. Convert to primitive; clamp ρ,p > 0 for robustness.
+//
+// PRECONDITION: full 6-cell stencil must be in-bounds.
+//   For NG=2: interior faces i ∈ [ilo(), ihi()-1] per axis only.
+//   Ghost faces (i=ilo()-1, i=ihi()) must use PCM fallback.
+//
+// Roe eigenvector layout (axis-general):
+//   k=0: acoustic  (u_n - c)     right: [1, un-c, ut1, ut2, H-un*c]^T
+//   k=1: entropy wave (u_n)      right: [1, un,   ut1, ut2, KE    ]^T
+//   k=2: shear 1  (u_n)          right: [0, 0,    1,   0,   ut1   ]^T
+//   k=3: shear 2  (u_n)          right: [0, 0,    0,   1,   ut2   ]^T
+//   k=4: acoustic  (u_n + c)     right: [1, un+c, ut1, ut2, H+un*c]^T
+//   (ut1/ut2 are the tangential velocity components for the given axis)
+static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
+                        Prim& qL_out, Prim& qR_out) noexcept
+{
+    // ── Stencil index helper: position offset d along axis from cell (i,j,k) ─
+    auto idx_at = [&](int d) -> int {
+        if (axis == 0) return cell_idx(i+d, j, k);
+        if (axis == 1) return cell_idx(i, j+d, k);
+        return                cell_idx(i, j, k+d);
+    };
+
+    // ── Convert 6 prim states to conservative Q[m][v], m∈[0,5] ──────────────
+    // m=0 → cell i-2,  m=2 → cell i,  m=3 → cell i+1,  m=5 → cell i+3
+    double Q[6][NVAR];
+    for (int m = 0; m < 6; ++m) {
+        const Prim& p = pc[idx_at(m - 2)];
+        Q[m][0] = p.rho;
+        Q[m][1] = p.rho * p.u;
+        Q[m][2] = p.rho * p.v;
+        Q[m][3] = p.rho * p.w;
+        Q[m][4] = p.p/(GAMMA-1.0) + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
+    }
+
+    // ── Roe-averaged state between cells i (m=2) and i+1 (m=3) ──────────────
+    const Prim& pL = pc[idx_at(0)];
+    const Prim& pR = pc[idx_at(1)];
+    const double sqL   = std::sqrt(pL.rho);
+    const double sqR   = std::sqrt(pR.rho);
+    const double denom = sqL + sqR;
+    const double u_roe = (sqL*pL.u + sqR*pR.u) / denom;
+    const double v_roe = (sqL*pL.v + sqR*pR.v) / denom;
+    const double w_roe = (sqL*pL.w + sqR*pR.w) / denom;
+    const double HL    = (Q[2][4] + pL.p) / pL.rho;
+    const double HR    = (Q[3][4] + pR.p) / pR.rho;
+    const double H_roe = (sqL*HL + sqR*HR) / denom;
+    const double KE    = 0.5*(u_roe*u_roe + v_roe*v_roe + w_roe*w_roe);
+    const double c2    = std::max((GAMMA-1.0)*(H_roe - KE), 1.0e-300);
+    const double c_roe = std::sqrt(c2);
+
+    // Normal and tangential Roe velocities + conservative-array index mapping
+    //   axis=0: normal=x(idx 1), t1=y(idx 2), t2=z(idx 3)
+    //   axis=1: normal=y(idx 2), t1=x(idx 1), t2=z(idx 3)
+    //   axis=2: normal=z(idx 3), t1=x(idx 1), t2=y(idx 2)
+    const double un  = (axis==0)?u_roe:(axis==1)?v_roe:w_roe;
+    const double ut1 = (axis==0)?v_roe:(axis==1)?u_roe:u_roe;
+    const double ut2 = (axis==0)?w_roe:(axis==1)?w_roe:v_roe;
+    const int    n_idx  = 1 + axis;
+    const int    t1_idx = (axis == 0) ? 2 : 1;
+    const int    t2_idx = (axis == 2) ? 2 : 3;
+
+    const double b  = (GAMMA-1.0) / c2;   // (γ-1)/c²
+    const double b2 = b * KE;             // (γ-1)*KE/c²
+    const double ioc = 1.0 / c_roe;       // 1/c
+
+    // ── Project 6 conservative states to characteristic space ────────────────
+    // w[k][m] = L_k · Q[m]  (left eigenvectors applied to each stencil point)
+    //
+    // Left eigenvectors (rows of R^{-1}), axis-general form:
+    //   L₀ = ½·[b2+un/c, -(b*un+1/c) at n-slot, -b*ut1, -b*ut2, b]
+    //   L₄ = ½·[b2-un/c, -(b*un-1/c) at n-slot, -b*ut1, -b*ut2, b]
+    //
+    // Expanding L₀·Q:
+    //   = ½*(b2*ρ - b*(un*qn+ut1*qt1+ut2*qt2) + b*E)  [=inner/2]
+    //   + ½*(un/c)*ρ - ½*(1/c)*qn
+    //   = ½*(inner + ioc*(un*ρ - qn))         ← the un*ρ term is essential
+    //
+    // The term (un*ρ - qn)/c vanishes for the two Roe-reference cells (m=2,3)
+    // only when the state is uniform; for non-uniform stencils it is non-zero
+    // and must be included to ensure L·R = I exactly.
+    //
+    // L₁ = [(1-b2), b*un, b*ut1, b*ut2, -b]  → w[1] = (1-b2)*ρ + b*(un*qn+...) - b*E
+    // L₂ = [-ut1, 0, 1@t1-slot, 0, 0]         → w[2] = -ut1*ρ + qt1
+    // L₃ = [-ut2, 0, 0, 1@t2-slot, 0]         → w[3] = -ut2*ρ + qt2
+    double W[5][6];
+    for (int m = 0; m < 6; ++m) {
+        const double rho = Q[m][0];
+        const double qn  = Q[m][n_idx ];
+        const double qt1 = Q[m][t1_idx];
+        const double qt2 = Q[m][t2_idx];
+        const double E   = Q[m][4];
+        const double inner  = b2*rho - b*(un*qn + ut1*qt1 + ut2*qt2) + b*E;
+        const double delta_n = ioc*(un*rho - qn);  // (un_roe*ρ_cell - qn_cell)/c
+        W[0][m] = 0.5*(inner + delta_n);
+        W[1][m] = (1.0 - b2)*rho + b*(un*qn + ut1*qt1 + ut2*qt2) - b*E;
+        W[2][m] = -ut1*rho + qt1;
+        W[3][m] = -ut2*rho + qt2;
+        W[4][m] = 0.5*(inner - delta_n);
+    }
+
+    // ── Apply WENO5-Z to each characteristic variable independently ───────────
+    double wL[5], wR[5];
+    for (int kk = 0; kk < 5; ++kk)
+        weno5z_scalar(W[kk][0], W[kk][1], W[kk][2],
+                      W[kk][3], W[kk][4], W[kk][5],
+                      wL[kk], wR[kk]);
+
+    // ── Back-project with right eigenvectors to conservative space ────────────
+    // Q = Σ_k w_k · r_k  where columns r_k are listed above.
+    // Using the factored form (w014 = w[0]+w[1]+w[4]):
+    //   Q[0]      = w014
+    //   Q[n_idx]  = w014*un + (w[4]-w[0])*c
+    //   Q[t1_idx] = w014*ut1 + w[2]
+    //   Q[t2_idx] = w014*ut2 + w[3]
+    //   Q[4]      = (w[0]+w[4])*H + (w[4]-w[0])*un*c + w[1]*KE + w[2]*ut1 + w[3]*ut2
+    auto back_project = [&](const double w[5], double Qrec[NVAR]) {
+        const double w014 = w[0] + w[1] + w[4];
+        const double dw04 = w[4] - w[0];
+        Qrec[0]      = w014;
+        Qrec[n_idx]  = w014*un  + dw04*c_roe;
+        Qrec[t1_idx] = w014*ut1 + w[2];
+        Qrec[t2_idx] = w014*ut2 + w[3];
+        Qrec[4]      = (w[0]+w[4])*H_roe + dw04*un*c_roe
+                     + w[1]*KE + w[2]*ut1 + w[3]*ut2;
+    };
+
+    double QL[NVAR], QRv[NVAR];
+    back_project(wL, QL);
+    back_project(wR, QRv);
+
+    // ── Convert conservative → primitive; guard ρ>0, p>0 ────────────────────
+    auto safe_prim = [](const double Qc[NVAR]) -> Prim {
+        const double rho = std::max(Qc[0], 1.0e-300);
+        const double u   = Qc[1] / rho;
+        const double v   = Qc[2] / rho;
+        const double w   = Qc[3] / rho;
+        const double p   = std::max((GAMMA-1.0)*(Qc[4]-0.5*rho*(u*u+v*v+w*w)),
+                                    1.0e-300);
+        Prim pr;
+        pr.rho = rho;  pr.u = u;   pr.v = v;   pr.w = w;
+        pr.p   = p;    pr.T = p/(rho*R_GAS);
+        pr.c   = std::sqrt(GAMMA*p/rho);
+        return pr;
+    };
+
+    qL_out = safe_prim(QL);
+    qR_out = safe_prim(QRv);
+}
+
+// =============================================================================
 // P2.2 — Convective RHS: face-centred loop
 // =============================================================================
 // Iterates over faces rather than cells.  For axis d, there are
@@ -131,12 +455,24 @@ static void convective_rhs_impl(const Prim* pc, CellBlock& rhs, double h) noexce
 {
     const double ih = 1.0 / h;
 
+    // WENO5-Z + HLLC-ES on interior faces; 1st-order PCM + HLLC-ES on ghost faces.
+    //
+    // WENO5 requires a 6-cell stencil {i-2,...,i+3}.  With NG=2 this fits exactly
+    // when ilo() <= i && i < ihi() (i.e. both stencil ends stay within [0,NB2-1]).
+    // Ghost faces i=ilo()-1 and i=ihi() use cell-centred PCM as fallback.
+
     // X-direction: face between (i,j,k) and (i+1,j,k), i ∈ [ilo-1, ihi]
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo()-1; i <= ihi(); ++i) {
-        const auto F = hllc_flux(pc[cell_idx(i,  j,k)],
-                                  pc[cell_idx(i+1,j,k)], 0);
+        Prim qL, qR;
+        if (i >= ilo() && i < ihi())
+            weno5_face(pc, i, j, k, 0, qL, qR);
+        else {
+            qL = pc[cell_idx(i,   j, k)];
+            qR = pc[cell_idx(i+1, j, k)];
+        }
+        const auto F = hllc_es_flux(qL, qR, 0);
         if (i >= ilo())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,  j,k)] -= ih * F[v];
         if (i+1 <= ihi())
@@ -147,8 +483,14 @@ static void convective_rhs_impl(const Prim* pc, CellBlock& rhs, double h) noexce
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo()-1; j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i) {
-        const auto F = hllc_flux(pc[cell_idx(i,j,  k)],
-                                  pc[cell_idx(i,j+1,k)], 1);
+        Prim qL, qR;
+        if (j >= ilo() && j < ihi())
+            weno5_face(pc, i, j, k, 1, qL, qR);
+        else {
+            qL = pc[cell_idx(i, j,   k)];
+            qR = pc[cell_idx(i, j+1, k)];
+        }
+        const auto F = hllc_es_flux(qL, qR, 1);
         if (j >= ilo())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j,  k)] -= ih * F[v];
         if (j+1 <= ihi())
@@ -159,8 +501,14 @@ static void convective_rhs_impl(const Prim* pc, CellBlock& rhs, double h) noexce
     for (int k = ilo()-1; k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i) {
-        const auto F = hllc_flux(pc[cell_idx(i,j,k  )],
-                                  pc[cell_idx(i,j,k+1)], 2);
+        Prim qL, qR;
+        if (k >= ilo() && k < ihi())
+            weno5_face(pc, i, j, k, 2, qL, qR);
+        else {
+            qL = pc[cell_idx(i, j, k  )];
+            qR = pc[cell_idx(i, j, k+1)];
+        }
+        const auto F = hllc_es_flux(qL, qR, 2);
         if (k >= ilo())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j,k  )] -= ih * F[v];
         if (k+1 <= ihi())
@@ -435,9 +783,9 @@ static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
 
             std::array<double,5> F;
             if (delta > 0)
-                F = hllc_flux(interior, ghost, axis);
+                F = hllc_es_flux(interior, ghost, axis);
             else
-                F = hllc_flux(ghost, interior, axis);
+                F = hllc_es_flux(ghost, interior, axis);
 
             const double sign = (delta > 0) ? +1.0 : -1.0;
             const int idx = cell_idx(ci, cj, ck);
@@ -545,8 +893,8 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
                 Prim ghost    = blk.prim(gi, gj, gk);
 
                 std::array<double,5> F;
-                if (delta > 0) F = hllc_flux(interior, ghost, axis);
-                else           F = hllc_flux(ghost, interior, axis);
+                if (delta > 0) F = hllc_es_flux(interior, ghost, axis);
+                else           F = hllc_es_flux(ghost, interior, axis);
 
                 // Map fine cell (a,b) to the coarse-cell register index.
                 // The mapping depends on which physical direction a and b

@@ -25,6 +25,12 @@
 // Both states are given as primitive variables (rho,u,v,w,p).
 std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept;
 
+// ── P3.3 — Entropy-stable HLLC-ES flux (Chandrashekar 2013) ─────────────────
+// Entropy-conservative (EC) base using log-mean ρ_ln, β_ln (β=ρ/2p) +
+// Lax-Friedrichs scalar dissipation λ_max/2 * ΔQ.
+// Satisfies the entropy inequality ∂η/∂t + ∂F_η/∂x ≤ 0 pointwise.
+std::array<double,5> hllc_es_flux(const Prim& L, const Prim& R, int axis) noexcept;
+
 // ── Per-block convective RHS  dQ/dt|_conv = -(1/h)(dF/dx + dG/dy + dH/dz) ──
 // Ghost cells must be filled.  rhs is added to (not overwritten).
 void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
