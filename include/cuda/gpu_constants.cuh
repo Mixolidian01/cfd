@@ -6,9 +6,14 @@
 
 // Block geometry — must match cell_block.hpp
 static constexpr int GPU_NB  = 8;      // cells per block per axis (interior)
-static constexpr int GPU_NG  = 1;      // ghost layers per side
-static constexpr int GPU_NB2 = GPU_NB + 2*GPU_NG;   // 10
-static constexpr int GPU_NCELL = GPU_NB2 * GPU_NB2 * GPU_NB2; // 1000
+static constexpr int GPU_NG  = 2;      // ghost layers per side
+static constexpr int GPU_NB2 = GPU_NB + 2*GPU_NG;   // 12
+static constexpr int GPU_NCELL = GPU_NB2 * GPU_NB2 * GPU_NB2; // 1728
+
+// Shared-memory budget check: NVAR × NCELL × 8 bytes = 5×1728×8 = 69,120 bytes
+// A100 recommended limit: 96 KB = 98,304 bytes → OK
+static_assert(GPU_NVAR * GPU_NCELL * sizeof(double) <= 98304,
+              "Block state exceeds 96 KB shared memory — reduce NB or NG");
 
 // Number of conserved variables: rho, rhou, rhov, rhow, E
 static constexpr int GPU_NVAR = 5;

@@ -81,38 +81,51 @@ void fill_cf_ghosts(CellBlock& fine, const CellBlock& coarse,
         return (a >= NG && a < NG + NB) ? (a - NG) : (a < NG ? 0 : NB - 1);
     };
 
-    for (int v = 0; v < NVAR; ++v)
-    for (int a = 0; a < NB2; ++a)
-    for (int b = 0; b < NB2; ++b) {
+    // Fill NG ghost layers in the normal direction.
+    // For side=0 (minus face): ghost layers NG-1..0, reading deeper into coarse interior.
+    // For side=1 (plus  face): ghost layers NB2-NG..NB2-1, reading deeper into coarse interior.
+    for (int gl = 0; gl < NG; ++gl)
+    for (int v  = 0; v  < NVAR; ++v)
+    for (int a  = 0; a  < NB2; ++a)
+    for (int b  = 0; b  < NB2; ++b) {
         int gf_i, gf_j, gf_k;
         int cf_i, cf_j, cf_k;
 
         if (axis == 0) {
-            gf_i = (side == 0) ? 0 : NB2 - 1;
+            gf_i = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
             gf_j = a; gf_k = b;
             cf_j = NG + iy * (NB / 2) + local(a) / 2;
             cf_k = NG + iz * (NB / 2) + local(b) / 2;
-            cf_i = clamp_c((side == 0) ? (NG + ix * (NB / 2) - 1)
-                                       : (NG + ix * (NB / 2) + NB / 2));
+            {
+                int base = (side == 0) ? (NG + ix * (NB / 2) - 1)
+                                       : (NG + ix * (NB / 2) + NB / 2);
+                cf_i = clamp_c(base + (side == 0 ? -gl : +gl));
+            }
         } else if (axis == 1) {
-            gf_j = (side == 0) ? 0 : NB2 - 1;
+            gf_j = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
             gf_i = a; gf_k = b;
             cf_i = NG + ix * (NB / 2) + local(a) / 2;
             cf_k = NG + iz * (NB / 2) + local(b) / 2;
-            cf_j = clamp_c((side == 0) ? (NG + iy * (NB / 2) - 1)
-                                       : (NG + iy * (NB / 2) + NB / 2));
+            {
+                int base = (side == 0) ? (NG + iy * (NB / 2) - 1)
+                                       : (NG + iy * (NB / 2) + NB / 2);
+                cf_j = clamp_c(base + (side == 0 ? -gl : +gl));
+            }
         } else {
-            gf_k = (side == 0) ? 0 : NB2 - 1;
+            gf_k = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
             gf_i = a; gf_j = b;
             cf_i = NG + ix * (NB / 2) + local(a) / 2;
             cf_j = NG + iy * (NB / 2) + local(b) / 2;
-            cf_k = clamp_c((side == 0) ? (NG + iz * (NB / 2) - 1)
-                                       : (NG + iz * (NB / 2) + NB / 2));
-        }   // FIX B2: closing brace of else-branch was missing
+            {
+                int base = (side == 0) ? (NG + iz * (NB / 2) - 1)
+                                       : (NG + iz * (NB / 2) + NB / 2);
+                cf_k = clamp_c(base + (side == 0 ? -gl : +gl));
+            }
+        }
 
         fine.Q[v][cell_idx(gf_i, gf_j, gf_k)] =
             coarse.Q[v][cell_idx(cf_i, cf_j, cf_k)];
-    }   // FIX B2: closing brace of triple for-loop body was missing
+    }
 }
 
 // =============================================================================

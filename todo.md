@@ -60,7 +60,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 | # | Status | Item | Propagation |
 |---|--------|------|-------------|
-| **P2.1** | 🔲 | **`NG` 1→2 upgrade** | `NB2=12`, `NCELL=1728`, `gpu_constants.cuh`, all ghost-fill kernels, all index arithmetic, `static_assert` shared memory ≤ 96 KB on A100, AMR prolongation/restriction loops |
+| **P2.1** | ✅ | **`NG` 1→2 upgrade** | `NB2=12`, `NCELL=1728`, `gpu_constants.cuh`, all ghost-fill kernels, all index arithmetic, `static_assert` shared memory ≤ 96 KB on A100, AMR prolongation/restriction loops |
 
 ---
 

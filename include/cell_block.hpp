@@ -2,13 +2,13 @@
 // DESIGN.md reference: Layer 1 — Cell-Centered Block
 //
 // A CellBlock stores one NB x NB x NB patch of conserved variables.
-// Each field has a one-cell ghost layer on every side → (NB+2)^3 storage.
+// Each field has NG ghost layers on every side → (NB+2·NG)^3 storage.
 //
 // Memory layout: SoA (Structure of Arrays) — one contiguous array per field.
 // Index convention:
-//   flat(i,j,k) = k*(NB+2)*(NB+2) + j*(NB+2) + i
-//   where i,j,k ∈ [0, NB+1]   (0 and NB+1 are ghost cells)
-//   interior:   i,j,k ∈ [1, NB]
+//   flat(i,j,k) = k*NB2*NB2 + j*NB2 + i
+//   where i,j,k ∈ [0, NB2-1]   (0..NG-1 and NB2-NG..NB2-1 are ghost cells)
+//   interior:   i,j,k ∈ [NG, NB+NG-1]
 //
 // Conserved variables (following DESIGN.md):
 //   Q[0] = rho        density
@@ -30,8 +30,8 @@
 
 // ── Constants ─────────────────────────────────────────────────────────────────────────────────
 inline constexpr int    NB     = 8;          // cells per block side
-inline constexpr int    NG     = 1;          // ghost layers each side
-inline constexpr int    NB2    = NB + 2*NG;  // side with ghosts = 10
+inline constexpr int    NG     = 2;          // ghost layers each side
+inline constexpr int    NB2    = NB + 2*NG;  // side with ghosts = 12
 inline constexpr int    NCELL  = NB2*NB2*NB2;// total storage per field
 inline constexpr int    NVAR   = 5;          // number of conserved variables
 inline constexpr double GAMMA  = 1.4;

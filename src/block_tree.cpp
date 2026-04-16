@@ -121,7 +121,7 @@ void CellBlock::zero_ghosts() noexcept {
         for (int k = 0; k < NB2; ++k)
         for (int j = 0; j < NB2; ++j)
         for (int i = 0; i < NB2; ++i) {
-            bool ghost = (i==0||i==NB2-1||j==0||j==NB2-1||k==0||k==NB2-1);
+            bool ghost = (i<NG||i>=NB2-NG||j<NG||j>=NB2-NG||k<NG||k>=NB2-NG);
             if (ghost) f[cell_idx(i,j,k)] = 0.0;
         }
     }
@@ -507,8 +507,7 @@ static void fill_coarse_ghost_from_fine(
     CellBlock& coarse_blk,
     const std::vector<BlockNode>& nodes,
     int ni,      // one of the fine block indices on this face (for parent lookup)
-    int d,       // face direction
-    int g        // ghost layer index (0 or NB2-1)
+    int d        // face direction
 ) {
     const int axis = fd_axis(d);
     const int side = fd_side(d);
@@ -529,58 +528,60 @@ static void fill_coarse_ghost_from_fine(
             return;  // stale pointer — skip rather than corrupt
     }
 
-    // The fine interior cell closest to the coarse face:
-    //   side=1 means coarse face is on the + side → fine interior at iLO of fine block
-    //   side=0 means coarse face is on the - side → fine interior at iHI of fine block
-    const int face_i = (side == 1) ? ilo() : ihi();
+    // Fill NG ghost layers.  For each layer gl:
+    //   side=0: ghost index NG-1-gl, fine row ihi()-gl (going inward)
+    //   side=1: ghost index NB2-NG+gl, fine row ilo()+gl (going inward)
+    for (int gl = 0; gl < NG; ++gl) {
+        const int g      = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
+        const int face_i = (side == 0) ? (ihi() - gl)  : (ilo() + gl);
 
-    // Loop over coarse interior face positions (the two transverse directions)
-    for (int a = ilo(); a <= ihi(); ++a)
-    for (int b = ilo(); b <= ihi(); ++b) {
-        int a_local = a - ilo();
-        int b_local = b - ilo();
+        for (int a = ilo(); a <= ihi(); ++a)
+        for (int b = ilo(); b <= ihi(); ++b) {
+            int a_local = a - ilo();
+            int b_local = b - ilo();
 
-        int ia_blk = a_local / half;
-        int ib_blk = b_local / half;
+            int ia_blk = a_local / half;
+            int ib_blk = b_local / half;
 
-        // A05-fix4: use `side` directly — no -1 sentinel
-        int oix, oiy, oiz;
-        if (axis == 0) {
-            oix = side;     oiy = ia_blk;  oiz = ib_blk;
-        } else if (axis == 1) {
-            oix = ia_blk;   oiy = side;    oiz = ib_blk;
-        } else {
-            oix = ia_blk;   oiy = ib_blk;  oiz = side;
-        }
-        int fine_oct = oct_from_xyz(oix, oiy, oiz);
-        int fi = first_child + fine_oct;
-
-        if (fi < 0 || fi >= (int)nodes.size()) continue;
-        if (!nodes[fi].has_block()) continue;
-        const CellBlock& fsrc = *nodes[fi].block;
-
-        int fa_start = NG + 2 * (a_local % half);
-        int fb_start = NG + 2 * (b_local % half);
-
-        for (int v = 0; v < NVAR; ++v) {
-            double avg = 0.0;
-            for (int da = 0; da < 2; ++da)
-            for (int db = 0; db < 2; ++db) {
-                int fa = fa_start + da;
-                int fb = fb_start + db;
-                int ci, cj, ck;
-                if (axis == 0) { ci=face_i; cj=fa; ck=fb; }
-                else if (axis==1) { ci=fa; cj=face_i; ck=fb; }
-                else              { ci=fa; cj=fb; ck=face_i; }
-                avg += fsrc.Q[v][cell_idx(ci, cj, ck)];
+            // A05-fix4: use `side` directly — no -1 sentinel
+            int oix, oiy, oiz;
+            if (axis == 0) {
+                oix = side;     oiy = ia_blk;  oiz = ib_blk;
+            } else if (axis == 1) {
+                oix = ia_blk;   oiy = side;    oiz = ib_blk;
+            } else {
+                oix = ia_blk;   oiy = ib_blk;  oiz = side;
             }
-            avg *= 0.25;
+            int fine_oct = oct_from_xyz(oix, oiy, oiz);
+            int fi = first_child + fine_oct;
 
-            int gi, gj, gk;
-            if (axis == 0) { gi=g; gj=a; gk=b; }
-            else if (axis==1) { gi=a; gj=g; gk=b; }
-            else              { gi=a; gj=b; gk=g; }
-            coarse_blk.Q[v][cell_idx(gi, gj, gk)] = avg;
+            if (fi < 0 || fi >= (int)nodes.size()) continue;
+            if (!nodes[fi].has_block()) continue;
+            const CellBlock& fsrc = *nodes[fi].block;
+
+            int fa_start = NG + 2 * (a_local % half);
+            int fb_start = NG + 2 * (b_local % half);
+
+            for (int v = 0; v < NVAR; ++v) {
+                double avg = 0.0;
+                for (int da = 0; da < 2; ++da)
+                for (int db = 0; db < 2; ++db) {
+                    int fa = fa_start + da;
+                    int fb = fb_start + db;
+                    int ci, cj, ck;
+                    if (axis == 0) { ci=face_i; cj=fa; ck=fb; }
+                    else if (axis==1) { ci=fa; cj=face_i; ck=fb; }
+                    else              { ci=fa; cj=fb; ck=face_i; }
+                    avg += fsrc.Q[v][cell_idx(ci, cj, ck)];
+                }
+                avg *= 0.25;
+
+                int gi, gj, gk;
+                if (axis == 0) { gi=g; gj=a; gk=b; }
+                else if (axis==1) { gi=a; gj=g; gk=b; }
+                else              { gi=a; gj=b; gk=g; }
+                coarse_blk.Q[v][cell_idx(gi, gj, gk)] = avg;
+            }
         }
     }
 }
@@ -655,7 +656,6 @@ void BlockTree::fill_ghosts_periodic() {
         for (int d = 0; d < NFACES; ++d) {
             int ni = nd.neighbours[d];
             const FaceSpec& sp = specs[d];
-            int g = sp.ghost_g;
 
             if (ni >= 0 && nodes[ni].has_block()) {
                 if (nodes[ni].level < nd.level) {
@@ -667,7 +667,7 @@ void BlockTree::fill_ghosts_periodic() {
                 if (nodes[ni].level > nd.level) {
                     // A05-fix2: coarse leaf adjacent to fine neighbour →
                     // averaged ghost fill using the 2×2 fine cells per coarse ghost
-                    fill_coarse_ghost_from_fine(blk, nodes, ni, d, g);
+                    fill_coarse_ghost_from_fine(blk, nodes, ni, d);
                     continue;
                 }
             }
@@ -678,50 +678,86 @@ void BlockTree::fill_ghosts_periodic() {
             const CellBlock& src = (ni>=0 && nodes[ni].has_block())
                                    ? *nodes[ni].block
                                    : (periodic_blk ? *periodic_blk : blk);
-            if (sp.axis == 0) {
-                for (int k=ilo();k<=ihi();++k)
-                for (int j=ilo();j<=ihi();++j)
-                    copy_cell(g,j,k, sp.mirror_s,j,k, src);
-            } else if (sp.axis == 1) {
-                for (int k=ilo();k<=ihi();++k)
-                for (int i=ilo();i<=ihi();++i)
-                    copy_cell(i,g,k, i,sp.mirror_s,k, src);
-            } else {
-                for (int j=ilo();j<=ihi();++j)
-                for (int i=ilo();i<=ihi();++i)
-                    copy_cell(i,j,g, i,j,sp.mirror_s, src);
+            // Fill all NG ghost layers.
+            // side=0: ghost NG-1-gl from src[ihi()-gl]; side=1: ghost NB2-NG+gl from src[ilo()+gl]
+            for (int gl = 0; gl < NG; ++gl) {
+                const int g_idx   = (sp.side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
+                const int src_idx = (sp.side == 0) ? (ihi() - gl)  : (ilo() + gl);
+                if (sp.axis == 0) {
+                    for (int k=ilo();k<=ihi();++k)
+                    for (int j=ilo();j<=ihi();++j)
+                        copy_cell(g_idx,j,k, src_idx,j,k, src);
+                } else if (sp.axis == 1) {
+                    for (int k=ilo();k<=ihi();++k)
+                    for (int i=ilo();i<=ihi();++i)
+                        copy_cell(i,g_idx,k, i,src_idx,k, src);
+                } else {
+                    for (int j=ilo();j<=ihi();++j)
+                    for (int i=ilo();i<=ihi();++i)
+                        copy_cell(i,j,g_idx, i,j,src_idx, src);
+                }
             }
         }
 
         // ── 2. Edge ghosts ────────────────────────────────────────────────────
-        for (int k=ilo();k<=ihi();++k) {
-            copy_cell(0,    0,    k,  ihi(),ihi(),k, blk);
-            copy_cell(NB2-1,0,    k,  ilo(),ihi(),k, blk);
-            copy_cell(0,    NB2-1,k,  ihi(),ilo(),k, blk);
-            copy_cell(NB2-1,NB2-1,k,  ilo(),ilo(),k, blk);
+        // Periodic map: left ghost gl ↔ source ihi()-(NG-1)+gl
+        //               right ghost gl ↔ source ilo()+gl
+        // XY edges (k interior, i and j both in ghost range)
+        for (int k=ilo();k<=ihi();++k)
+        for (int glx=0; glx<NG; ++glx)
+        for (int gly=0; gly<NG; ++gly) {
+            const int gx_lo=glx,        sx_lo=ihi()-(NG-1)+glx;
+            const int gx_hi=NB2-NG+glx, sx_hi=ilo()+glx;
+            const int gy_lo=gly,        sy_lo=ihi()-(NG-1)+gly;
+            const int gy_hi=NB2-NG+gly, sy_hi=ilo()+gly;
+            copy_cell(gx_lo, gy_lo, k,  sx_lo, sy_lo, k, blk);
+            copy_cell(gx_hi, gy_lo, k,  sx_hi, sy_lo, k, blk);
+            copy_cell(gx_lo, gy_hi, k,  sx_lo, sy_hi, k, blk);
+            copy_cell(gx_hi, gy_hi, k,  sx_hi, sy_hi, k, blk);
         }
-        for (int j=ilo();j<=ihi();++j) {
-            copy_cell(0,    j,0,     ihi(),j,ihi(), blk);
-            copy_cell(NB2-1,j,0,     ilo(),j,ihi(), blk);
-            copy_cell(0,    j,NB2-1, ihi(),j,ilo(), blk);
-            copy_cell(NB2-1,j,NB2-1, ilo(),j,ilo(), blk);
+        // XZ edges (j interior)
+        for (int j=ilo();j<=ihi();++j)
+        for (int glx=0; glx<NG; ++glx)
+        for (int glz=0; glz<NG; ++glz) {
+            const int gx_lo=glx,        sx_lo=ihi()-(NG-1)+glx;
+            const int gx_hi=NB2-NG+glx, sx_hi=ilo()+glx;
+            const int gz_lo=glz,        sz_lo=ihi()-(NG-1)+glz;
+            const int gz_hi=NB2-NG+glz, sz_hi=ilo()+glz;
+            copy_cell(gx_lo, j, gz_lo,  sx_lo, j, sz_lo, blk);
+            copy_cell(gx_hi, j, gz_lo,  sx_hi, j, sz_lo, blk);
+            copy_cell(gx_lo, j, gz_hi,  sx_lo, j, sz_hi, blk);
+            copy_cell(gx_hi, j, gz_hi,  sx_hi, j, sz_hi, blk);
         }
-        for (int i=ilo();i<=ihi();++i) {
-            copy_cell(i,0,    0,     i,ihi(),ihi(), blk);
-            copy_cell(i,NB2-1,0,     i,ilo(),ihi(), blk);
-            copy_cell(i,0,    NB2-1, i,ihi(),ilo(), blk);
-            copy_cell(i,NB2-1,NB2-1, i,ilo(),ilo(), blk);
+        // YZ edges (i interior)
+        for (int i=ilo();i<=ihi();++i)
+        for (int gly=0; gly<NG; ++gly)
+        for (int glz=0; glz<NG; ++glz) {
+            const int gy_lo=gly,        sy_lo=ihi()-(NG-1)+gly;
+            const int gy_hi=NB2-NG+gly, sy_hi=ilo()+gly;
+            const int gz_lo=glz,        sz_lo=ihi()-(NG-1)+glz;
+            const int gz_hi=NB2-NG+glz, sz_hi=ilo()+glz;
+            copy_cell(i, gy_lo, gz_lo,  i, sy_lo, sz_lo, blk);
+            copy_cell(i, gy_hi, gz_lo,  i, sy_hi, sz_lo, blk);
+            copy_cell(i, gy_lo, gz_hi,  i, sy_lo, sz_hi, blk);
+            copy_cell(i, gy_hi, gz_hi,  i, sy_hi, sz_hi, blk);
         }
 
         // ── 3. Corner ghosts ───────────────────────────────────────────────────
-        copy_cell(0,    0,    0,     ihi(),ihi(),ihi(), blk);
-        copy_cell(NB2-1,0,    0,     ilo(),ihi(),ihi(), blk);
-        copy_cell(0,    NB2-1,0,     ihi(),ilo(),ihi(), blk);
-        copy_cell(NB2-1,NB2-1,0,     ilo(),ilo(),ihi(), blk);
-        copy_cell(0,    0,    NB2-1, ihi(),ihi(),ilo(), blk);
-        copy_cell(NB2-1,0,    NB2-1, ilo(),ihi(),ilo(), blk);
-        copy_cell(0,    NB2-1,NB2-1, ihi(),ilo(),ilo(), blk);
-        copy_cell(NB2-1,NB2-1,NB2-1, ilo(),ilo(),ilo(), blk);
+        for (int glx=0; glx<NG; ++glx)
+        for (int gly=0; gly<NG; ++gly)
+        for (int glz=0; glz<NG; ++glz) {
+            const int gx_lo=glx, sx_lo=ihi()-(NG-1)+glx, gx_hi=NB2-NG+glx, sx_hi=ilo()+glx;
+            const int gy_lo=gly, sy_lo=ihi()-(NG-1)+gly, gy_hi=NB2-NG+gly, sy_hi=ilo()+gly;
+            const int gz_lo=glz, sz_lo=ihi()-(NG-1)+glz, gz_hi=NB2-NG+glz, sz_hi=ilo()+glz;
+            copy_cell(gx_lo, gy_lo, gz_lo,  sx_lo, sy_lo, sz_lo, blk);
+            copy_cell(gx_hi, gy_lo, gz_lo,  sx_hi, sy_lo, sz_lo, blk);
+            copy_cell(gx_lo, gy_hi, gz_lo,  sx_lo, sy_hi, sz_lo, blk);
+            copy_cell(gx_hi, gy_hi, gz_lo,  sx_hi, sy_hi, sz_lo, blk);
+            copy_cell(gx_lo, gy_lo, gz_hi,  sx_lo, sy_lo, sz_hi, blk);
+            copy_cell(gx_hi, gy_lo, gz_hi,  sx_hi, sy_lo, sz_hi, blk);
+            copy_cell(gx_lo, gy_hi, gz_hi,  sx_lo, sy_hi, sz_hi, blk);
+            copy_cell(gx_hi, gy_hi, gz_hi,  sx_hi, sy_hi, sz_hi, blk);
+        }
     }
 }
 
@@ -792,67 +828,86 @@ void BlockTree::fill_ghosts_wall() {
             int ni = nd.neighbours[d];
             if (ni < 0 || !nodes[ni].has_block()) continue;
             const FaceSpec& sp = specs[d];
-            int g = sp.ghost_g;
             if (nodes[ni].level < nd.level) {
                 int oct = child_octant_of(nodes, li);
                 fill_cf_ghosts(blk, *nodes[ni].block, oct, sp.axis, sp.side);
             } else if (nodes[ni].level > nd.level) {
-                fill_coarse_ghost_from_fine(blk, nodes, ni, d, g);
+                fill_coarse_ghost_from_fine(blk, nodes, ni, d);
             } else {
-                // B2: same-level interior neighbour — direct face copy
+                // B2: same-level interior neighbour — direct face copy (all NG layers)
                 const CellBlock& src = *nodes[ni].block;
-                if (sp.axis == 0) {
-                    for (int k=ilo();k<=ihi();++k)
-                    for (int j=ilo();j<=ihi();++j)
-                        copy_cell_wall(g,j,k, sp.mirror_s,j,k, src);
-                } else if (sp.axis == 1) {
-                    for (int k=ilo();k<=ihi();++k)
-                    for (int i=ilo();i<=ihi();++i)
-                        copy_cell_wall(i,g,k, i,sp.mirror_s,k, src);
-                } else {
-                    for (int j=ilo();j<=ihi();++j)
-                    for (int i=ilo();i<=ihi();++i)
-                        copy_cell_wall(i,j,g, i,j,sp.mirror_s, src);
+                for (int gl = 0; gl < NG; ++gl) {
+                    const int g_idx   = (sp.side==0) ? (NG-1-gl)    : (NB2-NG+gl);
+                    const int src_idx = (sp.side==0) ? (ihi()-gl)    : (ilo()+gl);
+                    if (sp.axis == 0) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int j=ilo();j<=ihi();++j)
+                            copy_cell_wall(g_idx,j,k, src_idx,j,k, src);
+                    } else if (sp.axis == 1) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int i=ilo();i<=ihi();++i)
+                            copy_cell_wall(i,g_idx,k, i,src_idx,k, src);
+                    } else {
+                        for (int j=ilo();j<=ihi();++j)
+                        for (int i=ilo();i<=ihi();++i)
+                            copy_cell_wall(i,j,g_idx, i,j,src_idx, src);
+                    }
                 }
             }
         }
 
-        if (xm) wall_x(0,     ilo());
-        if (xp) wall_x(NB2-1, ihi());
-        if (ym) wall_y(0,     ilo());
-        if (yp) wall_y(NB2-1, ihi());
-        if (zm) wall_z(0,     ilo());
-        if (zp) wall_z(NB2-1, ihi());
+        // Wall ghost fill: all NG ghost layers (anti-symmetric momentum, symmetric rho/E)
+        if (xm) { for (int gl=0;gl<NG;++gl) wall_x(NG-1-gl,   ilo()+gl); }
+        if (xp) { for (int gl=0;gl<NG;++gl) wall_x(NB2-NG+gl, ihi()-gl); }
+        if (ym) { for (int gl=0;gl<NG;++gl) wall_y(NG-1-gl,   ilo()+gl); }
+        if (yp) { for (int gl=0;gl<NG;++gl) wall_y(NB2-NG+gl, ihi()-gl); }
+        if (zm) { for (int gl=0;gl<NG;++gl) wall_z(NG-1-gl,   ilo()+gl); }
+        if (zp) { for (int gl=0;gl<NG;++gl) wall_z(NB2-NG+gl, ihi()-gl); }
 
         // ── Edge ghosts ─────────────────────────────────────────────────────
-        for (int k=ilo();k<=ihi();++k) {
-            if (xm||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    k)] = blk.Q[v][cell_idx(0,    ilo(),k)];
-            if (xp||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    k)] = blk.Q[v][cell_idx(NB2-1,ilo(),k)];
-            if (xm||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,k)] = blk.Q[v][cell_idx(0,    ihi(),k)];
-            if (xp||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,NB2-1,k)] = blk.Q[v][cell_idx(NB2-1,ihi(),k)];
+        // Copy from the already-wall/neighbour-filled face ghost in the other direction.
+        // Side=0 ghost gl → reads face ghost at ilo()+gl; side=1 ghost gl → reads at ihi()-gl.
+        // XY edges (k interior)
+        for (int k=ilo();k<=ihi();++k)
+        for (int glx=0; glx<NG; ++glx)
+        for (int gly=0; gly<NG; ++gly) {
+            if (xm||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        gly,        k)] = blk.Q[v][cell_idx(glx,        ilo()+gly, k)];
+            if (xp||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, gly,        k)] = blk.Q[v][cell_idx(NB2-NG+glx, ilo()+gly, k)];
+            if (xm||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        NB2-NG+gly, k)] = blk.Q[v][cell_idx(glx,        ihi()-gly, k)];
+            if (xp||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, k)] = blk.Q[v][cell_idx(NB2-NG+glx, ihi()-gly, k)];
         }
-        for (int j=ilo();j<=ihi();++j) {
-            if (xm||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    j,0    )] = blk.Q[v][cell_idx(0,    j,ilo())];
-            if (xp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,j,0    )] = blk.Q[v][cell_idx(NB2-1,j,ilo())];
-            if (xm||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    j,NB2-1)] = blk.Q[v][cell_idx(0,    j,ihi())];
-            if (xp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,j,NB2-1)] = blk.Q[v][cell_idx(NB2-1,j,ihi())];
+        // XZ edges (j interior)
+        for (int j=ilo();j<=ihi();++j)
+        for (int glx=0; glx<NG; ++glx)
+        for (int glz=0; glz<NG; ++glz) {
+            if (xm||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        j, glz       )] = blk.Q[v][cell_idx(glx,        j, ilo()+glz)];
+            if (xp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, j, glz       )] = blk.Q[v][cell_idx(NB2-NG+glx, j, ilo()+glz)];
+            if (xm||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        j, NB2-NG+glz)] = blk.Q[v][cell_idx(glx,        j, ihi()-glz)];
+            if (xp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, j, NB2-NG+glz)] = blk.Q[v][cell_idx(NB2-NG+glx, j, ihi()-glz)];
         }
-        for (int i=ilo();i<=ihi();++i) {
-            if (ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,0,    0    )] = blk.Q[v][cell_idx(i,0,    ilo())];
-            if (yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,NB2-1,0    )] = blk.Q[v][cell_idx(i,NB2-1,ilo())];
-            if (ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,0,    NB2-1)] = blk.Q[v][cell_idx(i,0,    ihi())];
-            if (yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i,NB2-1,NB2-1)] = blk.Q[v][cell_idx(i,NB2-1,ihi())];
+        // YZ edges (i interior)
+        for (int i=ilo();i<=ihi();++i)
+        for (int gly=0; gly<NG; ++gly)
+        for (int glz=0; glz<NG; ++glz) {
+            if (ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i, gly,        glz       )] = blk.Q[v][cell_idx(i, gly,        ilo()+glz)];
+            if (yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i, NB2-NG+gly, glz       )] = blk.Q[v][cell_idx(i, NB2-NG+gly, ilo()+glz)];
+            if (ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i, gly,        NB2-NG+glz)] = blk.Q[v][cell_idx(i, gly,        ihi()-glz)];
+            if (yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i, NB2-NG+gly, NB2-NG+glz)] = blk.Q[v][cell_idx(i, NB2-NG+gly, ihi()-glz)];
         }
 
         // ── Corner ghosts ─────────────────────────────────────────────────────
-        if (xm||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    0    )] = blk.Q[v][cell_idx(0,    0,    ilo())];
-        if (xp||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    0    )] = blk.Q[v][cell_idx(NB2-1,0,    ilo())];
-        if (xm||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,0    )] = blk.Q[v][cell_idx(0,    NB2-1,ilo())];
-        if (xp||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,NB2-1,0    )] = blk.Q[v][cell_idx(NB2-1,NB2-1,ilo())];
-        if (xm||ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    0,    NB2-1)] = blk.Q[v][cell_idx(0,    0,    ihi())];
-        if (xp||ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,0,    NB2-1)] = blk.Q[v][cell_idx(NB2-1,0,    ihi())];
-        if (xm||yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(0,    NB2-1,NB2-1)] = blk.Q[v][cell_idx(0,    NB2-1,ihi())];
-        if (xp||yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-1,NB2-1,NB2-1)] = blk.Q[v][cell_idx(NB2-1,NB2-1,ihi())];
+        for (int glx=0; glx<NG; ++glx)
+        for (int gly=0; gly<NG; ++gly)
+        for (int glz=0; glz<NG; ++glz) {
+            if (xm||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        gly,        glz       )] = blk.Q[v][cell_idx(glx,        gly,        ilo()+glz)];
+            if (xp||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, gly,        glz       )] = blk.Q[v][cell_idx(NB2-NG+glx, gly,        ilo()+glz)];
+            if (xm||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        NB2-NG+gly, glz       )] = blk.Q[v][cell_idx(glx,        NB2-NG+gly, ilo()+glz)];
+            if (xp||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, glz       )] = blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, ilo()+glz)];
+            if (xm||ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        gly,        NB2-NG+glz)] = blk.Q[v][cell_idx(glx,        gly,        ihi()-glz)];
+            if (xp||ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, gly,        NB2-NG+glz)] = blk.Q[v][cell_idx(NB2-NG+glx, gly,        ihi()-glz)];
+            if (xm||yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        NB2-NG+gly, NB2-NG+glz)] = blk.Q[v][cell_idx(glx,        NB2-NG+gly, ihi()-glz)];
+            if (xp||yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, NB2-NG+glz)] = blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, ihi()-glz)];
+        }
     }
 }
 
