@@ -289,14 +289,14 @@ select:hover, button:hover {
   <div class="ws-badge">
     <span id="wsDot" class="ws-dot"></span>
     <span id="wsLabel">disconnected</span>
-  
-  <button id="btnStop"
-    style="margin-left:8px;padding:4px 12px;background:var(--surface-2);
-           border:1px solid var(--border);color:var(--red);border-radius:var(--radius);
-           font-size:12px;cursor:pointer;font-family:var(--font-ui);"
-    title="Stop the bridge server">
-    ■ Stop server
-  </button>
+    <button id="btnStop"
+      style="margin-left:8px;padding:4px 12px;background:var(--surface-2);
+             border:1px solid var(--border);color:var(--red);border-radius:var(--radius);
+             font-size:12px;cursor:pointer;font-family:var(--font-ui);"
+      title="Stop the bridge server">
+      ■ Stop server
+    </button>
+  </div>
 </header>
 
 <!-- KPI Bar -->
@@ -355,11 +355,18 @@ select:hover, button:hover {
           <option value="w">w (vel-z)</option>
           <option value="p">p (pressure)</option>
           <option value="T">T (temp)</option>
+          <option value="Mach">Mach</option>
+          <option value="vort">|ω| vorticity</option>
         </select>
         <select id="selAxis">
           <option value="z">z-slice</option>
           <option value="y">y-slice</option>
           <option value="x">x-slice</option>
+        </select>
+        <select id="selColormap" title="Colormap">
+          <option value="viridis">Viridis</option>
+          <option value="inferno">Inferno</option>
+          <option value="RdBu">RdBu</option>
         </select>
         <button id="btnRefreshSlice">↻</button>
         <button id="btnAutoSlice">Auto</button>
@@ -642,6 +649,14 @@ function handleBinaryMessage(buf) {
   }
   renderSlice(width, height, vmin, vmax, data);
 }
+
+// Sync colormap selector → activeColormap
+document.getElementById('selColormap').onchange = (e) => {
+  activeColormap = e.target.value;
+  drawColorbar(document.getElementById('cbGradient'));
+  // Re-render last slice with new colormap (if data is available)
+  requestSlice(lastSliceStep);
+};
 
 document.getElementById('btnRefreshSlice').onclick = () => requestSlice(null);
 

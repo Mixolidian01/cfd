@@ -75,6 +75,27 @@ def parse_vtk_structured_points(path: Path) -> dict:
 
         i += 1
 
+    # Derived fields: Mach number and vorticity magnitude
+    if "u" in fields and "c" in fields:
+        u = fields["u"]; v = fields.get("v", np.zeros_like(u))
+        w = fields.get("w", np.zeros_like(u)); c = fields["c"]
+        c_safe = np.where(c > 0, c, 1.0)
+        fields["Mach"] = np.sqrt(u**2 + v**2 + w**2) / c_safe
+
+    if "u" in fields and "v" in fields and "w" in fields:
+        u = fields["u"]; v = fields["v"]; w = fields["w"]
+        # Central differences for curl; clamp to valid interior
+        dvdx = np.gradient(v, sx, axis=2)
+        dudy = np.gradient(u, sy, axis=1)
+        dwdy = np.gradient(w, sy, axis=1)
+        dvdz = np.gradient(v, sz, axis=0)
+        dudz = np.gradient(u, sz, axis=0)
+        dwdx = np.gradient(w, sx, axis=2)
+        wx = dwdy - dvdz
+        wy = dudz - dwdx
+        wz = dvdx - dudy
+        fields["vort"] = np.sqrt(wx**2 + wy**2 + wz**2)
+
     return {"nx": nx, "ny": ny, "nz": nz,
             "sx": sx, "sy": sy, "sz": sz,
             "fields": fields}
