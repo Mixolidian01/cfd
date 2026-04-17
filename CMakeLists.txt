@@ -166,8 +166,39 @@ if(NVCC)
         COMMENT "Step 5 gate: test_gpu"
         USES_TERMINAL
     )
+    # ── P4.3: TBC ghost exchange gate (t8) ────────────────────────────────────
+    # Compiles with sm_${_ARCH} (sm_86 on RTX 3070) so the fallback path runs.
+    # The TBC path activates automatically at runtime when sm_major >= 9.
+    set(_T8_BIN ${CMAKE_BINARY_DIR}/t8_ghost_cluster)
+    set(_T8_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_ghost_cluster.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_cluster.cu
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T8_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall
+                ${_T8_SRCS}
+                -o ${_T8_BIN} -lm
+        DEPENDS ${_T8_SRCS}
+        COMMENT "nvcc: compiling P4.3 TBC ghost exchange gate"
+        VERBATIM
+    )
+
+    add_custom_target(t8
+        DEPENDS ${_T8_BIN}
+        COMMAND ${_T8_BIN}
+        COMMENT "P4.3 gate: TBC ghost exchange"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5 skipped")
+    message(STATUS "nvcc not found — t5/t8 skipped")
 endif()
 
 # =============================================================================
