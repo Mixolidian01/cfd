@@ -80,7 +80,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 | # | Status | Item | Dependency |
 |---|--------|------|------------|
-| P4.1 | 🔲 | Local time stepping — Berger-Oliger subcycling | P1.4 + P1.5 |
+| P4.1 | ✅ | Local time stepping — Berger-Oliger subcycling | P1.4 + P1.5 |
 | P4.2 | 🔲 | AoSoA memory layout for AVX-512 CPU SIMD | Stable code post-P2 |
 | P4.3 | 🔲 | Thread Block Clusters / DSMEM ghost exchange (H100/B200) | CUDA 12 + hardware |
 | P4.4 | 🔲 | Multiphase Baer-Nunziato diffuse interface (`NVAR→7`) | P2.1 + P3.1 |

@@ -46,11 +46,16 @@ struct SolverConfig {
     bool verbose_json = false;
 
     // P3.5: IMEX-ARK implicit viscous solve
-    // When use_imex == true, advance() applies an implicit Helmholtz correction
-    // for each velocity component after the explicit SSP-RK3 step using
-    // MGSolver::solve_helmholtz (V-cycle multigrid, alpha = dt*mu/rho).
     bool use_imex  = false;
-    int  mg_levels = 3;   // multigrid levels for the per-block Helmholtz solver
+    int  mg_levels = 3;
+
+    // P4.1: Berger-Oliger local time stepping.
+    // When use_lts == true and the tree has more than one refinement level,
+    // advance() dispatches to advance_lts().  The fine level takes lts_ratio
+    // sub-steps of dt_c/lts_ratio per coarse step.  Two levels are supported;
+    // deeper trees recursively apply the same principle.
+    bool use_lts   = false;
+    int  lts_ratio = 2;   // refinement ratio (must match tree's geometric ratio)
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────
@@ -89,6 +94,19 @@ private:
     void copy_stage_to_tree(const std::vector<CellBlock>& stage);
     void copy_tree_to_stage(std::vector<CellBlock>& stage);
 
+    // Level-filtered copy helpers for LTS (only touch leaves at `level`).
+    void copy_tree_to_stage_level(std::vector<CellBlock>& stage, int level);
+    void copy_stage_to_tree_level(const std::vector<CellBlock>& stage, int level);
+
     // P3.5: IMEX advance — implicit viscous Helmholtz correction after RK3.
     double advance_imex();
+
+    // P4.1: Berger-Oliger LTS.
+    // lts_rk3_level runs one full SSP-RK3 step for leaves at `level`.
+    //   sub_weight: 1/r for fine levels (r sub-steps), 1.0 for the coarse level.
+    //   Flux accumulation weight = sub_weight × {1/6, 1/6, 2/3} per stage.
+    // advance_lts is the entry point dispatched from advance() when use_lts=true.
+    // coarse_mode=true: C/F coarse ghosts use zero-gradient fill (LTS coarse step only).
+    void   lts_rk3_level(int level, double dt, double sub_weight, bool coarse_mode = false);
+    double advance_lts();
 };

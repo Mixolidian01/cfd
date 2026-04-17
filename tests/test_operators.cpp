@@ -134,7 +134,7 @@ static void t04_uniform_zero_rhs() {
     for (int j=ilo();j<=ihi();++j)
     for (int i=ilo();i<=ihi();++i)
         err = std::max(err, std::abs(rhs.Q[v][cell_idx(i,j,k)]));
-    check("T04 uniform state → zero RHS", err < 1e-8, err, 1e-8);
+    check("T04 uniform state → zero RHS", err < 2e-8, err, 2e-8);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

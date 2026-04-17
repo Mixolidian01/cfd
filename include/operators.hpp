@@ -52,11 +52,23 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 //   stage 1: 1/6,  stage 2: 1/6,  stage 3: 2/3
 // The caller must zero flux registers once before stage 1 and must NOT zero
 // them between stages.  apply_flux_correction(dt) is called after stage 3.
-// Default value 1.0 preserves backward-compatibility for single-stage calls.
+// stage_weight: SSP-RK3 quadrature weight (1/6, 1/6, 2/3) for Berger-Colella flux.
+// level_filter: when >= 0, only leaves at that refinement level participate in
+//   compute_rhs/undo_cf/accumulate_fine steps.  Pass -1 for all levels (default).
+//   Ghost fill is always global (all leaves) regardless of the filter.
+// cf_coarse_zero_grad: when true, coarse C/F ghost cells are filled with zero-gradient
+//   extrapolation (ghost = interior) rather than fine cell averages.  Used by the
+//   LTS coarse step so that viscous flux at C/F interfaces is exactly zero, allowing
+//   total-energy conservation after Berger-Colella correction.
 void tree_rhs(BlockTree& tree,
               std::vector<CellBlock>& rhs_blocks,
               bool periodic,
-              double stage_weight = 1.0) noexcept;
+              double stage_weight       = 1.0,
+              int    level_filter       = -1,
+              bool   cf_coarse_zero_grad = false) noexcept;
 
-// ── CFL time step over entire tree ───────────────────────────────────────────
+// ── CFL time step ─────────────────────────────────────────────────────────────
+// tree_cfl_dt: global minimum over all leaves.
+// level_cfl_dt: minimum over leaves at a specific refinement level (P4.1 LTS).
 double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept;
+double level_cfl_dt(const BlockTree& tree, int level, double cfl) noexcept;

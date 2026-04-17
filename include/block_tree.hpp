@@ -116,13 +116,21 @@ struct BlockTree {
     // P1.6: cached leaf index list; invalidated by refine/coarsen/rebuild.
     const std::vector<int>& leaf_indices() const;
 
+    // P4.1: max/min refinement level that has at least one leaf.
+    int max_leaf_level() const noexcept;
+    int min_leaf_level() const noexcept;
+
     // ── Neighbour topology ────────────────────────────────────────────────────
     void rebuild_neighbours();
 
     // ── Ghost fill ─────────────────────────────────────────────────────────────
     // P1.3: dispatches fill_cf_ghosts for coarse-fine faces
-    void fill_ghosts_periodic();
-    void fill_ghosts_wall();
+    // cf_zero_grad=false (default): coarse C/F ghosts filled from fine cell averages.
+    // cf_zero_grad=true  (LTS coarse step): coarse C/F ghosts use zero-gradient
+    //   extrapolation (ghost = interior).  This makes viscous flux at C/F exactly
+    //   zero, so total-energy conservation holds after the Berger-Colella correction.
+    void fill_ghosts_periodic(bool cf_zero_grad = false);
+    void fill_ghosts_wall    (bool cf_zero_grad = false);
 
     // ── Flux register management (P1.4) ───────────────────────────────────────
     void zero_flux_registers();
@@ -134,6 +142,13 @@ struct BlockTree {
     static uint32_t child_morton(uint32_t parent_code, int oct) noexcept;
 
     double domain_L() const noexcept { return domain_L_; }
+
+    // P4.1-fix: periodic BC flag — set by NSSolver::init() before any refine/balance.
+    // When true, rebuild_neighbours() wraps domain-boundary faces so that periodic
+    // C/F interfaces get correct neighbour links (needed for accumulate_cf_fine_fluxes
+    // and undo_cf_face_flux to handle the periodic boundary flux registers).
+    bool periodic_bc_ = false;
+    void set_periodic(bool p) noexcept { periodic_bc_ = p; }
 
 private:
     double domain_L_ = 1.0;

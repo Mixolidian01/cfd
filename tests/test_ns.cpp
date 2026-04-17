@@ -243,6 +243,67 @@ static void t09_imex_mass_conservation() {
     check("T09 IMEX mass conserved over 20 steps < 1e-10", err < 1e-10, err, 1e-10);
 }
 
+// =============================================================================
+// T10 — P4.1 LTS: mass and energy conservation with a 2-level AMR tree
+//
+// Setup: 2-level tree (L0 root + 8 fine children after one refine), periodic,
+//        10 LTS steps.  Conservation tolerances are same as global-dt tests.
+//
+// Physical justification: Berger-Colella flux correction guarantees that the
+// net mass flux leaving the coarse domain equals the sum of fine-level fluxes.
+// If LTS is implemented correctly, mass error must be < 1e-10 regardless of
+// whether the global or LTS path is used.
+// =============================================================================
+static void t10_lts_mass_energy() {
+    double pi = std::acos(-1.0);
+    auto ic = [&](double x, double y, double z) {
+        (void)z;
+        Prim q;
+        q.rho = 1.225 + 0.05*std::sin(2*pi*x)*std::cos(2*pi*y);
+        q.u   = 0.0; q.v = 0.0; q.w = 0.0;
+        q.T   = 288.15;   // constant T; coarse_mode zero-grad ghost → zero viscous C/F flux
+        q.p   = q.rho * R_GAS * q.T;
+        q.c   = std::sqrt(GAMMA * q.p / q.rho);
+        return q;
+    };
+
+    NSSolver s;
+    s.cfg.cfl             = 0.3;
+    s.cfg.max_steps       = 10;
+    s.cfg.t_end           = 1e30;
+    s.cfg.bc              = BCType::Periodic;
+    s.cfg.verbose         = false;
+    s.cfg.diag_interval   = 100;
+    s.cfg.regrid_interval = 0;   // manual refine below; no auto-regrid during run
+    s.cfg.max_level       = 2;
+    s.cfg.use_lts         = true;
+    s.cfg.lts_ratio       = 2;
+    s.init(1.0, ic);
+
+    // Build a 2-leaf-level tree: refine root → 8 level-1 leaves,
+    // then refine one level-1 leaf → 8 level-2 leaves.
+    // Result: 7 level-1 leaves (coarse) + 8 level-2 leaves (fine).
+    s.tree.refine(s.tree.root());               // root → 8 level-1 children
+    {
+        int lv1 = s.tree.leaf_indices()[0];     // pick first level-1 leaf
+        s.tree.refine(lv1);                     // → 8 level-2 leaves
+    }
+    s.tree.balance();
+    s.tree.rebuild_neighbours();
+    s.tree.fill_ghosts_periodic();
+    s.alloc_scratch();
+
+    auto d0 = s.compute_diag();
+    s.run();
+    auto d1 = s.compute_diag();
+
+    double mass_err   = std::abs(d1.mass         - d0.mass)         / std::abs(d0.mass);
+    double energy_err = std::abs(d1.total_energy  - d0.total_energy) / std::abs(d0.total_energy);
+
+    check("T10a LTS mass conserved over 10 steps < 1e-10",   mass_err   < 1e-10, mass_err,   1e-10);
+    check("T10b LTS energy conserved over 10 steps < 1e-10", energy_err < 1e-10, energy_err, 1e-10);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 4: Layer 3 — Time Loop ===\n");
@@ -259,6 +320,7 @@ int main() {
     t07_cfl_bound();
     t08_diagnostics();
     t09_imex_mass_conservation();
+    t10_lts_mass_energy();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail>0)

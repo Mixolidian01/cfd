@@ -580,22 +580,26 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
         const Prim& pR = pc[cell_idx(i+1,j,k)];
         const double theta = std::max(duc[cell_idx(i,  j,k)],
                                       duc[cell_idx(i+1,j,k)]);
+        // Block-boundary faces (ghost↔interior) must use hllc_es so that
+        // undo_cf_face_flux and accumulate_cf_fine_fluxes compute the same flux,
+        // giving exact Berger-Colella reflux cancellation at C/F interfaces.
+        const bool is_bnd = (i < ilo() || i+1 > ihi());
         std::array<double,NVAR> F;
-        if (theta < kep_threshold) {
-            // Pure KEP: smooth/turbulent region, no reconstruction needed
+        if (!is_bnd && theta < kep_threshold) {
+            // Pure KEP: smooth/turbulent interior region
             F = kep_flux(pL, pR, 0);
         } else {
-            // Shock region: blend KEP with WENO5+ES (or PCM+ES at ghost faces)
+            // Shock region, WENO5+ES interior, or block-boundary face (hllc_es)
             const auto Fk = kep_flux(pL, pR, 0);
             std::array<double,NVAR> Fs;
-            if (i >= ilo() && i < ihi()) {
+            if (!is_bnd && i >= ilo() && i < ihi()) {
                 Prim qL, qR;
                 weno5_face(pc, i, j, k, 0, qL, qR);
                 Fs = hllc_es_flux(qL, qR, 0);
             } else {
                 Fs = hllc_es_flux(pL, pR, 0);
             }
-            F = blend(Fk, Fs, theta);
+            F = blend(Fk, Fs, is_bnd ? 1.0 : theta);
         }
         if (i >= ilo())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,  j,k)] -= ih * F[v];
@@ -611,20 +615,21 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
         const Prim& pR = pc[cell_idx(i,j+1,k)];
         const double theta = std::max(duc[cell_idx(i,j,  k)],
                                       duc[cell_idx(i,j+1,k)]);
+        const bool is_bnd = (j < ilo() || j+1 > ihi());
         std::array<double,NVAR> F;
-        if (theta < kep_threshold) {
+        if (!is_bnd && theta < kep_threshold) {
             F = kep_flux(pL, pR, 1);
         } else {
             const auto Fk = kep_flux(pL, pR, 1);
             std::array<double,NVAR> Fs;
-            if (j >= ilo() && j < ihi()) {
+            if (!is_bnd && j >= ilo() && j < ihi()) {
                 Prim qL, qR;
                 weno5_face(pc, i, j, k, 1, qL, qR);
                 Fs = hllc_es_flux(qL, qR, 1);
             } else {
                 Fs = hllc_es_flux(pL, pR, 1);
             }
-            F = blend(Fk, Fs, theta);
+            F = blend(Fk, Fs, is_bnd ? 1.0 : theta);
         }
         if (j >= ilo())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j,  k)] -= ih * F[v];
@@ -640,20 +645,21 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
         const Prim& pR = pc[cell_idx(i,j,k+1)];
         const double theta = std::max(duc[cell_idx(i,j,k  )],
                                       duc[cell_idx(i,j,k+1)]);
+        const bool is_bnd = (k < ilo() || k+1 > ihi());
         std::array<double,NVAR> F;
-        if (theta < kep_threshold) {
+        if (!is_bnd && theta < kep_threshold) {
             F = kep_flux(pL, pR, 2);
         } else {
             const auto Fk = kep_flux(pL, pR, 2);
             std::array<double,NVAR> Fs;
-            if (k >= ilo() && k < ihi()) {
+            if (!is_bnd && k >= ilo() && k < ihi()) {
                 Prim qL, qR;
                 weno5_face(pc, i, j, k, 2, qL, qR);
                 Fs = hllc_es_flux(qL, qR, 2);
             } else {
                 Fs = hllc_es_flux(pL, pR, 2);
             }
-            F = blend(Fk, Fs, theta);
+            F = blend(Fk, Fs, is_bnd ? 1.0 : theta);
         }
         if (k >= ilo())
             for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j,k  )] -= ih * F[v];
@@ -805,42 +811,39 @@ static void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
         double ay = ih*((txy_xp-txy_xm) + (tyy_yp-tyy_ym) + (tzy_zp-tzy_zm));
         double az = ih*((txz_xp-txz_xm) + (tyz_yp-tyz_ym) + (tzz_zp-tzz_zm));
 
-        // ── Energy: cell-centred τ:S and κ·Δ(T) ─────────────────────────────
-        // Cell-centred gradients (central differences, O(h²))
-        double dudx_c = ih_half*(U(i+1,j,k)-U(i-1,j,k));
-        double dudy_c = ih_half*(U(i,j+1,k)-U(i,j-1,k));
-        double dudz_c = ih_half*(U(i,j,k+1)-U(i,j,k-1));
-        double dvdx_c = ih_half*(V(i+1,j,k)-V(i-1,j,k));
-        double dvdy_c = ih_half*(V(i,j+1,k)-V(i,j-1,k));
-        double dvdz_c = ih_half*(V(i,j,k+1)-V(i,j,k-1));
-        double dwdx_c = ih_half*(W(i+1,j,k)-W(i-1,j,k));
-        double dwdy_c = ih_half*(W(i,j+1,k)-W(i,j-1,k));
-        double dwdz_c = ih_half*(W(i,j,k+1)-W(i,j,k-1));
-        double divu_c = dudx_c + dvdy_c + dwdz_c;
-
-        double mu_c   = mu_arr[cell_idx(i,j,k)];
-        double txx_c  = mu_c*(2.0*dudx_c - (2.0/3.0)*divu_c);
-        double tyy_c  = mu_c*(2.0*dvdy_c - (2.0/3.0)*divu_c);
-        double tzz_c  = mu_c*(2.0*dwdz_c - (2.0/3.0)*divu_c);
-        double txy_c  = mu_c*(dudy_c + dvdx_c);
-        double txz_c  = mu_c*(dudz_c + dwdx_c);
-        double tyz_c  = mu_c*(dvdz_c + dwdy_c);
-        double visc_pw = txx_c*dudx_c + tyy_c*dvdy_c + tzz_c*dwdz_c
-                       + txy_c*(dudy_c+dvdx_c) + txz_c*(dudz_c+dwdx_c)
-                       + tyz_c*(dvdz_c+dwdy_c);
-
+        // ── Energy: conservative face-flux form  div(τ·u + κ∇T) ─────────────
+        // Using the already-computed face stresses τ_ab|face and face averages.
+        // This form telescopes at any boundary type (periodic, wall, C/F) so that
+        // total energy is conserved when viscous face fluxes vanish at boundaries.
+        // F_visc_E_x|face = τxx*u_face + τxy*v_face + τxz*w_face + κ*dT/dx|face
         const Prim& c = pc[cell_idx(i,j,k)];
-        double kappa  = mu_c * CP / PR;
-        double lap_T  = ih2*(Tf(i+1,j,k)-2*c.T+Tf(i-1,j,k)
-                           + Tf(i,j+1,k)-2*c.T+Tf(i,j-1,k)
-                           + Tf(i,j,k+1)-2*c.T+Tf(i,j,k-1));
-        double heat   = kappa * lap_T;
+        auto UF=[&](int ii,int jj,int kk){return 0.5*(U(ii,jj,kk)+U(i,j,k));};
+        auto VF=[&](int ii,int jj,int kk){return 0.5*(V(ii,jj,kk)+V(i,j,k));};
+        auto WF=[&](int ii,int jj,int kk){return 0.5*(W(ii,jj,kk)+W(i,j,k));};
+        // x-faces
+        double kxp = mu_xp*CP/PR, kxm = mu_xm*CP/PR;
+        double Fex_p = txx_xp*UF(i+1,j,k) + txy_xp*VF(i+1,j,k) + txz_xp*WF(i+1,j,k)
+                     + kxp*ih*(Tf(i+1,j,k)-Tf(i,j,k));
+        double Fex_m = txx_xm*UF(i-1,j,k) + txy_xm*VF(i-1,j,k) + txz_xm*WF(i-1,j,k)
+                     + kxm*ih*(Tf(i,j,k)-Tf(i-1,j,k));
+        // y-faces
+        double kyp = mu_yp*CP/PR, kym = mu_ym*CP/PR;
+        double Fey_p = tyx_yp*UF(i,j+1,k) + tyy_yp*VF(i,j+1,k) + tyz_yp*WF(i,j+1,k)
+                     + kyp*ih*(Tf(i,j+1,k)-Tf(i,j,k));
+        double Fey_m = tyx_ym*UF(i,j-1,k) + tyy_ym*VF(i,j-1,k) + tyz_ym*WF(i,j-1,k)
+                     + kym*ih*(Tf(i,j,k)-Tf(i,j-1,k));
+        // z-faces
+        double kzp = mu_zp*CP/PR, kzm = mu_zm*CP/PR;
+        double Fez_p = tzx_zp*UF(i,j,k+1) + tzy_zp*VF(i,j,k+1) + tzz_zp*WF(i,j,k+1)
+                     + kzp*ih*(Tf(i,j,k+1)-Tf(i,j,k));
+        double Fez_m = tzx_zm*UF(i,j,k-1) + tzy_zm*VF(i,j,k-1) + tzz_zm*WF(i,j,k-1)
+                     + kzm*ih*(Tf(i,j,k)-Tf(i,j,k-1));
 
         int idx = cell_idx(i,j,k);
         rhs.Q[1][idx] += ax;
         rhs.Q[2][idx] += ay;
         rhs.Q[3][idx] += az;
-        rhs.Q[4][idx] += c.u*ax + c.v*ay + c.w*az + heat + visc_pw;
+        rhs.Q[4][idx] += ih*(Fex_p-Fex_m) + ih*(Fey_p-Fey_m) + ih*(Fez_p-Fez_m);
     }
 }
 
@@ -946,6 +949,120 @@ static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
 }
 
 // =============================================================================
+// Berger-Colella reflux: undo_cf_viscous_energy
+// ─────────────────────────────────────────────
+// Root cause of T10b energy drift: even with zero-gradient ghost fill, the
+// TANGENTIAL viscous stress at a C/F face is non-zero.  Example for x+½ face:
+//   dudy_xp = ih_half*(U(ghost,j+1)+U(interior,j+1)-U(ghost,j-1)-U(interior,j-1))
+// With zero-grad ghost: U(ghost,j,k)=U(interior,j,k) → dudy_xp = ih*(U(i,j+1)-U(i,j-1)).
+// This gives txy_xp ≠ 0 → non-zero energy flux txy*v_face at C/F.
+// Neither the convective flux register nor undo_cf_face_flux corrects this.
+//
+// Fix: exactly reproduce the viscous energy flux at each C/F face using the
+// same stencil as viscous_rhs_impl, then subtract it from rhs.Q[4].
+// Called only when cf_coarse_zero_grad=true (both fine and coarse sub-steps).
+//
+// Sign: viscous_rhs_impl adds +delta*ih*Fvisc_E to the boundary cell.
+//   For delta>0 (XP): rhs += +ih*Fex_p → subtract ih*Fex_p.
+//   For delta<0 (XM): rhs += -ih*Fex_m → subtract -ih*Fex_m = add ih*Fex_m.
+// Combined: rhs.Q[4] -= delta * ih * Fvisc_E_face.
+// =============================================================================
+static void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
+                                    CellBlock& rhs) noexcept
+{
+    const auto& nd   = tree.nodes[node_idx];
+    const auto& blk  = *nd.block;
+    const double h   = blk.h;
+    const double ih  = 1.0 / h;
+    const double ihhalf = 0.5 * ih;
+
+    static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
+    static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
+
+    auto U = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).u; };
+    auto V = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).v; };
+    auto W = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).w; };
+
+    for (int d = 0; d < NFACES; ++d) {
+        const int ni = nd.neighbours[d];
+        if (ni < 0 || !tree.nodes[ni].has_block()) continue;
+        if (tree.nodes[ni].level == nd.level) continue;  // same-level: skip
+
+        const int axis   = face_axis[d];
+        const int delta  = face_delta[d];
+        const double ns  = (double)delta;  // ±1: normal direction sign
+        const int bound  = (delta > 0) ? ihi() : ilo();
+        const int gbound = bound + delta;  // ghost cell index along normal
+
+        for (int b = ilo(); b <= ihi(); ++b)
+        for (int a = ilo(); a <= ihi(); ++a) {
+            int ci, cj, ck, gi, gj, gk;
+            if      (axis == 0) { ci=bound; cj=a; ck=b; gi=gbound; gj=a;      gk=b; }
+            else if (axis == 1) { ci=a; cj=bound; ck=b; gi=a;      gj=gbound; gk=b; }
+            else                { ci=a; cj=b; ck=bound; gi=a;      gj=b;      gk=gbound; }
+
+            const Prim p_i = blk.prim(ci,cj,ck);
+            const Prim p_g = blk.prim(gi,gj,gk);
+            const double mu_f  = 0.5*(sutherland(p_i.T) + sutherland(p_g.T));
+            const double kappa = mu_f * CP / PR;
+            const double u_f   = 0.5*(p_i.u + p_g.u);
+            const double v_f   = 0.5*(p_i.v + p_g.v);
+            const double w_f   = 0.5*(p_i.w + p_g.w);
+
+            // Reproduce the same face-stress stencil as viscous_rhs_impl.
+            // Normal gradients (i.e. across the face) need the sign factor ns
+            // because (gi,gj,gk) is the ghost: for delta>0, ghost is "right"
+            // (forward); for delta<0, ghost is "left" (backward).
+            // Tangential gradients (cross-stencil) are symmetric and need no ns.
+            double Fvisc_E;
+            if (axis == 0) {
+                double dudx = ns*ih*(U(gi,gj,gk)-U(ci,cj,ck));
+                double dvdx = ns*ih*(V(gi,gj,gk)-V(ci,cj,ck));
+                double dwdx = ns*ih*(W(gi,gj,gk)-W(ci,cj,ck));
+                double dudy = ihhalf*(U(gi,gj+1,gk)-U(gi,gj-1,gk)+U(ci,cj+1,ck)-U(ci,cj-1,ck));
+                double dudz = ihhalf*(U(gi,gj,gk+1)-U(gi,gj,gk-1)+U(ci,cj,ck+1)-U(ci,cj,ck-1));
+                double dvdy = ihhalf*(V(gi,gj+1,gk)-V(gi,gj-1,gk)+V(ci,cj+1,ck)-V(ci,cj-1,ck));
+                double dwdz = ihhalf*(W(gi,gj,gk+1)-W(gi,gj,gk-1)+W(ci,cj,ck+1)-W(ci,cj,ck-1));
+                double divu = dudx + dvdy + dwdz;
+                double txx  = mu_f*(2.0*dudx - (2.0/3.0)*divu);
+                double txy  = mu_f*(dudy + dvdx);
+                double txz  = mu_f*(dudz + dwdx);
+                Fvisc_E = txx*u_f + txy*v_f + txz*w_f + kappa*ns*ih*(p_g.T-p_i.T);
+            } else if (axis == 1) {
+                double dvdy = ns*ih*(V(gi,gj,gk)-V(ci,cj,ck));
+                double dudy = ns*ih*(U(gi,gj,gk)-U(ci,cj,ck));
+                double dwdy = ns*ih*(W(gi,gj,gk)-W(ci,cj,ck));
+                double dvdx = ihhalf*(V(gi+1,gj,gk)-V(gi-1,gj,gk)+V(ci+1,cj,ck)-V(ci-1,cj,ck));
+                double dvdz = ihhalf*(V(gi,gj,gk+1)-V(gi,gj,gk-1)+V(ci,cj,ck+1)-V(ci,cj,ck-1));
+                double dudx = ihhalf*(U(gi+1,gj,gk)-U(gi-1,gj,gk)+U(ci+1,cj,ck)-U(ci-1,cj,ck));
+                double dwdz = ihhalf*(W(gi,gj,gk+1)-W(gi,gj,gk-1)+W(ci,cj,ck+1)-W(ci,cj,ck-1));
+                double divu = dudx + dvdy + dwdz;
+                double tyx  = mu_f*(dudy + dvdx);
+                double tyy  = mu_f*(2.0*dvdy - (2.0/3.0)*divu);
+                double tyz  = mu_f*(dvdz + dwdy);
+                Fvisc_E = tyx*u_f + tyy*v_f + tyz*w_f + kappa*ns*ih*(p_g.T-p_i.T);
+            } else {
+                double dwdz = ns*ih*(W(gi,gj,gk)-W(ci,cj,ck));
+                double dudz = ns*ih*(U(gi,gj,gk)-U(ci,cj,ck));
+                double dvdz = ns*ih*(V(gi,gj,gk)-V(ci,cj,ck));
+                double dwdx = ihhalf*(W(gi+1,gj,gk)-W(gi-1,gj,gk)+W(ci+1,cj,ck)-W(ci-1,cj,ck));
+                double dwdy = ihhalf*(W(gi,gj+1,gk)-W(gi,gj-1,gk)+W(ci,cj+1,ck)-W(ci,cj-1,ck));
+                double dudx = ihhalf*(U(gi+1,gj,gk)-U(gi-1,gj,gk)+U(ci+1,cj,ck)-U(ci-1,cj,ck));
+                double dvdy = ihhalf*(V(gi,gj+1,gk)-V(gi,gj-1,gk)+V(ci,cj+1,ck)-V(ci,cj-1,ck));
+                double divu = dudx + dvdy + dwdz;
+                double tzx  = mu_f*(dudz + dwdx);
+                double tzy  = mu_f*(dvdz + dwdy);
+                double tzz  = mu_f*(2.0*dwdz - (2.0/3.0)*divu);
+                Fvisc_E = tzx*u_f + tzy*v_f + tzz*w_f + kappa*ns*ih*(p_g.T-p_i.T);
+            }
+
+            // viscous_rhs_impl added ns*ih*Fvisc_E to rhs.Q[4]; subtract it.
+            rhs.Q[4][cell_idx(ci,cj,ck)] -= ns * ih * Fvisc_E;
+        }
+    }
+}
+
+// =============================================================================
 // accumulate_cf_fine_fluxes
 // ─────────────────────────
 // A05-fix4: stage_weight is the SSP-RK3 quadrature weight for this stage:
@@ -977,14 +1094,19 @@ static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
 // octants to the wrong coarse register slots and producing a systematic mass
 // leak whenever y- or z-face CF interfaces exist.
 // =============================================================================
+// level_filter: when >= 0 only leaves at that level contribute fine fluxes.
+// This is required for P4.1 LTS so that fine-level sub-steps do not
+// double-accumulate during the subsequent coarse step (and vice-versa).
 static void accumulate_cf_fine_fluxes(BlockTree& tree,
-                                       double stage_weight) noexcept
+                                       double stage_weight,
+                                       int    level_filter = -1) noexcept
 {
     static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
     static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
     static constexpr int HALF = NB / 2;
 
     for (int li : tree.leaf_indices()) {
+        if (level_filter >= 0 && tree.nodes[li].level != level_filter) continue;
         const auto& nd  = tree.nodes[li];
         const auto& blk = *nd.block;
 
@@ -1100,39 +1222,48 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
 void tree_rhs(BlockTree& tree,
               std::vector<CellBlock>& rhs_blocks,
               bool periodic,
-              double stage_weight) noexcept
+              double stage_weight,
+              int    level_filter,
+              bool   cf_coarse_zero_grad) noexcept
 {
-    // ── 1. Ghost fill — serial (shared neighbour reads) ──────────────────────
+    // ── 1. Ghost fill — always global (C/F fills need the full tree) ─────────
     if (periodic)
-        tree.fill_ghosts_periodic();
+        tree.fill_ghosts_periodic(cf_coarse_zero_grad);
     else
-        tree.fill_ghosts_wall();
+        tree.fill_ghosts_wall(cf_coarse_zero_grad);
 
     const auto& leaves = tree.leaf_indices();
     const int n_leaves = (int)leaves.size();
     assert((int)rhs_blocks.size() == n_leaves);
 
     // ── 2. Build Morton-sorted slot order for L3 cache locality ──────────────
-    // order[oi] = slot index li such that leaves are visited in Morton order.
-    // Must be a plain local (not thread_local): the parallel loop reads from it
-    // on all threads; a thread_local copy would be uninitialized on workers.
-    std::vector<int> order(n_leaves);
-    std::iota(order.begin(), order.end(), 0);
+    std::vector<int> order;
+    order.reserve(n_leaves);
+    for (int li = 0; li < n_leaves; ++li) {
+        if (level_filter >= 0 && tree.nodes[leaves[li]].level != level_filter)
+            continue;
+        order.push_back(li);
+    }
     std::sort(order.begin(), order.end(), [&](int a, int b) {
         return tree.nodes[leaves[a]].morton < tree.nodes[leaves[b]].morton;
     });
+    const int n_active = (int)order.size();
 
     // ── 3. Per-leaf RHS — parallel (fully independent per slot) ──────────────
 #pragma omp parallel for schedule(dynamic,4)
-    for (int oi = 0; oi < n_leaves; ++oi) {
+    for (int oi = 0; oi < n_active; ++oi) {
         const int li       = order[oi];
         const int node_idx = leaves[li];
         compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li]);
         undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
+        if (cf_coarse_zero_grad)
+            undo_cf_viscous_energy(tree, node_idx, rhs_blocks[li]);
     }
 
     // ── 4. Flux register accumulation — serial (shared CF register writes) ───
-    accumulate_cf_fine_fluxes(tree, stage_weight);
+    // Pass level_filter so that only leaves at the active level contribute;
+    // prevents double-accumulation during LTS coarse/fine interleaving.
+    accumulate_cf_fine_fluxes(tree, stage_weight, level_filter);
 }
 
 // =============================================================================
@@ -1143,5 +1274,17 @@ double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept
     double dt = 1e300;
     for (auto li : tree.leaf_indices())
         dt = std::min(dt, tree.nodes[li].block->cfl_dt(cfl));
+    return dt;
+}
+
+// P4.1: minimum CFL dt over leaves at a specific refinement level.
+// Used by advance_lts() to set the fine-level time step independently.
+double level_cfl_dt(const BlockTree& tree, int level, double cfl) noexcept
+{
+    double dt = 1e300;
+    for (auto li : tree.leaf_indices()) {
+        if (tree.nodes[li].level != level) continue;
+        dt = std::min(dt, tree.nodes[li].block->cfl_dt(cfl));
+    }
     return dt;
 }

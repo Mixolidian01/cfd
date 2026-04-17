@@ -42,6 +42,7 @@
 #include "../include/amr_operators.hpp"
 #include <algorithm>
 #include <cassert>
+#include <climits>
 #include <unordered_map>
 #include <cmath>
 #include <cstring>
@@ -196,6 +197,20 @@ const std::vector<int>& BlockTree::leaf_indices() const {
             leaf_cache_.push_back(i);
     leaf_dirty_ = false;
     return leaf_cache_;
+}
+
+int BlockTree::max_leaf_level() const noexcept {
+    int lmax = 0;
+    for (int li : leaf_indices())
+        lmax = std::max(lmax, nodes[li].level);
+    return lmax;
+}
+
+int BlockTree::min_leaf_level() const noexcept {
+    int lmin = INT_MAX;
+    for (int li : leaf_indices())
+        lmin = std::min(lmin, nodes[li].level);
+    return (lmin == INT_MAX) ? 0 : lmin;
 }
 
 // =============================================================================
@@ -405,6 +420,23 @@ void BlockTree::rebuild_neighbours() {
             int   axis  = face_axis[d];
             int   delta = face_delta[d];
             uint32_t nb_code = morton_face_neighbour(a.morton, lev, axis, delta);
+
+            // P4.1-fix: periodic wrapping — when at a domain boundary and the
+            // solver uses periodic BC, wrap the coordinate so that C/F interfaces
+            // at the domain edge get proper neighbour links.  Without this,
+            // accumulate_cf_fine_fluxes and undo_cf_face_flux both skip ni<0,
+            // and the flux register correction is never applied at periodic C/F
+            // faces, breaking mass conservation in AMR+periodic configurations.
+            if (nb_code == UINT32_MAX && periodic_bc_ && lev > 0) {
+                uint32_t mx, my, mz;
+                morton_decode(a.morton, mx, my, mz);
+                uint32_t max_coord = (1u << lev) - 1u;
+                if      (axis == 0) mx = (delta > 0) ? 0u : max_coord;
+                else if (axis == 1) my = (delta > 0) ? 0u : max_coord;
+                else                mz = (delta > 0) ? 0u : max_coord;
+                nb_code = morton_encode(mx, my, mz);
+            }
+
             if (nb_code != UINT32_MAX) {
                 uint64_t key = ((uint64_t)lev << 32) | nb_code;
                 auto it = lm_map.find(key);
@@ -586,8 +618,35 @@ static void fill_coarse_ghost_from_fine(
     }
 }
 
+// ── fill_coarse_ghost_zero_grad ───────────────────────────────────────────────
+// LTS coarse-step zero-gradient ghost fill.  For each ghost layer of face d on
+// coarse_blk, sets ghost = adjacent interior cell (∂Q/∂n = 0 at C/F boundary).
+// Viscous stress and heat flux are then exactly zero at the C/F face, so that
+// the total-energy conservation identity holds after Berger-Colella correction.
+static void fill_coarse_ghost_zero_grad(CellBlock& coarse_blk, int d) noexcept
+{
+    const int axis = fd_axis(d);
+    const int side = fd_side(d);
+    for (int gl = 0; gl < NG; ++gl) {
+        const int g     = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
+        const int inner = (side == 0) ? (ilo() + gl)  : (ihi() - gl);
+        // Only fill face-normal ghost cells (ilo..ihi range in transverse dirs),
+        // matching the range that fill_coarse_ghost_from_fine uses.
+        for (int a = ilo(); a <= ihi(); ++a)
+        for (int b = ilo(); b <= ihi(); ++b) {
+            int gi, gj, gk, ii, ij, ik;
+            if (axis == 0) { gi=g; gj=a; gk=b;  ii=inner; ij=a; ik=b; }
+            else if(axis==1){ gi=a; gj=g; gk=b;  ii=a; ij=inner; ik=b; }
+            else             { gi=a; gj=b; gk=g;  ii=a; ij=b; ik=inner; }
+            for (int v = 0; v < NVAR; ++v)
+                coarse_blk.Q[v][cell_idx(gi,gj,gk)] =
+                    coarse_blk.Q[v][cell_idx(ii,ij,ik)];
+        }
+    }
+}
+
 // ── fill_ghosts_periodic ──────────────────────────────────────────────────────
-void BlockTree::fill_ghosts_periodic() {
+void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
     const auto& leaves = leaf_indices();
 
     // Build (level, morton) → leaf index map for periodic boundary lookup.
@@ -666,8 +725,11 @@ void BlockTree::fill_ghosts_periodic() {
                 }
                 if (nodes[ni].level > nd.level) {
                     // A05-fix2: coarse leaf adjacent to fine neighbour →
-                    // averaged ghost fill using the 2×2 fine cells per coarse ghost
-                    fill_coarse_ghost_from_fine(blk, nodes, ni, d);
+                    // averaged ghost fill OR zero-gradient (LTS coarse step).
+                    if (cf_zero_grad)
+                        fill_coarse_ghost_zero_grad(blk, d);
+                    else
+                        fill_coarse_ghost_from_fine(blk, nodes, ni, d);
                     continue;
                 }
             }
@@ -762,7 +824,7 @@ void BlockTree::fill_ghosts_periodic() {
 }
 
 // ── fill_ghosts_wall (no-slip adiabatic) ────────────────────────────────────
-void BlockTree::fill_ghosts_wall() {
+void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
     const auto& leaves = leaf_indices();
     for (int li : leaves) {
         auto& nd  = nodes[li];
@@ -832,7 +894,10 @@ void BlockTree::fill_ghosts_wall() {
                 int oct = child_octant_of(nodes, li);
                 fill_cf_ghosts(blk, *nodes[ni].block, oct, sp.axis, sp.side);
             } else if (nodes[ni].level > nd.level) {
-                fill_coarse_ghost_from_fine(blk, nodes, ni, d);
+                if (cf_zero_grad)
+                    fill_coarse_ghost_zero_grad(blk, d);
+                else
+                    fill_coarse_ghost_from_fine(blk, nodes, ni, d);
             } else {
                 // B2: same-level interior neighbour — direct face copy (all NG layers)
                 const CellBlock& src = *nodes[ni].block;
