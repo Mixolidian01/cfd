@@ -202,6 +202,35 @@ else()
 endif()
 
 # =============================================================================
+# P4.6 — Neural SGS closure gate (t11)
+# =============================================================================
+find_package(onnxruntime QUIET)  # requires libonnxruntime-dev or official pkg
+
+add_library(neural_sgs STATIC src/neural_sgs.cpp)
+target_include_directories(neural_sgs PUBLIC include)
+target_link_libraries(neural_sgs PUBLIC ns_solver)
+
+if(onnxruntime_FOUND)
+    target_compile_definitions(neural_sgs PUBLIC HAVE_ONNXRUNTIME)
+    target_link_libraries(neural_sgs PUBLIC onnxruntime::onnxruntime)
+    message(STATUS "ONNX Runtime found — neural SGS with ONNX inference enabled")
+else()
+    message(STATUS "ONNX Runtime not found — Vreman algebraic fallback only")
+endif()
+
+add_executable(test_neural_sgs tests/test_neural_sgs.cpp)
+target_link_libraries(test_neural_sgs PRIVATE neural_sgs m)
+
+add_test(NAME neural_sgs COMMAND test_neural_sgs)
+
+add_custom_target(t11
+    DEPENDS test_neural_sgs
+    COMMAND $<TARGET_FILE:test_neural_sgs>
+    COMMENT "P4.6 gate: Neural SGS closure"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # P4.5 — ZFP compressed checkpointing gate (t10)
 # =============================================================================
 find_package(ZFP QUIET)    # requires libzfp-dev; silently optional

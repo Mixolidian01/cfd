@@ -85,4 +85,4 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | P4.3 | ✅ | Thread Block Clusters / DSMEM ghost exchange (H100/B200) | CUDA 12 + hardware |
 | P4.4 | ✅ | Multiphase Baer-Nunziato diffuse interface (`NVAR→7`) | P2.1 + P3.1 |
 | P4.5 | ✅ | ZFP compressed checkpointing (16–32× reduction) | None — drop-in in `checkpoint.cpp` |
-| P4.6 | 🔲 | Neural SGS closure (ONNX Runtime, drops into `SGSModel` interface) | P3.4 |
+| P4.6 | ✅ | Neural SGS closure (ONNX Runtime, drops into `SGSModel` interface) | P3.4 |
