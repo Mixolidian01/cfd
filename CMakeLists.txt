@@ -202,6 +202,24 @@ else()
 endif()
 
 # =============================================================================
+# P4.4 — Multiphase Baer-Nunziato (Allaire 5-equation) gate (t9)
+# =============================================================================
+add_library(bn_operators STATIC src/bn_operators.cpp)
+target_include_directories(bn_operators PUBLIC include)
+
+add_executable(test_multiphase tests/test_multiphase.cpp)
+target_link_libraries(test_multiphase PRIVATE bn_operators operators m)
+
+add_test(NAME multiphase COMMAND test_multiphase)
+
+add_custom_target(t9
+    DEPENDS test_multiphase
+    COMMAND $<TARGET_FILE:test_multiphase>
+    COMMENT "P4.4 gate: Allaire 5-equation two-phase model"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # Workflow aliases
 # =============================================================================
 
