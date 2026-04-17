@@ -202,6 +202,35 @@ else()
 endif()
 
 # =============================================================================
+# P4.5 — ZFP compressed checkpointing gate (t10)
+# =============================================================================
+find_package(ZFP QUIET)    # requires libzfp-dev; silently optional
+
+add_library(checkpoint_zfp STATIC src/checkpoint_zfp.cpp)
+target_include_directories(checkpoint_zfp PUBLIC include)
+target_link_libraries(checkpoint_zfp PUBLIC ns_solver)
+
+if(ZFP_FOUND)
+    target_compile_definitions(checkpoint_zfp PUBLIC HAVE_ZFP)
+    target_link_libraries(checkpoint_zfp PUBLIC ZFP::ZFP)
+    message(STATUS "ZFP found — compressed checkpointing with ZFP enabled")
+else()
+    message(STATUS "ZFP not found — float32 fallback only (install libzfp-dev for full support)")
+endif()
+
+add_executable(test_checkpoint_zfp tests/test_checkpoint_zfp.cpp)
+target_link_libraries(test_checkpoint_zfp PRIVATE checkpoint_zfp m)
+
+add_test(NAME checkpoint_zfp COMMAND test_checkpoint_zfp)
+
+add_custom_target(t10
+    DEPENDS test_checkpoint_zfp
+    COMMAND $<TARGET_FILE:test_checkpoint_zfp>
+    COMMENT "P4.5 gate: ZFP compressed checkpointing"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # P4.4 — Multiphase Baer-Nunziato (Allaire 5-equation) gate (t9)
 # =============================================================================
 add_library(bn_operators STATIC src/bn_operators.cpp)
