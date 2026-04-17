@@ -25,6 +25,7 @@
 #include "../include/sgs.hpp"
 #include <cmath>
 #include <algorithm>
+#include <vector>
 
 // ── Shared thermodynamic constants (same values as in operators.cpp) ─────────
 static constexpr double SGS_PR_T_DEFAULT = 0.9;

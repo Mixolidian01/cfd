@@ -207,10 +207,18 @@ std::array<double,NVAR> hllc_es_flux(const Prim& L, const Prim& R, int axis) noe
 // Pre-compute all NCELL primitive states (and Sutherland µ) once per
 // compute_rhs call.  Interior + ghost cells filled → stencil = pure lookup.
 static void fill_prim_cache(const CellBlock& blk, Prim* pc) noexcept {
-    for (int k = 0; k < NB2; ++k)
-    for (int j = 0; j < NB2; ++j)
-    for (int i = 0; i < NB2; ++i)
-        pc[cell_idx(i,j,k)] = blk.prim(i,j,k);
+    // P4.2: tile loop — 5 aligned 64-byte loads per tile, enables SIMD EOS.
+    for (int t = 0; t < CellBlock::NTILE; ++t) {
+        const double* rho_p  = blk.Q[0].tile_ptr(t);
+        const double* rhou_p = blk.Q[1].tile_ptr(t);
+        const double* rhov_p = blk.Q[2].tile_ptr(t);
+        const double* rhow_p = blk.Q[3].tile_ptr(t);
+        const double* E_p    = blk.Q[4].tile_ptr(t);
+        Prim* pc_t = pc + t * CellBlock::W;
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            pc_t[lane] = eos_cons_to_prim(rho_p[lane], rhou_p[lane],
+                                           rhov_p[lane], rhow_p[lane], E_p[lane]);
+    }
 }
 
 // B5: µ cache — one Sutherland call per cell, shared across viscous operator.

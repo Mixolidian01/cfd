@@ -86,20 +86,14 @@ void NSSolver::init(double domain_L,
 // =============================================================================
 void NSSolver::copy_tree_to_stage(std::vector<CellBlock>& stage) {
     const auto& leaves = tree.leaf_indices();
-    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
-        const auto& src = *tree.nodes[leaves[ii]].block;
-        auto&       dst = stage[ii];
-        for (int v = 0; v < NVAR; ++v) dst.Q[v] = src.Q[v];
-    }
+    for (int ii = 0; ii < (int)leaves.size(); ++ii)
+        stage[ii] = *tree.nodes[leaves[ii]].block;
 }
 
 void NSSolver::copy_stage_to_tree(const std::vector<CellBlock>& stage) {
     const auto& leaves = tree.leaf_indices();
-    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
-        auto&       dst = *tree.nodes[leaves[ii]].block;
-        const auto& src = stage[ii];
-        for (int v = 0; v < NVAR; ++v) dst.Q[v] = src.Q[v];
-    }
+    for (int ii = 0; ii < (int)leaves.size(); ++ii)
+        *tree.nodes[leaves[ii]].block = stage[ii];
 }
 
 void NSSolver::save_Qn() { copy_tree_to_stage(Qn_); }
@@ -148,15 +142,19 @@ double NSSolver::advance() {
     // Zero registers once; each stage accumulates its SSP-RK3 weight.
     tree.zero_flux_registers();
 
+    // P4.2: SSP-RK3 tile loops — NTILE×W covers all cells (ghosts carry through
+    // unchanged since rhs_[ii].Q[v] is zero at ghost-cell flat indices).
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
     tree_rhs(tree, rhs_, periodic, 1.0/6.0);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
-    for (int k  = ilo(); k <= ihi(); ++k)
-    for (int j  = ilo(); j <= ihi(); ++j)
-    for (int i  = ilo(); i <= ihi(); ++i) {
-        int idx = cell_idx(i,j,k);
-        Qs_[ii].Q[v][idx] = Qn_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx];
+    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
+        double*       qs = Qs_[ii].Q[v].tile_ptr(t);
+        const double* qn = Qn_[ii].Q[v].tile_ptr(t);
+        const double* r  = rhs_[ii].Q[v].tile_ptr(t);
+        #pragma omp simd simdlen(8)
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            qs[lane] = qn[lane] + dt * r[lane];
     }
     copy_stage_to_tree(Qs_);
 
@@ -164,13 +162,13 @@ double NSSolver::advance() {
     tree_rhs(tree, rhs_, periodic, 1.0/6.0);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
-    for (int k  = ilo(); k <= ihi(); ++k)
-    for (int j  = ilo(); j <= ihi(); ++j)
-    for (int i  = ilo(); i <= ihi(); ++i) {
-        int idx = cell_idx(i,j,k);
-        Qs_[ii].Q[v][idx] =
-            (3.0/4.0) * Qn_[ii].Q[v][idx] +
-            (1.0/4.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
+    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
+        double*       qs = Qs_[ii].Q[v].tile_ptr(t);
+        const double* qn = Qn_[ii].Q[v].tile_ptr(t);
+        const double* r  = rhs_[ii].Q[v].tile_ptr(t);
+        #pragma omp simd simdlen(8)
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
     }
     copy_stage_to_tree(Qs_);
 
@@ -178,13 +176,13 @@ double NSSolver::advance() {
     tree_rhs(tree, rhs_, periodic, 2.0/3.0);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
-    for (int k  = ilo(); k <= ihi(); ++k)
-    for (int j  = ilo(); j <= ihi(); ++j)
-    for (int i  = ilo(); i <= ihi(); ++i) {
-        int idx = cell_idx(i,j,k);
-        Qs_[ii].Q[v][idx] =
-            (1.0/3.0) * Qn_[ii].Q[v][idx] +
-            (2.0/3.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
+    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
+        double*       qs = Qs_[ii].Q[v].tile_ptr(t);
+        const double* qn = Qn_[ii].Q[v].tile_ptr(t);
+        const double* r  = rhs_[ii].Q[v].tile_ptr(t);
+        #pragma omp simd simdlen(8)
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
     }
     copy_stage_to_tree(Qs_);
 
@@ -273,11 +271,13 @@ double NSSolver::advance_imex() {
     tree_rhs(tree, rhs_, periodic, 1.0/6.0);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
-    for (int k  = ilo(); k <= ihi(); ++k)
-    for (int j  = ilo(); j <= ihi(); ++j)
-    for (int i  = ilo(); i <= ihi(); ++i) {
-        int idx = cell_idx(i,j,k);
-        Qs_[ii].Q[v][idx] = Qn_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx];
+    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
+        double*       qs = Qs_[ii].Q[v].tile_ptr(t);
+        const double* qn = Qn_[ii].Q[v].tile_ptr(t);
+        const double* r  = rhs_[ii].Q[v].tile_ptr(t);
+        #pragma omp simd simdlen(8)
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            qs[lane] = qn[lane] + dt * r[lane];
     }
     copy_stage_to_tree(Qs_);
 
@@ -285,13 +285,13 @@ double NSSolver::advance_imex() {
     tree_rhs(tree, rhs_, periodic, 1.0/6.0);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
-    for (int k  = ilo(); k <= ihi(); ++k)
-    for (int j  = ilo(); j <= ihi(); ++j)
-    for (int i  = ilo(); i <= ihi(); ++i) {
-        int idx = cell_idx(i,j,k);
-        Qs_[ii].Q[v][idx] =
-            (3.0/4.0) * Qn_[ii].Q[v][idx] +
-            (1.0/4.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
+    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
+        double*       qs = Qs_[ii].Q[v].tile_ptr(t);
+        const double* qn = Qn_[ii].Q[v].tile_ptr(t);
+        const double* r  = rhs_[ii].Q[v].tile_ptr(t);
+        #pragma omp simd simdlen(8)
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
     }
     copy_stage_to_tree(Qs_);
 
@@ -299,13 +299,13 @@ double NSSolver::advance_imex() {
     tree_rhs(tree, rhs_, periodic, 2.0/3.0);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
-    for (int k  = ilo(); k <= ihi(); ++k)
-    for (int j  = ilo(); j <= ihi(); ++j)
-    for (int i  = ilo(); i <= ihi(); ++i) {
-        int idx = cell_idx(i,j,k);
-        Qs_[ii].Q[v][idx] =
-            (1.0/3.0) * Qn_[ii].Q[v][idx] +
-            (2.0/3.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
+    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
+        double*       qs = Qs_[ii].Q[v].tile_ptr(t);
+        const double* qn = Qn_[ii].Q[v].tile_ptr(t);
+        const double* r  = rhs_[ii].Q[v].tile_ptr(t);
+        #pragma omp simd simdlen(8)
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
     }
     copy_stage_to_tree(Qs_);
 
@@ -452,9 +452,7 @@ void NSSolver::copy_tree_to_stage_level(std::vector<CellBlock>& stage, int level
     const auto& leaves = tree.leaf_indices();
     for (int ii = 0; ii < (int)leaves.size(); ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
-        const auto& src = *tree.nodes[leaves[ii]].block;
-        auto& dst = stage[ii];
-        for (int v = 0; v < NVAR; ++v) dst.Q[v] = src.Q[v];
+        stage[ii] = *tree.nodes[leaves[ii]].block;
     }
 }
 
@@ -462,9 +460,7 @@ void NSSolver::copy_stage_to_tree_level(const std::vector<CellBlock>& stage, int
     const auto& leaves = tree.leaf_indices();
     for (int ii = 0; ii < (int)leaves.size(); ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
-        auto& dst = *tree.nodes[leaves[ii]].block;
-        const auto& src = stage[ii];
-        for (int v = 0; v < NVAR; ++v) dst.Q[v] = src.Q[v];
+        *tree.nodes[leaves[ii]].block = stage[ii];
     }
 }
 
@@ -494,11 +490,13 @@ void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coars
     for (int ii = 0; ii < NL; ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
         for (int v = 0; v < NVAR; ++v)
-        for (int k = ilo(); k <= ihi(); ++k)
-        for (int j = ilo(); j <= ihi(); ++j)
-        for (int i = ilo(); i <= ihi(); ++i) {
-            int idx = cell_idx(i,j,k);
-            Qs_[ii].Q[v][idx] = Qn_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx];
+        for (int t = 0; t < CellBlock::NTILE; ++t) {
+            double*       qs = Qs_[ii].Q[v].tile_ptr(t);
+            const double* qn = Qn_[ii].Q[v].tile_ptr(t);
+            const double* r  = rhs_[ii].Q[v].tile_ptr(t);
+            #pragma omp simd simdlen(8)
+            for (int lane = 0; lane < CellBlock::W; ++lane)
+                qs[lane] = qn[lane] + dt * r[lane];
         }
     }
     copy_stage_to_tree_level(Qs_, level);
@@ -508,13 +506,13 @@ void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coars
     for (int ii = 0; ii < NL; ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
         for (int v = 0; v < NVAR; ++v)
-        for (int k = ilo(); k <= ihi(); ++k)
-        for (int j = ilo(); j <= ihi(); ++j)
-        for (int i = ilo(); i <= ihi(); ++i) {
-            int idx = cell_idx(i,j,k);
-            Qs_[ii].Q[v][idx] =
-                (3.0/4.0) * Qn_[ii].Q[v][idx] +
-                (1.0/4.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
+        for (int t = 0; t < CellBlock::NTILE; ++t) {
+            double*       qs = Qs_[ii].Q[v].tile_ptr(t);
+            const double* qn = Qn_[ii].Q[v].tile_ptr(t);
+            const double* r  = rhs_[ii].Q[v].tile_ptr(t);
+            #pragma omp simd simdlen(8)
+            for (int lane = 0; lane < CellBlock::W; ++lane)
+                qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
         }
     }
     copy_stage_to_tree_level(Qs_, level);
@@ -524,13 +522,13 @@ void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coars
     for (int ii = 0; ii < NL; ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
         for (int v = 0; v < NVAR; ++v)
-        for (int k = ilo(); k <= ihi(); ++k)
-        for (int j = ilo(); j <= ihi(); ++j)
-        for (int i = ilo(); i <= ihi(); ++i) {
-            int idx = cell_idx(i,j,k);
-            Qs_[ii].Q[v][idx] =
-                (1.0/3.0) * Qn_[ii].Q[v][idx] +
-                (2.0/3.0) * (Qs_[ii].Q[v][idx] + dt * rhs_[ii].Q[v][idx]);
+        for (int t = 0; t < CellBlock::NTILE; ++t) {
+            double*       qs = Qs_[ii].Q[v].tile_ptr(t);
+            const double* qn = Qn_[ii].Q[v].tile_ptr(t);
+            const double* r  = rhs_[ii].Q[v].tile_ptr(t);
+            #pragma omp simd simdlen(8)
+            for (int lane = 0; lane < CellBlock::W; ++lane)
+                qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
         }
     }
     copy_stage_to_tree_level(Qs_, level);
