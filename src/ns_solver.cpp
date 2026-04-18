@@ -611,10 +611,10 @@ void NSSolver::alloc_scratch() {
     rhs_.clear(); Qn_.clear(); Qs_.clear();
     rhs_.reserve(n); Qn_.reserve(n); Qs_.reserve(n);
     for (int li : leaves) {
-        double h = tree.nodes[li].block->h;
-        rhs_.emplace_back(0.0, 0.0, 0.0, h);
-        Qn_.emplace_back( 0.0, 0.0, 0.0, h);
-        Qs_.emplace_back( 0.0, 0.0, 0.0, h);
+        const auto& blk = *tree.nodes[li].block;
+        rhs_.emplace_back(blk.ox, blk.oy, blk.oz, blk.h);
+        Qn_.emplace_back( blk.ox, blk.oy, blk.oz, blk.h);
+        Qs_.emplace_back( blk.ox, blk.oy, blk.oz, blk.h);
     }
     scratch_leaf_count_ = n;
 }

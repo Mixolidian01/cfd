@@ -227,6 +227,7 @@ void BlockTree::init(double L) {
     root.level  = 0;
     root.morton = 0;
     root.parent = -1;
+    root.ox = 0.0; root.oy = 0.0; root.oz = 0.0;
     root.block  = std::make_unique<CellBlock>(0.0, 0.0, 0.0, L / NB);
 }
 
@@ -237,13 +238,17 @@ void BlockTree::set_child_geometry(int parent_idx, int child_local, int child_id
     const auto& par = nodes[parent_idx];
     double cell_h = par.block ? par.block->h * 0.5
                               : domain_L_ / (NB * (1 << (par.level + 1)));
-    double ox = par.block ? par.block->ox : 0.0;
-    double oy = par.block ? par.block->oy : 0.0;
-    double oz = par.block ? par.block->oz : 0.0;
+    // Use node-level ox/oy/oz (valid even when block is null after internal refine).
+    double ox = par.ox;
+    double oy = par.oy;
+    double oz = par.oz;
     double half = cell_h * NB;
     if (oct_ix(child_local)) ox += half;
     if (oct_iy(child_local)) oy += half;
     if (oct_iz(child_local)) oz += half;
+    nodes[child_idx].ox = ox;
+    nodes[child_idx].oy = oy;
+    nodes[child_idx].oz = oz;
     nodes[child_idx].block = std::make_unique<CellBlock>(ox, oy, oz, cell_h);
 }
 

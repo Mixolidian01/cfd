@@ -278,6 +278,21 @@ add_custom_target(t9
 )
 
 # =============================================================================
+# Phase 5 — Physical validation benchmarks (B.1 … B.9)
+# =============================================================================
+
+add_executable(test_bench_b1 tests/test_bench_b1.cpp)
+target_link_libraries(test_bench_b1 PRIVATE ns_solver m)
+add_test(NAME bench_b1 COMMAND test_bench_b1)
+
+add_custom_target(tb1
+    DEPENDS test_bench_b1
+    COMMAND $<TARGET_FILE:test_bench_b1>
+    COMMENT "B.1 benchmark: Sod shock tube"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # Workflow aliases
 # =============================================================================
 

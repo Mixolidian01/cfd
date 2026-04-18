@@ -65,6 +65,7 @@ struct BlockNode {
     // AMR metadata
     int      level  = 0;    // refinement level (0 = coarsest)
     uint32_t morton = 0;    // Morton code at this level
+    double   ox = 0.0, oy = 0.0, oz = 0.0;  // block origin — valid even when block is null
 
     // Field storage (null for internal nodes after refine()).
     // Cell size h is always read from block->h — never from a separate field.
