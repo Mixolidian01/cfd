@@ -292,6 +292,17 @@ add_custom_target(tb1
     USES_TERMINAL
 )
 
+add_executable(test_bench_b2 tests/test_bench_b2.cpp)
+target_link_libraries(test_bench_b2 PRIVATE ns_solver m)
+add_test(NAME bench_b2 COMMAND test_bench_b2)
+
+add_custom_target(tb2
+    DEPENDS test_bench_b2
+    COMMAND $<TARGET_FILE:test_bench_b2>
+    COMMENT "B.2 benchmark: Shu-Osher shock-entropy"
+    USES_TERMINAL
+)
+
 # =============================================================================
 # Workflow aliases
 # =============================================================================

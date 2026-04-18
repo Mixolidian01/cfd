@@ -30,7 +30,11 @@ struct StepDiag {
 };
 
 // ── Boundary condition selector ───────────────────────────────────────────────────────────────
-enum class BCType { Periodic, Wall };
+enum class BCType {
+    Periodic,   // wrap-around in all directions
+    Wall,       // reflecting slip wall (velocity reflected, p/ρ copied)
+    Open        // zero-gradient transmissive (extrapolate from interior — no reflection)
+};
 
 // ── Solver configuration ─────────────────────────────────────────────────────────────────────────────
 struct SolverConfig {

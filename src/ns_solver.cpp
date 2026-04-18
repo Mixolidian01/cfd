@@ -124,6 +124,7 @@ double NSSolver::advance() {
     if (cfg.use_lts && tree.max_leaf_level() > 0) return advance_lts();
 
     bool periodic = (cfg.bc == BCType::Periodic);
+    bool open_bc   = (cfg.bc == BCType::Open);
 
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
     // topology is immutable during zero_regs → stages → apply_correction.
@@ -145,7 +146,7 @@ double NSSolver::advance() {
     // P4.2: SSP-RK3 tile loops — NTILE×W covers all cells (ghosts carry through
     // unchanged since rhs_[ii].Q[v] is zero at ghost-cell flat indices).
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0);
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -159,7 +160,7 @@ double NSSolver::advance() {
     copy_stage_to_tree(Qs_);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0);
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -173,7 +174,7 @@ double NSSolver::advance() {
     copy_stage_to_tree(Qs_);
 
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
-    tree_rhs(tree, rhs_, periodic, 2.0/3.0);
+    tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -199,6 +200,7 @@ double NSSolver::advance() {
     // still carry Q^{(2)} from Stage 3's fill_ghosts call inside tree_rhs().
     if (cfg.sgs) {
         if (periodic) tree.fill_ghosts_periodic();
+        else if (cfg.bc == BCType::Open) tree.fill_ghosts_open();
         else          tree.fill_ghosts_wall();
         for (int li : tree.leaf_indices())
             cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
@@ -253,6 +255,7 @@ double NSSolver::advance() {
 // =============================================================================
 double NSSolver::advance_imex() {
     bool periodic = (cfg.bc == BCType::Periodic);
+    bool open_bc   = (cfg.bc == BCType::Open);
 
     // ── Step 1: same regrid + SSP-RK3 as advance() ───────────────────────
     if (cfg.regrid_interval > 0 && step > 0 &&
@@ -268,7 +271,7 @@ double NSSolver::advance_imex() {
     tree.zero_flux_registers();
 
     // Stage 1: Q^(1) = Q^n + dt·L(Q^n)   [RK weight 1/6]
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0);
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -282,7 +285,7 @@ double NSSolver::advance_imex() {
     copy_stage_to_tree(Qs_);
 
     // Stage 2: Q^(2) = 3/4·Q^n + 1/4·(Q^(1) + dt·L(Q^(1)))   [RK weight 1/6]
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0);
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -296,7 +299,7 @@ double NSSolver::advance_imex() {
     copy_stage_to_tree(Qs_);
 
     // Stage 3: Q^{n+1} = 1/3·Q^n + 2/3·(Q^(2) + dt·L(Q^(2)))  [RK weight 2/3]
-    tree_rhs(tree, rhs_, periodic, 2.0/3.0);
+    tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -318,7 +321,8 @@ double NSSolver::advance_imex() {
     // ── Step 2: implicit viscous Helmholtz correction per block ──────────
     // Refresh ghosts so per-block velocity stencils see Q^{n+1} values.
     if (periodic) tree.fill_ghosts_periodic();
-    else          tree.fill_ghosts_wall();
+    else if (cfg.bc == BCType::Open) tree.fill_ghosts_open();
+        else          tree.fill_ghosts_wall();
 
     // Per-call NB³ scratch (thread_local avoids repeated heap allocation).
     static thread_local std::vector<double> uf(NB*NB*NB);
@@ -396,6 +400,7 @@ double NSSolver::advance_imex() {
     // SGS operator split (same as advance()).
     if (cfg.sgs) {
         if (periodic) tree.fill_ghosts_periodic();
+        else if (cfg.bc == BCType::Open) tree.fill_ghosts_open();
         else          tree.fill_ghosts_wall();
         for (int li : tree.leaf_indices())
             cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
@@ -479,6 +484,7 @@ void NSSolver::copy_stage_to_tree_level(const std::vector<CellBlock>& stage, int
 // =============================================================================
 void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coarse_mode) {
     bool periodic = (cfg.bc == BCType::Periodic);
+    bool open_bc   = (cfg.bc == BCType::Open);
     const auto& leaves = tree.leaf_indices();
     const int NL = (int)leaves.size();
 
@@ -486,7 +492,7 @@ void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coars
     copy_tree_to_stage_level(Qn_, level);
 
     // Stage 1: Q^(1) = Q^n + dt * L(Q^n)
-    tree_rhs(tree, rhs_, periodic, sub_weight / 6.0, level, coarse_mode);
+    tree_rhs(tree, rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc);
     for (int ii = 0; ii < NL; ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
         for (int v = 0; v < NVAR; ++v)
@@ -502,7 +508,7 @@ void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coars
     copy_stage_to_tree_level(Qs_, level);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))
-    tree_rhs(tree, rhs_, periodic, sub_weight / 6.0, level, coarse_mode);
+    tree_rhs(tree, rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc);
     for (int ii = 0; ii < NL; ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
         for (int v = 0; v < NVAR; ++v)
@@ -518,7 +524,7 @@ void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coars
     copy_stage_to_tree_level(Qs_, level);
 
     // Stage 3: Q^{n+1} = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))
-    tree_rhs(tree, rhs_, periodic, sub_weight * (2.0/3.0), level, coarse_mode);
+    tree_rhs(tree, rhs_, periodic, sub_weight * (2.0/3.0), level, coarse_mode, open_bc);
     for (int ii = 0; ii < NL; ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
         for (int v = 0; v < NVAR; ++v)
@@ -650,6 +656,7 @@ void NSSolver::regrid() {
     if (topology_changed) {
         tree.rebuild_neighbours();
         if (periodic) tree.fill_ghosts_periodic();
+        else if (cfg.bc == BCType::Open) tree.fill_ghosts_open();
         else          tree.fill_ghosts_wall();
     }
 
@@ -693,6 +700,8 @@ void NSSolver::regrid() {
     tree.rebuild_neighbours();
     if (periodic)
         tree.fill_ghosts_periodic();
+    else if (cfg.bc == BCType::Open)
+        tree.fill_ghosts_open();
     else
         tree.fill_ghosts_wall();
 

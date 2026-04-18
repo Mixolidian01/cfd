@@ -1232,11 +1232,14 @@ void tree_rhs(BlockTree& tree,
               bool periodic,
               double stage_weight,
               int    level_filter,
-              bool   cf_coarse_zero_grad) noexcept
+              bool   cf_coarse_zero_grad,
+              bool   open_bc) noexcept
 {
     // ── 1. Ghost fill — always global (C/F fills need the full tree) ─────────
     if (periodic)
         tree.fill_ghosts_periodic(cf_coarse_zero_grad);
+    else if (open_bc)
+        tree.fill_ghosts_open(cf_coarse_zero_grad);
     else
         tree.fill_ghosts_wall(cf_coarse_zero_grad);
 

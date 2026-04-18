@@ -132,6 +132,7 @@ struct BlockTree {
     //   zero, so total-energy conservation holds after the Berger-Colella correction.
     void fill_ghosts_periodic(bool cf_zero_grad = false);
     void fill_ghosts_wall    (bool cf_zero_grad = false);
+    void fill_ghosts_open    (bool cf_zero_grad = false); // zero-gradient transmissive
 
     // ── Flux register management (P1.4) ───────────────────────────────────────
     void zero_flux_registers();

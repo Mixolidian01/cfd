@@ -63,9 +63,10 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 void tree_rhs(BlockTree& tree,
               std::vector<CellBlock>& rhs_blocks,
               bool periodic,
-              double stage_weight       = 1.0,
-              int    level_filter       = -1,
-              bool   cf_coarse_zero_grad = false) noexcept;
+              double stage_weight        = 1.0,
+              int    level_filter        = -1,
+              bool   cf_coarse_zero_grad = false,
+              bool   open_bc             = false) noexcept;
 
 // ── CFL time step ─────────────────────────────────────────────────────────────
 // tree_cfl_dt: global minimum over all leaves.

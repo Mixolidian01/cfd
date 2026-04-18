@@ -989,6 +989,138 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
     }
 }
 
+// ── fill_ghosts_open (zero-gradient transmissive, no reflection) ─────────────
+void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
+    const auto& leaves = leaf_indices();
+    for (int li : leaves) {
+        auto& nd  = nodes[li];
+        auto& blk = *nd.block;
+
+        // Zero-gradient: ghost layer copies the nearest interior layer
+        auto open_x = [&](int gi, int mi) noexcept {
+            for (int k=ilo();k<=ihi();++k)
+            for (int j=ilo();j<=ihi();++j)
+            for (int v=0;v<NVAR;++v)
+                blk.Q[v][cell_idx(gi,j,k)] = blk.Q[v][cell_idx(mi,j,k)];
+        };
+        auto open_y = [&](int gj, int mj) noexcept {
+            for (int k=ilo();k<=ihi();++k)
+            for (int i=ilo();i<=ihi();++i)
+            for (int v=0;v<NVAR;++v)
+                blk.Q[v][cell_idx(i,gj,k)] = blk.Q[v][cell_idx(i,mj,k)];
+        };
+        auto open_z = [&](int gk, int mk) noexcept {
+            for (int j=ilo();j<=ihi();++j)
+            for (int i=ilo();i<=ihi();++i)
+            for (int v=0;v<NVAR;++v)
+                blk.Q[v][cell_idx(i,j,gk)] = blk.Q[v][cell_idx(i,j,mk)];
+        };
+
+        const bool xm = (nd.neighbours[XMINUS] < 0);
+        const bool xp = (nd.neighbours[XPLUS]  < 0);
+        const bool ym = (nd.neighbours[YMINUS] < 0);
+        const bool yp = (nd.neighbours[YPLUS]  < 0);
+        const bool zm = (nd.neighbours[ZMINUS] < 0);
+        const bool zp = (nd.neighbours[ZPLUS]  < 0);
+
+        // Interior/CF face fill — identical to wall version
+        struct FaceSpec { int ghost_g, mirror_s, axis, side; };
+        static const FaceSpec specs[NFACES] = {
+            {0,      ihi(), 0, 0},
+            {NB2-1,  ilo(), 0, 1},
+            {0,      ihi(), 1, 0},
+            {NB2-1,  ilo(), 1, 1},
+            {0,      ihi(), 2, 0},
+            {NB2-1,  ilo(), 2, 1},
+        };
+        auto copy_cell = [&](int gi, int gj, int gk, int si, int sj, int sk,
+                              const CellBlock& src) noexcept {
+            for (int v = 0; v < NVAR; ++v)
+                blk.Q[v][cell_idx(gi,gj,gk)] = src.Q[v][cell_idx(si,sj,sk)];
+        };
+        for (int d = 0; d < NFACES; ++d) {
+            int ni = nd.neighbours[d];
+            if (ni < 0 || !nodes[ni].has_block()) continue;
+            const FaceSpec& sp = specs[d];
+            if (nodes[ni].level < nd.level) {
+                int oct = child_octant_of(nodes, li);
+                fill_cf_ghosts(blk, *nodes[ni].block, oct, sp.axis, sp.side);
+            } else if (nodes[ni].level > nd.level) {
+                if (cf_zero_grad)
+                    fill_coarse_ghost_zero_grad(blk, d);
+                else
+                    fill_coarse_ghost_from_fine(blk, nodes, ni, d);
+            } else {
+                const CellBlock& src = *nodes[ni].block;
+                for (int gl = 0; gl < NG; ++gl) {
+                    const int g_idx   = (sp.side==0) ? (NG-1-gl)    : (NB2-NG+gl);
+                    const int src_idx = (sp.side==0) ? (ihi()-gl)    : (ilo()+gl);
+                    if (sp.axis == 0) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int j=ilo();j<=ihi();++j)
+                            copy_cell(g_idx,j,k, src_idx,j,k, src);
+                    } else if (sp.axis == 1) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int i=ilo();i<=ihi();++i)
+                            copy_cell(i,g_idx,k, i,src_idx,k, src);
+                    } else {
+                        for (int j=ilo();j<=ihi();++j)
+                        for (int i=ilo();i<=ihi();++i)
+                            copy_cell(i,j,g_idx, i,j,src_idx, src);
+                    }
+                }
+            }
+        }
+
+        // Open boundary ghost fill (zero-gradient: each ghost = nearest interior)
+        if (xm) { for (int gl=0;gl<NG;++gl) open_x(NG-1-gl,   ilo()); }
+        if (xp) { for (int gl=0;gl<NG;++gl) open_x(NB2-NG+gl, ihi()); }
+        if (ym) { for (int gl=0;gl<NG;++gl) open_y(NG-1-gl,   ilo()); }
+        if (yp) { for (int gl=0;gl<NG;++gl) open_y(NB2-NG+gl, ihi()); }
+        if (zm) { for (int gl=0;gl<NG;++gl) open_z(NG-1-gl,   ilo()); }
+        if (zp) { for (int gl=0;gl<NG;++gl) open_z(NB2-NG+gl, ihi()); }
+
+        // Edge ghosts (same as wall version — copy from face-filled ghost)
+        for (int k=ilo();k<=ihi();++k)
+        for (int glx=0; glx<NG; ++glx)
+        for (int gly=0; gly<NG; ++gly) {
+            if (xm||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        gly,        k)] = blk.Q[v][cell_idx(glx,        ilo()+gly, k)];
+            if (xp||ym) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, gly,        k)] = blk.Q[v][cell_idx(NB2-NG+glx, ilo()+gly, k)];
+            if (xm||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        NB2-NG+gly, k)] = blk.Q[v][cell_idx(glx,        ihi()-gly, k)];
+            if (xp||yp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, k)] = blk.Q[v][cell_idx(NB2-NG+glx, ihi()-gly, k)];
+        }
+        for (int j=ilo();j<=ihi();++j)
+        for (int glx=0; glx<NG; ++glx)
+        for (int glz=0; glz<NG; ++glz) {
+            if (xm||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        j, glz       )] = blk.Q[v][cell_idx(glx,        j, ilo()+glz)];
+            if (xp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, j, glz       )] = blk.Q[v][cell_idx(NB2-NG+glx, j, ilo()+glz)];
+            if (xm||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        j, NB2-NG+glz)] = blk.Q[v][cell_idx(glx,        j, ihi()-glz)];
+            if (xp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, j, NB2-NG+glz)] = blk.Q[v][cell_idx(NB2-NG+glx, j, ihi()-glz)];
+        }
+        for (int i=ilo();i<=ihi();++i)
+        for (int gly=0; gly<NG; ++gly)
+        for (int glz=0; glz<NG; ++glz) {
+            if (ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i, gly,        glz       )] = blk.Q[v][cell_idx(i, gly,        ilo()+glz)];
+            if (yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i, NB2-NG+gly, glz       )] = blk.Q[v][cell_idx(i, NB2-NG+gly, ilo()+glz)];
+            if (ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i, gly,        NB2-NG+glz)] = blk.Q[v][cell_idx(i, gly,        ihi()-glz)];
+            if (yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(i, NB2-NG+gly, NB2-NG+glz)] = blk.Q[v][cell_idx(i, NB2-NG+gly, ihi()-glz)];
+        }
+        // Corner ghosts
+        for (int glx=0; glx<NG; ++glx)
+        for (int gly=0; gly<NG; ++gly)
+        for (int glz=0; glz<NG; ++glz) {
+            if (xm||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        gly,        glz       )] = blk.Q[v][cell_idx(glx,        gly,        ilo()+glz)];
+            if (xp||ym||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, gly,        glz       )] = blk.Q[v][cell_idx(NB2-NG+glx, gly,        ilo()+glz)];
+            if (xm||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        NB2-NG+gly, glz       )] = blk.Q[v][cell_idx(glx,        NB2-NG+gly, ilo()+glz)];
+            if (xp||yp||zm) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, glz       )] = blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, ilo()+glz)];
+            if (xm||ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        gly,        NB2-NG+glz)] = blk.Q[v][cell_idx(glx,        gly,        ihi()-glz)];
+            if (xp||ym||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, gly,        NB2-NG+glz)] = blk.Q[v][cell_idx(NB2-NG+glx, gly,        ihi()-glz)];
+            if (xm||yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(glx,        NB2-NG+gly, NB2-NG+glz)] = blk.Q[v][cell_idx(glx,        NB2-NG+gly, ihi()-glz)];
+            if (xp||yp||zp) for (int v=0;v<NVAR;++v) blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, NB2-NG+glz)] = blk.Q[v][cell_idx(NB2-NG+glx, NB2-NG+gly, ihi()-glz)];
+        }
+    }
+}
+
 // =============================================================================
 // P1.4 — Flux register (Berger & Colella 1989)
 // =============================================================================
