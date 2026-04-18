@@ -192,6 +192,7 @@ double NeuralSGSModel::vreman_nu_t(const CellBlock& blk, double h_inv,
 void NeuralSGSModel::apply(CellBlock& blk, double h, double dt) const
 {
     const double ih    = 1.0 / h;
+    const double ih2   = 0.5 * ih;   // half-cell inverse for central differences
 
     // ── Collect ν_t per cell ─────────────────────────────────────────────────
     double nu_t[NCELL] = {};
@@ -222,7 +223,8 @@ void NeuralSGSModel::apply(CellBlock& blk, double h, double dt) const
             feat[ci*8+5] = (float)(ih2*(vel(3,i,j+1,k)-vel(3,i,j-1,k)));
             feat[ci*8+6] = (float)(ih2*(vel(1,i,j,k+1)-vel(1,i,j,k-1)));
             feat[ci*8+7] = (float)(ih2*(vel(2,i,j,k+1)-vel(2,i,j,k-1)));
-            // α33 = ∂w/∂z omitted (recoverable from continuity if needed)
+            // 8 features: rows 0-2 of velocity gradient tensor; α33=∂w/∂z excluded
+            // (compressible closure: network trained on 8 independent components)
             ++ci;
             (void)inv_rho;
         }

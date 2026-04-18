@@ -661,14 +661,16 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
     }
 
     // Helper: find periodic-wrap block for face d of node nd when ni==-1.
-    // Returns pointer to the leaf block, or nullptr if not found (fall back to self).
-    auto periodic_src = [&](const BlockNode& nd, int d) -> const CellBlock* {
+    // Returns {block pointer, neighbor_level - nd.level}; pointer is nullptr if
+    // not found (caller falls back to self-copy / zero-gradient).
+    struct PeriodicSrc { const CellBlock* blk; int level_rel; };
+    auto periodic_src = [&](const BlockNode& nd, int d) -> PeriodicSrc {
         static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
         static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
         int axis  = face_axis[d];
         int delta = face_delta[d];
         int lev   = nd.level;
-        if (lev == 0) return nullptr;  // single-block root → wrap to self
+        if (lev == 0) return {nullptr, 0};  // single-block root → wrap to self
         uint32_t mx, my, mz;
         morton_decode(nd.morton, mx, my, mz);
         uint32_t max_coord = (1u << lev) - 1u;
@@ -678,16 +680,16 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
         uint64_t key = ((uint64_t)lev << 32) | morton_encode(mx, my, mz);
         auto it = lm_map.find(key);
         if (it != lm_map.end() && nodes[it->second].has_block())
-            return nodes[it->second].block.get();
+            return {nodes[it->second].block.get(), 0};
         // Coarser periodic neighbor (2:1 balance): check level-1
         if (lev > 1) {
             uint32_t pc = morton_encode(mx, my, mz) >> 3;
             uint64_t pk = ((uint64_t)(lev-1) << 32) | pc;
             auto it2 = lm_map.find(pk);
             if (it2 != lm_map.end() && nodes[it2->second].has_block())
-                return nodes[it2->second].block.get();
+                return {nodes[it2->second].block.get(), -1};
         }
-        return nullptr;
+        return {nullptr, 0};
     };
 
     for (int li : leaves) {
@@ -736,10 +738,16 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
 
             // Same level neighbour, or domain boundary → resolve periodic source.
             // When ni==-1 (domain boundary), look up the periodically-wrapped leaf.
-            const CellBlock* periodic_blk = (ni < 0) ? periodic_src(nd, d) : nullptr;
+            PeriodicSrc psrc = (ni < 0) ? periodic_src(nd, d) : PeriodicSrc{nullptr, 0};
+            if (ni < 0 && psrc.blk && psrc.level_rel < 0) {
+                // Periodic wrap reached a coarser block: use CF ghost fill, not 1:1 copy.
+                int oct = child_octant_of(nodes, li);
+                fill_cf_ghosts(blk, *psrc.blk, oct, sp.axis, sp.side);
+                continue;
+            }
             const CellBlock& src = (ni>=0 && nodes[ni].has_block())
                                    ? *nodes[ni].block
-                                   : (periodic_blk ? *periodic_blk : blk);
+                                   : (psrc.blk ? *psrc.blk : blk);
             // Fill all NG ghost layers.
             // side=0: ghost NG-1-gl from src[ihi()-gl]; side=1: ghost NB2-NG+gl from src[ilo()+gl]
             for (int gl = 0; gl < NG; ++gl) {

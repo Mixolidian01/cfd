@@ -259,6 +259,10 @@ void DynamicSmagorinskyModel::apply(CellBlock& blk, double h, double dt) const
     // Layout: Sij[idx][0..5] = {Sxx,Sxy,Sxz,Syy,Syz,Szz}
     static thread_local std::array<std::array<double,6>, NCELL> Sij;
     static thread_local std::array<double,               NCELL> Smag;
+    // Zero ghost-layer boundary indices so test-filter accesses at i=1,di=-1
+    // don't read stale values from the previous leaf processed by this thread.
+    Sij.fill({});
+    Smag.fill(0.0);
 
     for (int k = 1; k < NB2-1; ++k)
     for (int j = 1; j < NB2-1; ++j)
@@ -284,6 +288,8 @@ void DynamicSmagorinskyModel::apply(CellBlock& blk, double h, double dt) const
     static thread_local std::array<double,NCELL> u_tf, v_tf, w_tf;
     static thread_local std::array<std::array<double,6>,NCELL> uiuj_tf;  // uu,uv,uw,vv,vw,ww
     static thread_local std::array<std::array<double,6>,NCELL> SmSij_tf; // (|S̄|S_ij)~
+    u_tf.fill(0.0); v_tf.fill(0.0); w_tf.fill(0.0);
+    uiuj_tf.fill({}); SmSij_tf.fill({});
 
     for (int k = 1; k < NB2-1; ++k)
     for (int j = 1; j < NB2-1; ++j)
