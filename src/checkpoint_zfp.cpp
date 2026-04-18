@@ -56,9 +56,14 @@ static void decompress_f32(const uint8_t* src, int n, double* dst) {
 static void compress_zfp(const double* src, int n, double rate,
                           std::vector<uint8_t>& dst) {
     zfp_type type   = zfp_type_double;
-    zfp_field* field = zfp_field_1d(const_cast<double*>(src), type, (uint)n);
+    // Use 3D mode for full CellBlock variables (NB2³): exploits spatial
+    // correlation in all 3 directions, giving ~4× better accuracy than 1D
+    // at the same rate.  Fall back to 1D for other sizes.
+    zfp_field* field = (n == NCELL)
+        ? zfp_field_3d(const_cast<double*>(src), type, NB2, NB2, NB2)
+        : zfp_field_1d(const_cast<double*>(src), type, (uint)n);
     zfp_stream* zfp = zfp_stream_open(nullptr);
-    zfp_stream_set_rate(zfp, rate, type, 1, 0);
+    zfp_stream_set_rate(zfp, rate, type, (n == NCELL) ? 3 : 1, 0);
 
     const size_t bufsize = zfp_stream_maximum_size(zfp, field);
     dst.resize(bufsize);
@@ -77,9 +82,11 @@ static void compress_zfp(const double* src, int n, double rate,
 static void decompress_zfp(const uint8_t* src, size_t src_size,
                             int n, double rate, double* dst) {
     zfp_type type    = zfp_type_double;
-    zfp_field* field = zfp_field_1d(dst, type, (uint)n);
+    zfp_field* field = (n == NCELL)
+        ? zfp_field_3d(dst, type, NB2, NB2, NB2)
+        : zfp_field_1d(dst, type, (uint)n);
     zfp_stream* zfp  = zfp_stream_open(nullptr);
-    zfp_stream_set_rate(zfp, rate, type, 1, 0);
+    zfp_stream_set_rate(zfp, rate, type, (n == NCELL) ? 3 : 1, 0);
 
     bitstream* bs = stream_open(const_cast<uint8_t*>(src), src_size);
     zfp_stream_set_bit_stream(zfp, bs);

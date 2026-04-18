@@ -17,7 +17,7 @@
 # =============================================================================
 
 cmake_minimum_required(VERSION 3.18)
-project(cfd CXX)
+project(cfd CXX C)   # C required by zfp-config.cmake's find_package(OpenMP COMPONENTS C)
 
 set(CMAKE_CXX_STANDARD          17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -241,7 +241,7 @@ target_link_libraries(checkpoint_zfp PUBLIC ns_solver)
 
 if(ZFP_FOUND)
     target_compile_definitions(checkpoint_zfp PUBLIC HAVE_ZFP)
-    target_link_libraries(checkpoint_zfp PUBLIC ZFP::ZFP)
+    target_link_libraries(checkpoint_zfp PUBLIC zfp::zfp)
     message(STATUS "ZFP found — compressed checkpointing with ZFP enabled")
 else()
     message(STATUS "ZFP not found — float32 fallback only (install libzfp-dev for full support)")
