@@ -314,6 +314,17 @@ add_custom_target(tb3
     USES_TERMINAL
 )
 
+add_executable(test_bench_b4 tests/test_bench_b4.cpp)
+target_link_libraries(test_bench_b4 PRIVATE bn_operators operators m)
+add_test(NAME bench_b4 COMMAND test_bench_b4)
+
+add_custom_target(tb4
+    DEPENDS test_bench_b4
+    COMMAND $<TARGET_FILE:test_bench_b4>
+    COMMENT "B.4 benchmark: Water-air shock tube (Allaire 5-equation)"
+    USES_TERMINAL
+)
+
 # =============================================================================
 # Workflow aliases
 # =============================================================================

@@ -96,7 +96,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | B.1 | ✅ | Sod shock tube (1D, Euler) | HLLC Riemann solver | Shock x≈0.850, contact x≈0.685 at t=0.2 | Sod (1978) J.Comput.Phys. |
 | B.2 | ✅ | Shu-Osher shock-entropy (1D) | WENO5-Z fine-scale accuracy | Post-shock density oscillations preserved; 5th-order on smooth | Shu & Osher (1989) J.Comput.Phys. |
 | B.3 | ✅ | Taylor-Green vortex Re=1600 (3D) | SSP-RK3 + WENO5 turbulence decay | KE dissipation peak t*≈9; 128³ grid < 2% error vs DNS | HiOCFD4 (2016); Taylor & Green (1937) |
-| B.4 | 🔲 | Two-phase water-air shock tube (1D, Allaire) | HLLC-BN flux, non-conservative α₁, stiffened-gas EOS | Sharp interface; no spurious pressure oscillations | Saurel & Abgrall (1999) J.Comput.Phys. 150 |
+| B.4 | ✅ | Two-phase water-air shock tube (1D, Allaire) | HLLC-BN flux, non-conservative α₁, stiffened-gas EOS | Sharp interface; no spurious pressure oscillations | Saurel & Abgrall (1999) J.Comput.Phys. 150 |
 | B.5 | 🔲 | Woodward-Colella blast waves (1D, strong shocks) | HLLC robustness (p ratio 10⁵), AMR triggering | Shock/contact positions match converged reference at t=0.038 | Woodward & Colella (1984) J.Comput.Phys. 54 |
 | B.6 | 🔲 | Kelvin-Helmholtz instability (2D) | AMR shear-layer refinement, Ducros sensor | Linear growth rate σ=√(kΔU/2); roll-up at t≈1–2 | Chandrashekar (2013); Pirozzoli (2011) |
 | B.7 | 🔲 | Rayleigh-Taylor instability (2D, Allaire) | 5-equation model + AMR; α₁∈[0,1] | Bubble/spike growth match linear theory γ=√(gkA) | Allaire et al. (2002) J.Comput.Phys. |
