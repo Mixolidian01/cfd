@@ -303,6 +303,17 @@ add_custom_target(tb2
     USES_TERMINAL
 )
 
+add_executable(test_bench_b3 tests/test_bench_b3.cpp)
+target_link_libraries(test_bench_b3 PRIVATE ns_solver m)
+add_test(NAME bench_b3 COMMAND test_bench_b3)
+
+add_custom_target(tb3
+    DEPENDS test_bench_b3
+    COMMAND $<TARGET_FILE:test_bench_b3>
+    COMMENT "B.3 benchmark: Taylor-Green vortex (3D periodic ILES)"
+    USES_TERMINAL
+)
+
 # =============================================================================
 # Workflow aliases
 # =============================================================================
