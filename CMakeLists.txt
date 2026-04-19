@@ -325,6 +325,28 @@ add_custom_target(tb4
     USES_TERMINAL
 )
 
+add_executable(test_bench_b5 tests/test_bench_b5.cpp)
+target_link_libraries(test_bench_b5 PRIVATE ns_solver m)
+add_test(NAME bench_b5 COMMAND test_bench_b5)
+
+add_custom_target(tb5
+    DEPENDS test_bench_b5
+    COMMAND $<TARGET_FILE:test_bench_b5>
+    COMMENT "B.5 benchmark: Woodward-Colella double blast waves"
+    USES_TERMINAL
+)
+
+add_executable(test_bench_b6 tests/test_bench_b6.cpp)
+target_link_libraries(test_bench_b6 PRIVATE ns_solver m)
+add_test(NAME bench_b6 COMMAND test_bench_b6)
+
+add_custom_target(tb6
+    DEPENDS test_bench_b6
+    COMMAND $<TARGET_FILE:test_bench_b6>
+    COMMENT "B.6 benchmark: Kelvin-Helmholtz instability (2D)"
+    USES_TERMINAL
+)
+
 # =============================================================================
 # Workflow aliases
 # =============================================================================
