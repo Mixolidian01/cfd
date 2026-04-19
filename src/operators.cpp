@@ -271,19 +271,18 @@ static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
 }
 
 // =============================================================================
-// P3.2 — Ducros shock sensor  (Ducros et al. 1999)
+// P3.2 — Combined shock sensor: Ducros (1999) + pressure-ratio
 // =============================================================================
 // Physical basis:
-//   Φ = (div u)² / ((div u)² + |curl u|² + ε)
-//   Near a compression shock: |div u| ≫ |curl u|  → Φ → 1
-//   In turbulent/vortex-dominated regions: |curl u| ≫ |div u| → Φ → 0
-//   Uniform flow: both → 0, ε dominates → Φ = 0
+//   Φ_vel = (div u)² / ((div u)² + |curl u|² + ε)   — Ducros velocity sensor
+//   Φ_p   = |Δp|_max / (p_local + ε)  smoothly blended [0.1→0.2] → [0→1]
+//   Φ     = max(Φ_vel, Φ_p)
 //
-// Computed for cells in [1, NB2-2] per axis (needs one ghost layer beyond
-// the interior for the central-difference stencil at the first ghost cell).
-// Absolute boundary cells (0, NB2-1) are set to 0 (no shock detection
-// at the second ghost layer — ghost data there is a copy with no gradient info).
+//   Φ_vel: fires near compressive shocks with non-zero velocity.
+//   Φ_p:   fires near stationary pressure discontinuities (e.g., t=0 Riemann IC),
+//          inactive for smooth flows (TGV: Φ_p ~ 0.07%, threshold 10%).
 //
+// Computed for cells in [1, NB2-2] per axis.
 // Output range: duc[cell_idx(i,j,k)] ∈ [0,1] for all valid cells.
 static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
 {
@@ -315,7 +314,24 @@ static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
         const double oz   = dvdx - dudy;   // ω_z = ∂v/∂x − ∂u/∂y
         const double d2   = divu*divu;
         const double c2   = ox*ox + oy*oy + oz*oz;
-        duc[cell_idx(i,j,k)] = d2 / (d2 + c2 + eps_duc);
+        const double phi_vel = d2 / (d2 + c2 + eps_duc);
+
+        // Pressure-ratio sensor: catches stationary shocks/contact discontinuities
+        // where the velocity-based Ducros term is zero (u=0 at t=0).
+        // Fires when any neighbor has |Δp| / p_local > 0.1 (10% relative jump).
+        // Inactive for smooth flows (TGV: ~0.07%) and smooth pressure variations.
+        const double pC   = pc[cell_idx(i,j,k)].p;
+        const double dpx  = std::max(std::abs(pc[cell_idx(i+1,j,k)].p - pC),
+                                     std::abs(pc[cell_idx(i-1,j,k)].p - pC));
+        const double dpy  = std::max(std::abs(pc[cell_idx(i,j+1,k)].p - pC),
+                                     std::abs(pc[cell_idx(i,j-1,k)].p - pC));
+        const double dpz  = std::max(std::abs(pc[cell_idx(i,j,k+1)].p - pC),
+                                     std::abs(pc[cell_idx(i,j,k-1)].p - pC));
+        const double phi_p = std::max({dpx, dpy, dpz}) / (pC + eps_duc);
+        // Smooth blend: phi_p < 0.1 → 0; phi_p > 0.2 → 1; linear in between
+        const double phi_p_clamped = std::min(1.0, std::max(0.0, (phi_p - 0.1) / 0.1));
+
+        duc[cell_idx(i,j,k)] = std::max(phi_vel, phi_p_clamped);
     }
 }
 
@@ -526,14 +542,19 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
     back_project(wL, QL);
     back_project(wR, QRv);
 
-    // ── Convert conservative → primitive; guard ρ>0, p>0 ────────────────────
-    auto safe_prim = [](const double Qc[NVAR]) -> Prim {
-        const double rho = std::max(Qc[0], 1.0e-300);
+    // ── Convert conservative → primitive; fall back to cell-center if non-physical ──
+    // A reconstructed state with ρ < 0 or p < 0 means the WENO5 polynomial
+    // overshoots at a strong discontinuity. Rather than clamping to 1e-300
+    // (which makes log_mean(β_L,β_R) degenerate in hllc_es_flux), fall back
+    // to the cell-center primitive at the interface: pL for qL, pR for qR.
+    auto safe_prim = [](const double Qc[NVAR], const Prim& fallback) -> Prim {
+        const double rho = Qc[0];
+        if (rho <= 0.0) return fallback;
         const double u   = Qc[1] / rho;
         const double v   = Qc[2] / rho;
         const double w   = Qc[3] / rho;
-        const double p   = std::max((GAMMA-1.0)*(Qc[4]-0.5*rho*(u*u+v*v+w*w)),
-                                    1.0e-300);
+        const double p   = (GAMMA-1.0)*(Qc[4]-0.5*rho*(u*u+v*v+w*w));
+        if (p <= 0.0) return fallback;
         Prim pr;
         pr.rho = rho;  pr.u = u;   pr.v = v;   pr.w = w;
         pr.p   = p;    pr.T = p/(rho*R_GAS);
@@ -541,8 +562,8 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
         return pr;
     };
 
-    qL_out = safe_prim(QL);
-    qR_out = safe_prim(QRv);
+    qL_out = safe_prim(QL,  pL);
+    qR_out = safe_prim(QRv, pR);
 }
 
 // =============================================================================

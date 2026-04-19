@@ -97,7 +97,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | B.2 | ✅ | Shu-Osher shock-entropy (1D) | WENO5-Z fine-scale accuracy | Post-shock density oscillations preserved; 5th-order on smooth | Shu & Osher (1989) J.Comput.Phys. |
 | B.3 | ✅ | Taylor-Green vortex Re=1600 (3D) | SSP-RK3 + WENO5 turbulence decay | KE dissipation peak t*≈9; 128³ grid < 2% error vs DNS | HiOCFD4 (2016); Taylor & Green (1937) |
 | B.4 | ✅ | Two-phase water-air shock tube (1D, Allaire) | HLLC-BN flux, non-conservative α₁, stiffened-gas EOS | Sharp interface; no spurious pressure oscillations | Saurel & Abgrall (1999) J.Comput.Phys. 150 |
-| B.5 | 🔲 | Woodward-Colella blast waves (1D, strong shocks) | HLLC robustness (p ratio 10⁵), AMR triggering | Shock/contact positions match converged reference at t=0.038 | Woodward & Colella (1984) J.Comput.Phys. 54 |
+| B.5 | ✅ | Woodward-Colella blast waves (1D, strong shocks) | HLLC robustness (p ratio 10⁵), AMR triggering | Shock/contact positions match converged reference at t=0.038 | Woodward & Colella (1984) J.Comput.Phys. 54 |
 | B.6 | 🔲 | Kelvin-Helmholtz instability (2D) | AMR shear-layer refinement, Ducros sensor | Linear growth rate σ=√(kΔU/2); roll-up at t≈1–2 | Chandrashekar (2013); Pirozzoli (2011) |
 | B.7 | 🔲 | Rayleigh-Taylor instability (2D, Allaire) | 5-equation model + AMR; α₁∈[0,1] | Bubble/spike growth match linear theory γ=√(gkA) | Allaire et al. (2002) J.Comput.Phys. |
 | B.8 | 🔲 | Lid-driven cavity Re=1000 (2D) | Viscous NS, Sutherland law, low-Mach | u-centerline min ≈−0.33 at y≈0.45 vs Ghia et al. | Ghia, Ghia & Shin (1982); Bruneau & Saad (2006) |
