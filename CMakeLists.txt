@@ -347,6 +347,17 @@ add_custom_target(tb6
     USES_TERMINAL
 )
 
+add_executable(test_bench_b7 tests/test_bench_b7.cpp)
+target_link_libraries(test_bench_b7 PRIVATE bn_operators operators m)
+add_test(NAME bench_b7 COMMAND test_bench_b7)
+
+add_custom_target(tb7
+    DEPENDS test_bench_b7
+    COMMAND $<TARGET_FILE:test_bench_b7>
+    COMMENT "B.7 benchmark: Rayleigh-Taylor instability (2D, Allaire)"
+    USES_TERMINAL
+)
+
 # =============================================================================
 # Workflow aliases
 # =============================================================================
