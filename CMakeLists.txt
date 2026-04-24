@@ -358,6 +358,17 @@ add_custom_target(tb7
     USES_TERMINAL
 )
 
+add_executable(test_bench_b8 tests/test_bench_b8.cpp)
+target_link_libraries(test_bench_b8 PRIVATE ns_solver m)
+add_test(NAME bench_b8 COMMAND test_bench_b8)
+
+add_custom_target(tb8
+    DEPENDS test_bench_b8
+    COMMAND $<TARGET_FILE:test_bench_b8>
+    COMMENT "B.8 benchmark: Lid-driven cavity Re=1000 (viscous NS)"
+    USES_TERMINAL
+)
+
 # =============================================================================
 # Workflow aliases
 # =============================================================================
