@@ -53,11 +53,12 @@ enum class StreamVar : uint8_t {
 
 // ── Streamer configuration ───────────────────────────────────────────────────
 struct StreamConfig {
-    int       port   = 8080;
-    StreamVar var    = StreamVar::RHO;
-    uint8_t   axis   = 2;     // 0=X, 1=Y, 2=Z
-    double    pos    = 0.5;   // normalised slice position ∈ [0,1]
-    int       stride = 1;     // stream every n-th advance() step
+    int       port        = 8080;
+    StreamVar var         = StreamVar::RHO;
+    uint8_t   axis        = 2;    // 0=X, 1=Y, 2=Z
+    double    pos         = 0.5;  // normalised slice position ∈ [0,1]
+    int       stride      = 1;    // stream every n-th advance() step
+    int       volume_size = 32;   // N for the N³ uniform volume grid (P6.6)
 };
 
 // ── Block descriptor in the 2-D projected plane ─────────────────────────────
@@ -83,21 +84,38 @@ struct FrameBuffer {
     std::vector<float>       data;    // n_blocks × NB × NB float32
 };
 
+// ── 3-D volume frame (P6.6) ──────────────────────────────────────────────────
+// Wire format:
+//   [4]  uint32 LE frame_len
+//   [40] header:
+//     magic(4) step(4) time(8) nx(2) ny(2) nz(2) pad(2)
+//     g_vmin(4) g_vmax(4) domain_L(4) var_id(1) compressed(1) pad(2)
+//   data:
+//     compressed=0 : nx*ny*nz float32 (z-major: data[vk*N²+vj*N+vi])
+//     compressed=1 : [4] uint32 unc_bytes + LZ4(nx*ny*nz uint16 LE)
+struct FrameBuffer3D {
+    int32_t  step      = 0;
+    double   sim_time  = 0.0;
+    uint16_t nx = 32, ny = 32, nz = 32;
+    float    g_vmin    = 0.f;
+    float    g_vmax    = 1.f;
+    float    domain_L  = 1.f;
+    uint8_t  var_id    = 0;
+    std::vector<float> data;   // nx*ny*nz
+};
+
 // ── LiveStreamer ─────────────────────────────────────────────────────────────
 class LiveStreamer {
 public:
     explicit LiveStreamer(const StreamConfig& cfg);
     ~LiveStreamer();
 
-    // Non-copyable / non-movable (owns threads + socket)
     LiveStreamer(const LiveStreamer&)            = delete;
     LiveStreamer& operator=(const LiveStreamer&) = delete;
 
-    // Called by NSSolver::advance() after apply_flux_correction().
-    // Skips steps not divisible by cfg.stride.  Never blocks.
+    // Called by NSSolver::advance() after apply_flux_correction(). Never blocks.
     void snapshot(const BlockTree& tree, int step, double t);
 
-    // Config setters — may be called from any thread (protected by cfg_mtx_)
     void set_var (StreamVar v) noexcept;
     void set_axis(uint8_t  a) noexcept;
     void set_pos (double   p) noexcept;
@@ -106,34 +124,47 @@ public:
 
 private:
     StreamConfig cfg_;
-    mutable std::mutex cfg_mtx_;   // guards cfg_ reads/writes across threads
+    mutable std::mutex cfg_mtx_;
 
-    // ── Double buffer ────────────────────────────────────────────────────────
+    // ── 2-D slice double-buffer ──────────────────────────────────────────────
     FrameBuffer back_, front_, work_;
     std::mutex              swap_mtx_;
     std::condition_variable swap_cv_;
     bool front_fresh_ = false;
     bool shutdown_    = false;
 
+    // ── 3-D volume double-buffer (P6.6) ──────────────────────────────────────
+    FrameBuffer3D back3d_, front3d_, work3d_;
+    std::mutex              swap3d_mtx_;
+    std::condition_variable swap3d_cv_;
+    bool front3d_fresh_ = false;
+
     // ── Threads ──────────────────────────────────────────────────────────────
     std::thread accept_thread_;
     std::thread stream_thread_;
+    std::thread stream3d_thread_;
 
-    // Active stream socket; -1 = no client connected.
-    // Written by accept thread, read by stream thread.
-    std::atomic<int> stream_fd_{-1};
+    std::atomic<int> stream_fd_{-1};     // 2-D slice stream socket
+    std::atomic<int> vol_stream_fd_{-1}; // 3-D volume stream socket
 
     // ── Internal helpers ──────────────────────────────────────────────────────
     void run_accept();
     void run_stream();
+    void run_stream3d();   // P6.6
 
     void handle_connection(int cfd);
-    void handle_get_root  (int cfd);
-    void handle_get_stream(int cfd);
-    void handle_post_config(int cfd, const std::string& req_with_body);
+    void handle_get_root        (int cfd);
+    void handle_get_stream      (int cfd);
+    void handle_get_volume      (int cfd);        // P6.6 — WebGPU viewer HTML
+    void handle_get_vol_stream  (int cfd);        // P6.6 — 3-D chunked stream
+    void handle_post_config     (int cfd, const std::string& req_with_body);
 
     void build_frame    (const BlockTree&, int step, double t, FrameBuffer&);
     void serialize_frame(const FrameBuffer&, std::vector<uint8_t>& out);
 
+    void build_volume    (const BlockTree&, int step, double t, FrameBuffer3D&);
+    void serialize_volume(const FrameBuffer3D&, std::vector<uint8_t>& out);
+
     static const char* viewer_html();
+    std::string viewer_html_3d();          // P6.6 — WebGPU ray marcher (needs port)
 };

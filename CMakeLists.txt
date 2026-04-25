@@ -417,12 +417,27 @@ add_custom_target(t12
 )
 
 # =============================================================================
+# apps/simulate — standalone JSON-driven simulation runner
+# =============================================================================
+add_executable(simulate apps/simulate.cpp)
+target_link_libraries(simulate PRIVATE ns_solver m)
+
+# `sim` runs simulate with sim.json from the repo root
+add_custom_target(sim
+    DEPENDS simulate
+    COMMAND $<TARGET_FILE:simulate> ${CMAKE_SOURCE_DIR}/apps/sod.json
+    COMMENT "Run Sod shock tube via apps/simulate (edit command or supply your own JSON)"
+    USES_TERMINAL
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+
+# =============================================================================
 # Workflow aliases
 # =============================================================================
 
 # b  — incremental build of all CXX targets
 add_custom_target(b
-    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7
+    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7
     COMMENT "Build all targets (incremental)"
 )
 

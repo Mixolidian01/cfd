@@ -131,8 +131,8 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 | # | Status | Item |
 |---|--------|------|
-| P6.6 | 🔲 | WebGPU compute-shader ray marcher; AMR block → GPUTexture3D |
-| P6.7 | 🔲 | Transfer function editor (opacity × color); interactive steering via bidirectional WS |
+| P6.6 | ✅ | WebGPU ray-marcher (render pipeline, WGSL, arcball camera); AMR blocks → resampled N³ r32float GPUTexture3D; `GET /volume` + `GET /volume-stream` |
+| P6.7 | ✅ | Transfer function editor (canvas drag → opacity curve); colormap selector (Viridis/Hot/Cool/Gray); opacity slider; touch support; `POST /config` steering |
 | P6.8 | ✅ | uint16 quantization + LZ4 compression (3–5× reduction vs raw float32) |
 
 ---
