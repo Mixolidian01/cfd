@@ -86,14 +86,18 @@ void NSSolver::init(double domain_L,
 // =============================================================================
 void NSSolver::copy_tree_to_stage(std::vector<CellBlock>& stage) {
     const auto& leaves = tree.leaf_indices();
-    for (int ii = 0; ii < (int)leaves.size(); ++ii)
+    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
+        if (!tree.nodes[leaves[ii]].has_block()) continue;  // P7.1: remote leaf
         stage[ii] = *tree.nodes[leaves[ii]].block;
+    }
 }
 
 void NSSolver::copy_stage_to_tree(const std::vector<CellBlock>& stage) {
     const auto& leaves = tree.leaf_indices();
-    for (int ii = 0; ii < (int)leaves.size(); ++ii)
+    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
+        if (!tree.nodes[leaves[ii]].has_block()) continue;  // P7.1: remote leaf
         *tree.nodes[leaves[ii]].block = stage[ii];
+    }
 }
 
 void NSSolver::save_Qn() { copy_tree_to_stage(Qn_); }
@@ -134,6 +138,8 @@ double NSSolver::advance() {
         regrid();
 
     double dt = tree_cfl_dt(tree, cfg.cfl);
+    // P7.1: global CFL across all ranks
+    if (mpi_) dt = mpi_allreduce_min(dt, *mpi_);
 
     save_Qn();
 
@@ -146,6 +152,7 @@ double NSSolver::advance() {
     // P4.2: SSP-RK3 tile loops — NTILE×W covers all cells (ghosts carry through
     // unchanged since rhs_[ii].Q[v] is zero at ghost-cell flat indices).
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
+    if (mpi_) mpi_exchange_halos(tree, *mpi_);
     tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
@@ -160,6 +167,7 @@ double NSSolver::advance() {
     copy_stage_to_tree(Qs_);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
+    if (mpi_) mpi_exchange_halos(tree, *mpi_);
     tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
@@ -174,6 +182,7 @@ double NSSolver::advance() {
     copy_stage_to_tree(Qs_);
 
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
+    if (mpi_) mpi_exchange_halos(tree, *mpi_);
     tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
@@ -439,11 +448,19 @@ StepDiag NSSolver::compute_diag() const {
     d.step = step; d.t = t; d.dt = last_dt_;
     d.mass = 0; d.momentum_x = 0; d.kinetic_energy = 0; d.total_energy = 0;
     for (int li : tree.leaf_indices()) {
+        if (!tree.nodes[li].has_block()) continue;  // remote leaf on this rank
         const auto& b = *tree.nodes[li].block;
         d.mass           += block_mass(b);
         d.momentum_x     += block_momentum_x(b);
         d.kinetic_energy += block_kinetic_energy(b);
         d.total_energy   += block_total_energy(b);
+    }
+    // P7.1: reduce across all MPI ranks
+    if (mpi_) {
+        d.mass           = mpi_allreduce_sum(d.mass,           *mpi_);
+        d.momentum_x     = mpi_allreduce_sum(d.momentum_x,     *mpi_);
+        d.kinetic_energy = mpi_allreduce_sum(d.kinetic_energy, *mpi_);
+        d.total_energy   = mpi_allreduce_sum(d.total_energy,   *mpi_);
     }
     return d;
 }

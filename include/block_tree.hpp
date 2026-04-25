@@ -29,6 +29,9 @@
 #include <cstdint>
 #include <deque>
 
+// Forward-declare to avoid circular include (mpi_comm.hpp includes block_tree.hpp)
+struct MpiPartition;
+
 // ── Morton encoding (10 bits per axis) ────────────────────────────────────────────
 uint32_t morton_encode(uint32_t x, uint32_t y, uint32_t z) noexcept;
 void     morton_decode(uint32_t code, uint32_t& x, uint32_t& y, uint32_t& z) noexcept;
@@ -151,6 +154,11 @@ struct BlockTree {
     // and undo_cf_face_flux to handle the periodic boundary flux registers).
     bool periodic_bc_ = false;
     void set_periodic(bool p) noexcept { periodic_bc_ = p; }
+
+    // P7.1: optional MPI partition.  When set, fill_ghosts_* skips remote faces
+    // (they are already filled by mpi_exchange_halos() before the ghost fill).
+    MpiPartition* mpi_ = nullptr;
+    void set_mpi(MpiPartition* p) noexcept { mpi_ = p; }
 
 private:
     double domain_L_ = 1.0;

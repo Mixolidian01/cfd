@@ -16,6 +16,7 @@
 #include "sgs.hpp"
 #include "operators.hpp"
 #include "live_streamer.hpp"
+#include "mpi_comm.hpp"
 #include <functional>
 #include <string>
 
@@ -85,6 +86,14 @@ struct NSSolver {
     // Set via set_streamer() before run()/advance().  Null = disabled.
     LiveStreamer* streamer_ = nullptr;
     void set_streamer(LiveStreamer* s) noexcept { streamer_ = s; }
+
+    // P7.1: optional MPI partition.  When set, advance() calls mpi_exchange_halos()
+    // before each RK stage's ghost fill, and uses MPI_Allreduce for CFL and diagnostics.
+    MpiPartition* mpi_ = nullptr;
+    void set_mpi(MpiPartition* p) noexcept {
+        mpi_ = p;
+        tree.set_mpi(p);
+    }
 
     int  scratch_leaf_count_ = -1;  ///< FIX P5: tracks last alloc size
     void alloc_scratch();

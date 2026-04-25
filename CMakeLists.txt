@@ -100,6 +100,19 @@ else()
     message(STATUS "LZ4 not found — stream frames use raw float32 (install liblz4-dev)")
 endif()
 
+# ── MPI (P7.1 — domain decomposition) ────────────────────────────────────────
+find_package(MPI QUIET)
+add_library(mpi_comm STATIC src/mpi_comm.cpp)
+target_link_libraries(mpi_comm PUBLIC block)
+if(MPI_CXX_FOUND)
+    target_link_libraries(mpi_comm PUBLIC MPI::MPI_CXX)
+    target_compile_definitions(mpi_comm PUBLIC HAVE_MPI=1)
+    message(STATUS "MPI found (${MPI_CXX_COMPILER}) — P7.1 halo exchange enabled")
+else()
+    message(STATUS "MPI not found — mpi_comm compiles as stub (n_ranks=1, no exchange)")
+endif()
+target_link_libraries(ns_solver PUBLIC mpi_comm)
+
 # =============================================================================
 # Gate test executables
 # =============================================================================
@@ -409,6 +422,23 @@ add_custom_target(t12
     DEPENDS test_streamer
     COMMAND $<TARGET_FILE:test_streamer>
     COMMENT "P6.5 gate: LiveStreamer 2D slice protocol"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Phase 7 — MPI gate test (P7.1)
+# =============================================================================
+add_executable(test_mpi tests/test_mpi.cpp)
+target_link_libraries(test_mpi PRIVATE ns_solver m)
+if(MPI_CXX_FOUND)
+    target_link_libraries(test_mpi PRIVATE MPI::MPI_CXX)
+    target_compile_definitions(test_mpi PRIVATE HAVE_MPI=1)
+endif()
+
+add_custom_target(t13
+    DEPENDS test_mpi
+    COMMAND mpirun -n 2 $<TARGET_FILE:test_mpi>
+    COMMENT "P7.1 gate: 2-rank Sod, global mass conserved to 1e-10"
     USES_TERMINAL
 )
 

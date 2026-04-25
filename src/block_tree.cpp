@@ -39,6 +39,7 @@
 //                which apply_flux_correction never reads, silently discarding all
 //                fine fluxes and leaving the coarse budget uncorrected (~2.69e-8 A05).
 #include "../include/block_tree.hpp"
+#include "../include/mpi_comm.hpp"
 #include "../include/amr_operators.hpp"
 #include <algorithm>
 #include <cassert>
@@ -699,6 +700,7 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
 
     for (int li : leaves) {
         auto& nd  = nodes[li];
+        if (!nd.has_block()) continue;  // P7.1: remote leaf (no local data)
         auto& blk = *nd.block;
 
         auto copy_cell = [&](int gi, int gj, int gk,
@@ -722,6 +724,9 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
         for (int d = 0; d < NFACES; ++d) {
             int ni = nd.neighbours[d];
             const FaceSpec& sp = specs[d];
+
+            // P7.1: remote face already filled by mpi_exchange_halos()
+            if (ni >= 0 && mpi_ && mpi_->is_remote(ni)) continue;
 
             if (ni >= 0 && nodes[ni].has_block()) {
                 if (nodes[ni].level < nd.level) {
@@ -841,6 +846,7 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
     const auto& leaves = leaf_indices();
     for (int li : leaves) {
         auto& nd  = nodes[li];
+        if (!nd.has_block()) continue;  // P7.1: remote leaf
         auto& blk = *nd.block;
 
         auto wall_x = [&](int gi, int mi) noexcept {
@@ -902,6 +908,7 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
         for (int d = 0; d < NFACES; ++d) {
             int ni = nd.neighbours[d];
             if (ni < 0 || !nodes[ni].has_block()) continue;
+            if (mpi_ && mpi_->is_remote(ni)) continue;  // P7.1: filled by mpi_exchange_halos()
             const FaceSpec& sp = specs[d];
             if (nodes[ni].level < nd.level) {
                 int oct = child_octant_of(nodes, li);
@@ -994,6 +1001,7 @@ void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
     const auto& leaves = leaf_indices();
     for (int li : leaves) {
         auto& nd  = nodes[li];
+        if (!nd.has_block()) continue;  // P7.1: remote leaf
         auto& blk = *nd.block;
 
         // Zero-gradient: ghost layer copies the nearest interior layer
@@ -1041,6 +1049,7 @@ void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
         for (int d = 0; d < NFACES; ++d) {
             int ni = nd.neighbours[d];
             if (ni < 0 || !nodes[ni].has_block()) continue;
+            if (mpi_ && mpi_->is_remote(ni)) continue;  // P7.1: filled by mpi_exchange_halos()
             const FaceSpec& sp = specs[d];
             if (nodes[ni].level < nd.level) {
                 int oct = child_octant_of(nodes, li);
@@ -1174,6 +1183,7 @@ void BlockTree::accumulate_fine_flux(int fine_leaf, FaceDir d,
 void BlockTree::apply_flux_correction(double dt) {
     for (int li : leaf_indices()) {
         auto& nd  = nodes[li];
+        if (!nd.has_block()) continue;  // P7.1: remote leaf
         auto& blk = *nd.block;
         double h_c = blk.h;
 

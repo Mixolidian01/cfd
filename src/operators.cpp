@@ -1174,6 +1174,7 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
     for (int li : tree.leaf_indices()) {
         if (level_filter >= 0 && tree.nodes[li].level != level_filter) continue;
         const auto& nd  = tree.nodes[li];
+        if (!nd.has_block()) continue;  // P7.1: remote leaf
         const auto& blk = *nd.block;
 
         // Octant of this fine leaf relative to its parent.
@@ -1323,6 +1324,7 @@ void tree_rhs(BlockTree& tree,
     for (int oi = 0; oi < n_active; ++oi) {
         const int li       = order[oi];
         const int node_idx = leaves[li];
+        if (!tree.nodes[node_idx].has_block()) continue;  // P7.1: remote leaf
         compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li]);
         undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
         if (cf_coarse_zero_grad)
@@ -1341,8 +1343,10 @@ void tree_rhs(BlockTree& tree,
 double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept
 {
     double dt = 1e300;
-    for (auto li : tree.leaf_indices())
+    for (auto li : tree.leaf_indices()) {
+        if (!tree.nodes[li].has_block()) continue;  // P7.1: remote leaf
         dt = std::min(dt, tree.nodes[li].block->cfl_dt(cfl));
+    }
     return dt;
 }
 
@@ -1353,6 +1357,7 @@ double level_cfl_dt(const BlockTree& tree, int level, double cfl) noexcept
     double dt = 1e300;
     for (auto li : tree.leaf_indices()) {
         if (tree.nodes[li].level != level) continue;
+        if (!tree.nodes[li].has_block()) continue;  // P7.1: remote leaf
         dt = std::min(dt, tree.nodes[li].block->cfl_dt(cfl));
     }
     return dt;
