@@ -23,6 +23,11 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+// LZ4 block compression (P6.8) — optional, guarded by HAVE_LZ4
+#ifdef HAVE_LZ4
+#include <lz4.h>
+#endif
+
 // =============================================================================
 // Internal helpers
 // =============================================================================
@@ -172,6 +177,58 @@ function viridis(t){
           Math.round(Math.max(0,Math.min(1,b))*255)];
 }
 
+// Minimal LZ4 raw-block decompressor (no frame header).
+// src: Uint8Array, src_off/src_len: range, dst_size: expected output bytes.
+function lz4_decomp(src,src_off,src_len,dst_size){
+  const dst=new Uint8Array(dst_size);
+  let si=src_off,se=src_off+src_len,di=0;
+  while(si<se){
+    const tok=src[si++];
+    let ll=tok>>4;
+    if(ll===15){let x;do{x=src[si++];ll+=x;}while(x===255);}
+    for(let i=0;i<ll;i++) dst[di++]=src[si++];
+    if(si>=se) break;
+    const off=src[si++]|(src[si++]<<8);
+    let ml=(tok&0xf)+4;
+    if((tok&0xf)===15){let x;do{x=src[si++];ml+=x;}while(x===255);}
+    const ms=di-off;
+    for(let i=0;i<ml;i++) dst[di++]=dst[ms+i];
+  }
+  return dst;
+}
+
+function drawCells(nB,vmin,vmax,getVal){
+  const W=canvas.width,H=canvas.height;
+  if(!imgData||imgData.width!==W||imgData.height!==H)
+    imgData=ctx.createImageData(W,H);
+  const d=imgData.data;
+  for(let i=0;i<d.length;i+=4){d[i]=13;d[i+1]=13;d[i+2]=13;d[i+3]=255;}
+  const range=(vmax>vmin)?(vmax-vmin):1;
+  let ci=0;
+  for(let b=0;b<nB;b++){
+    const {ox2d,oy2d,h}=blocks[b];
+    const pw=Math.max(1,Math.round(h/domainL*W));
+    const ph=Math.max(1,Math.round(h/domainL*H));
+    for(let row=0;row<NB;row++)
+    for(let col=0;col<NB;col++){
+      const val=getVal(ci++);
+      const [r,g,bl]=viridis((val-vmin)/range);
+      const cx=Math.round((ox2d+(col+0.5)*h)/domainL*W);
+      const cy=Math.round((1-(oy2d+(row+0.5)*h)/domainL)*H);
+      const px0=cx-Math.floor(pw/2),py0=cy-Math.floor(ph/2);
+      for(let dy=0;dy<ph;dy++){
+        const py=py0+dy; if(py<0||py>=H) continue;
+        for(let dx=0;dx<pw;dx++){
+          const px=px0+dx; if(px<0||px>=W) continue;
+          const i=(py*W+px)*4;
+          d[i]=r;d[i+1]=g;d[i+2]=bl;
+        }
+      }
+    }
+  }
+  ctx.putImageData(imgData,0,0);
+}
+
 function parseFrame(bytes){
   const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   let o=0;
@@ -181,52 +238,35 @@ function parseFrame(bytes){
   const nB=dv.getUint8(o++);
   const axis=dv.getUint8(o++);
   const varId=dv.getUint8(o++);
-  o++;  // reserved
+  const compressed=dv.getUint8(o++);  // 0=float32, 1=uint16+LZ4
   const vmin=dv.getFloat32(o,true); o+=4;
   const vmax=dv.getFloat32(o,true); o+=4;
   domainL=dv.getFloat32(o,true); o+=4;
 
-  // Block descriptors (always present)
+  // Block descriptors (always uncompressed)
   blocks=[];
   for(let b=0;b<nB;b++){
     const ox2d=dv.getFloat32(o,true); o+=4;
     const oy2d=dv.getFloat32(o,true); o+=4;
     const h=dv.getFloat32(o,true); o+=4;
-    const lv=dv.getUint8(o); o+=4;  // skip 3 pad bytes too
+    const lv=dv.getUint8(o); o+=4;
     blocks.push({ox2d,oy2d,h,lv});
   }
 
-  const W=canvas.width, H=canvas.height;
-  if(!imgData||imgData.width!==W||imgData.height!==H)
-    imgData=ctx.createImageData(W,H);
-
-  // Clear to near-black
-  const d=imgData.data;
-  for(let i=0;i<d.length;i+=4){d[i]=13;d[i+1]=13;d[i+2]=13;d[i+3]=255;}
-
-  const range=(vmax>vmin)?(vmax-vmin):1;
-  for(let b=0;b<nB;b++){
-    const {ox2d,oy2d,h}=blocks[b];
-    const pw=Math.max(1,Math.round(h/domainL*W));
-    const ph=Math.max(1,Math.round(h/domainL*H));
-    for(let row=0;row<NB;row++)
-    for(let col=0;col<NB;col++){
-      const val=dv.getFloat32(o,true); o+=4;
-      const [r,g,bl]=viridis((val-vmin)/range);
-      const cx=Math.round((ox2d+(col+0.5)*h)/domainL*W);
-      const cy=Math.round((1-(oy2d+(row+0.5)*h)/domainL)*H);
-      const px0=cx-Math.floor(pw/2), py0=cy-Math.floor(ph/2);
-      for(let dy=0;dy<ph;dy++){
-        const py=py0+dy; if(py<0||py>=H) continue;
-        for(let dx=0;dx<pw;dx++){
-          const px=px0+dx; if(px<0||px>=W) continue;
-          const i=(py*W+px)*4;
-          d[i]=r; d[i+1]=g; d[i+2]=bl;
-        }
-      }
-    }
+  if(compressed){
+    // LZ4-compressed uint16 data
+    const unc_size=dv.getUint32(o,true); o+=4;
+    const u8=lz4_decomp(bytes,o,bytes.length-o,unc_size);
+    const udv=new DataView(u8.buffer);
+    let di=0;
+    drawCells(nB,vmin,vmax,()=>{
+      const q=udv.getUint16(di,true); di+=2;
+      return vmin+(q/65535)*(vmax-vmin);
+    });
+  } else {
+    // Raw float32 data
+    drawCells(nB,vmin,vmax,()=>{ const v=dv.getFloat32(o,true); o+=4; return v; });
   }
-  ctx.putImageData(imgData,0,0);
   infoEl.textContent=`step=${step} t=${t.toExponential(3)} [${vmin.toPrecision(3)}, ${vmax.toPrecision(3)}]`;
 }
 
@@ -423,50 +463,93 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
 
 // =============================================================================
 // LiveStreamer::serialize_frame — pack FrameBuffer into a length-prefixed blob
+//
+// Wire format:
+//   [4]  uint32  frame body length (everything after these 4 bytes)
+//   [32] header  magic/step/time/n_blocks/axis/var_id/compressed/vmin/vmax/domainL
+//   [n×16] block descriptors (uncompressed, always)
+//   data section — one of:
+//     compressed=0 : n×NB×NB × float32
+//     compressed=1 : [4] uint32 uncompressed_byte_count
+//                    [?] LZ4 raw-block of (n×NB×NB × uint16 LE)
+//                    uint16 q = round((val-vmin)/(vmax-vmin) * 65535)
 // =============================================================================
 
 void LiveStreamer::serialize_frame(const FrameBuffer& fb, std::vector<uint8_t>& out) {
     out.clear();
+    const uint8_t n        = fb.n_blocks;
+    const int     n_pixels = static_cast<int>(n) * NB * NB;
 
-    const uint8_t n = fb.n_blocks;
-
-    // Frame body size (excluding the 4-byte length prefix itself)
-    const uint32_t body_len = 32u                        // header
-                            + static_cast<uint32_t>(n) * 16u  // block descriptors
-                            + static_cast<uint32_t>(n) * NB * NB * 4u; // float32 data
-
-    out.reserve(4 + body_len);
-
-    // 4-byte length prefix
-    push_u32(out, body_len);
+    // Build body separately so we can prepend the correct length at the end.
+    std::vector<uint8_t> body;
+    body.reserve(32u + static_cast<uint32_t>(n) * 16u + n_pixels * 4u);
 
     // ── Header (32 bytes) ────────────────────────────────────────────────────
-    push_u32(out, 0xCFD00001u);           //  0-3  magic
-    push_i32(out, fb.step);              //  4-7  step
-    push_f64(out, fb.sim_time);          //  8-15 time
-    out.push_back(n);                    // 16    n_blocks
-    out.push_back(fb.axis);             // 17    slice_axis
-    out.push_back(fb.var_id);           // 18    var_id
-    out.push_back(0);                   // 19    reserved
-    push_f32(out, fb.g_vmin);           // 20-23 vmin
-    push_f32(out, fb.g_vmax);           // 24-27 vmax
-    push_f32(out, fb.domain_L);         // 28-31 domain_L
+    push_u32(body, 0xCFD00001u);    //  0-3  magic
+    push_i32(body, fb.step);        //  4-7  step
+    push_f64(body, fb.sim_time);    //  8-15 time
+    body.push_back(n);              // 16    n_blocks
+    body.push_back(fb.axis);        // 17    slice_axis
+    body.push_back(fb.var_id);      // 18    var_id
+    body.push_back(0);              // 19    compressed flag (patched below)
+    const size_t compressed_off = body.size() - 1;
+    push_f32(body, fb.g_vmin);      // 20-23 vmin
+    push_f32(body, fb.g_vmax);      // 24-27 vmax
+    push_f32(body, fb.domain_L);    // 28-31 domain_L
     // total header = 32 bytes ✓
 
-    // ── Block descriptors (n × 16 bytes) ─────────────────────────────────────
+    // ── Block descriptors (n × 16 bytes, always uncompressed) ────────────────
     for (uint8_t b = 0; b < n; ++b) {
         const BlockDesc2D& d = fb.descs[b];
-        push_f32(out, d.ox2d);           //  0-3
-        push_f32(out, d.oy2d);           //  4-7
-        push_f32(out, d.h);              //  8-11
-        out.push_back(d.level);          // 12
-        out.push_back(0); out.push_back(0); out.push_back(0);  // 13-15 pad
+        push_f32(body, d.ox2d);
+        push_f32(body, d.oy2d);
+        push_f32(body, d.h);
+        body.push_back(d.level);
+        body.push_back(0); body.push_back(0); body.push_back(0);
     }
 
-    // ── Data (n × NB × NB × float32) ─────────────────────────────────────────
-    const int n_floats = n * NB * NB;
-    for (int i = 0; i < n_floats; ++i)
-        push_f32(out, fb.data[i]);
+    // ── Data section ─────────────────────────────────────────────────────────
+#ifdef HAVE_LZ4
+    // uint16 quantisation → LZ4 block compression
+    const float rng_inv = (fb.g_vmax > fb.g_vmin)
+                          ? 1.0f / (fb.g_vmax - fb.g_vmin) : 1.0f;
+
+    std::vector<uint8_t> u16(static_cast<size_t>(n_pixels) * 2u);
+    for (int i = 0; i < n_pixels; ++i) {
+        float t = std::max(0.0f, std::min(1.0f,
+                      (fb.data[i] - fb.g_vmin) * rng_inv));
+        uint16_t q = static_cast<uint16_t>(std::lround(t * 65535.0f));
+        u16[i*2]   = static_cast<uint8_t>(q);
+        u16[i*2+1] = static_cast<uint8_t>(q >> 8);
+    }
+
+    const int src_bytes = static_cast<int>(u16.size());
+    const int max_dst   = LZ4_compressBound(src_bytes);
+    std::vector<char> lz4_out(static_cast<size_t>(max_dst));
+    const int cmp_bytes = LZ4_compress_default(
+        reinterpret_cast<const char*>(u16.data()),
+        lz4_out.data(), src_bytes, max_dst);
+
+    if (cmp_bytes > 0) {
+        body[compressed_off] = 1;                              // mark compressed
+        push_u32(body, static_cast<uint32_t>(src_bytes));     // decompressed size hint
+        body.insert(body.end(),
+                    reinterpret_cast<const uint8_t*>(lz4_out.data()),
+                    reinterpret_cast<const uint8_t*>(lz4_out.data()) + cmp_bytes);
+    } else {
+        // LZ4 failed (extremely rare) — fall through to raw float32
+        for (int i = 0; i < n_pixels; ++i) push_f32(body, fb.data[i]);
+    }
+#else
+    for (int i = 0; i < n_pixels; ++i) push_f32(body, fb.data[i]);
+#endif
+
+    // Prepend 4-byte length prefix
+    const uint32_t body_len = static_cast<uint32_t>(body.size());
+    out.resize(4u + body.size());
+    out[0] = body_len & 0xffu; out[1] = (body_len >> 8) & 0xffu;
+    out[2] = (body_len >> 16) & 0xffu; out[3] = (body_len >> 24) & 0xffu;
+    std::memcpy(out.data() + 4, body.data(), body.size());
 }
 
 // =============================================================================

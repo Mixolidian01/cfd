@@ -88,6 +88,18 @@ target_link_libraries(ns_solver PUBLIC operators)
 find_package(Threads REQUIRED)
 target_link_libraries(ns_solver PUBLIC Threads::Threads)
 
+# ── LZ4 (P6.8 — stream frame uint16 quantisation + block compression) ────────
+find_path(LZ4_INCLUDE_DIR lz4.h)
+find_library(LZ4_LIBRARY NAMES lz4)
+if(LZ4_INCLUDE_DIR AND LZ4_LIBRARY)
+    target_include_directories(ns_solver PUBLIC ${LZ4_INCLUDE_DIR})
+    target_link_libraries(ns_solver PUBLIC ${LZ4_LIBRARY})
+    target_compile_definitions(ns_solver PUBLIC HAVE_LZ4=1)
+    message(STATUS "LZ4 found (${LZ4_LIBRARY}) — stream frame compression enabled")
+else()
+    message(STATUS "LZ4 not found — stream frames use raw float32 (install liblz4-dev)")
+endif()
+
 # =============================================================================
 # Gate test executables
 # =============================================================================
@@ -160,6 +172,7 @@ if(NVCC)
                 -Xcompiler=-Wall
                 ${_T5_SRCS}
                 -o ${_T5_BIN} -lm
+                $<$<BOOL:${LZ4_LIBRARY}>:-llz4>
         DEPENDS ${_T5_SRCS}
         COMMENT "nvcc: compiling Step 5 GPU gate"
         VERBATIM

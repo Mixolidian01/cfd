@@ -133,7 +133,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 |---|--------|------|
 | P6.6 | 🔲 | WebGPU compute-shader ray marcher; AMR block → GPUTexture3D |
 | P6.7 | 🔲 | Transfer function editor (opacity × color); interactive steering via bidirectional WS |
-| P6.8 | 🔲 | uint16 quantization + LZ4 compression (3–5× reduction vs raw float32) |
+| P6.8 | ✅ | uint16 quantization + LZ4 compression (3–5× reduction vs raw float32) |
 
 ---
 
@@ -143,7 +143,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 | Package | Status | Used by | Fallback when absent | Install command |
 |---------|--------|---------|----------------------|-----------------|
-| `liblz4-dev` | ❌ runtime only (`liblz4-1` installed, headers missing) | P6.8 — LZ4 stream frame compression | Uncompressed float32 frames | `sudo apt install liblz4-dev` |
+| `liblz4-dev` | ✅ installed — `/usr/lib/x86_64-linux-gnu/liblz4.so`, `/usr/include/lz4.h` | P6.8 — LZ4 stream frame compression | — | already done |
 | `libonnxruntime-dev` | ❌ `.deb` downloaded to `/home/dkoffibi/` but not installed | P4.6 — Neural SGS ONNX inference | Vreman algebraic SGS | `sudo dpkg -i /home/dkoffibi/libonnxruntime1.21_1.21.0+dfsg-2_amd64.deb && sudo dpkg -i /home/dkoffibi/libonnxruntime-dev_1.21.0+dfsg-2_amd64.deb` |
 
 **Fully installed (no action needed):**
