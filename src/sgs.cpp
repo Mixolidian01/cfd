@@ -15,10 +15,15 @@
 //             (dQ[4] -= dt*visc_work), lowering KE as required by S03.
 //             Previously the increment was +visc_work (energy injection),
 //             causing Smagorinsky KE > NullSGS KE.
-//   S08-fix2: Periodic ghost wrap applied to mu_t after the precomputation
-//             loop.  Without this, the +x/+y/+z ghost layer has mu_t=0,
-//             halving the face viscosity at block boundaries and breaking
-//             the telescoping sum => global momentum not conserved.
+//   S08-fix2: Ghost wrap for mu_t after the precomputation loop.  Without
+//             this, the +x/+y/+z ghost layer has mu_t=0, halving the face
+//             viscosity at block boundaries and breaking the telescoping
+//             sum => global momentum not conserved.  For periodic faces the
+//             wrap uses the opposite interior cell (correct for single-block
+//             periodic simulations).  For no-slip wall faces (detected by
+//             Q[1]_ghost = −Q[1]_interior), zero Dirichlet is used instead:
+//             the wall-face SGS viscosity becomes 0.5·mu_t[interior] rather
+//             than the spurious wrap from the far side of the same block.
 //   P3.4    : DynamicSmagorinskyModel added.  Germano identity + Lilly LS
 //             with 3×3×3 box test filter at 2Δ.  Shared stress-divergence
 //             helper apply_sgs_stress_div() extracted to avoid duplication.
@@ -61,21 +66,62 @@ static void apply_sgs_stress_div(CellBlock& blk, double h, double dt,
     const double ih_half = 0.5 * h_inv;
     const double kap_fac = SGS_CP / Pr_t_val;
 
-    // S08-fix2: periodic ghost wrap so face averages are correct at block edges.
+    // S08-fix2: ghost wrap for mu_t so face averages are correct at block edges.
+    // For no-slip wall faces (Q[1]_ghost = −Q[1]_interior) use zero Dirichlet so
+    // the wall-face mu_t average is 0.5·mu_t[interior] rather than the spuriously
+    // large periodic-wrap value from the far side of the same block.
+    auto has_wall_bc = [&](int dim, bool lo) -> bool {
+        double sum_flip = 0.0, sum_abs = 0.0;
+        for (int a = NG; a < NG+NB; ++a)
+        for (int b = NG; b < NG+NB; ++b) {
+            int ig, ii;
+            if      (dim == 0 &&  lo) { ig = cell_idx(NG-1,    a, b); ii = cell_idx(NG,      a, b); }
+            else if (dim == 0)        { ig = cell_idx(NB+NG,   a, b); ii = cell_idx(NB+NG-1, a, b); }
+            else if (dim == 1 &&  lo) { ig = cell_idx(a, NG-1,    b); ii = cell_idx(a, NG,      b); }
+            else if (dim == 1)        { ig = cell_idx(a, NB+NG,   b); ii = cell_idx(a, NB+NG-1, b); }
+            else if (dim == 2 &&  lo) { ig = cell_idx(a, b, NG-1   ); ii = cell_idx(a, b, NG      ); }
+            else                      { ig = cell_idx(a, b, NB+NG  ); ii = cell_idx(a, b, NB+NG-1 ); }
+            const double ru_g = blk.Q[1][ig], ru_i = blk.Q[1][ii];
+            sum_flip += std::fabs(ru_g + ru_i);
+            sum_abs  += std::fabs(ru_g) + std::fabs(ru_i);
+        }
+        // No-slip wall ghost satisfies Q[1]_g = −Q[1]_i exactly → ratio ≈ 0
+        return (sum_abs < 1e-60 || sum_flip / (sum_abs + 1e-300) < 1e-8);
+    };
+    const bool wall_xm = has_wall_bc(0, true),  wall_xp = has_wall_bc(0, false);
+    const bool wall_ym = has_wall_bc(1, true),  wall_yp = has_wall_bc(1, false);
+    const bool wall_zm = has_wall_bc(2, true),  wall_zp = has_wall_bc(2, false);
+
+    // Outer ghost (g=0): periodic wrap or zero Dirichlet at wall.
+    // Inner ghost layers (g=1..NG-1): also zero at wall faces — for NG>=2 the
+    // inner ghost j=g is computed from anti-symmetric Q ghost values and would
+    // otherwise carry inflated Smag that creates spurious wall-face SGS viscosity.
     for (int k = 0; k < NB2; ++k)
     for (int j = 0; j < NB2; ++j) {
-        mu_t_arr[cell_idx(0,     j, k)] = mu_t_arr[cell_idx(NB2-2, j, k)];
-        mu_t_arr[cell_idx(NB2-1, j, k)] = mu_t_arr[cell_idx(1,     j, k)];
+        mu_t_arr[cell_idx(0,     j, k)] = wall_xm ? 0.0 : mu_t_arr[cell_idx(NB2-2, j, k)];
+        mu_t_arr[cell_idx(NB2-1, j, k)] = wall_xp ? 0.0 : mu_t_arr[cell_idx(1,     j, k)];
+        for (int g = 1; g < NG; ++g) {
+            if (wall_xm) mu_t_arr[cell_idx(g,       j, k)] = 0.0;
+            if (wall_xp) mu_t_arr[cell_idx(NB2-1-g, j, k)] = 0.0;
+        }
     }
     for (int k = 0; k < NB2; ++k)
     for (int i = 0; i < NB2; ++i) {
-        mu_t_arr[cell_idx(i, 0,     k)] = mu_t_arr[cell_idx(i, NB2-2, k)];
-        mu_t_arr[cell_idx(i, NB2-1, k)] = mu_t_arr[cell_idx(i, 1,     k)];
+        mu_t_arr[cell_idx(i, 0,     k)] = wall_ym ? 0.0 : mu_t_arr[cell_idx(i, NB2-2, k)];
+        mu_t_arr[cell_idx(i, NB2-1, k)] = wall_yp ? 0.0 : mu_t_arr[cell_idx(i, 1,     k)];
+        for (int g = 1; g < NG; ++g) {
+            if (wall_ym) mu_t_arr[cell_idx(i, g,       k)] = 0.0;
+            if (wall_yp) mu_t_arr[cell_idx(i, NB2-1-g, k)] = 0.0;
+        }
     }
     for (int j = 0; j < NB2; ++j)
     for (int i = 0; i < NB2; ++i) {
-        mu_t_arr[cell_idx(i, j, 0    )] = mu_t_arr[cell_idx(i, j, NB2-2)];
-        mu_t_arr[cell_idx(i, j, NB2-1)] = mu_t_arr[cell_idx(i, j, 1    )];
+        mu_t_arr[cell_idx(i, j, 0    )] = wall_zm ? 0.0 : mu_t_arr[cell_idx(i, j, NB2-2)];
+        mu_t_arr[cell_idx(i, j, NB2-1)] = wall_zp ? 0.0 : mu_t_arr[cell_idx(i, j, 1    )];
+        for (int g = 1; g < NG; ++g) {
+            if (wall_zm) mu_t_arr[cell_idx(i, j, g      )] = 0.0;
+            if (wall_zp) mu_t_arr[cell_idx(i, j, NB2-1-g)] = 0.0;
+        }
     }
 
     static thread_local std::array<std::array<double,NCELL>,NVAR> dQ;

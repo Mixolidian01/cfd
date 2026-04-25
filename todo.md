@@ -101,4 +101,4 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | B.6 | ✅ | Kelvin-Helmholtz instability (2D) | AMR shear-layer refinement, Ducros sensor | Linear growth rate σ=√(kΔU/2); roll-up at t≈1–2 | Chandrashekar (2013); Pirozzoli (2011) |
 | B.7 | ✅ | Rayleigh-Taylor instability (2D, Allaire) | 5-equation model + AMR; α₁∈[0,1] | Bubble/spike growth match linear theory γ=√(gkA) | Allaire et al. (2002) J.Comput.Phys. |
 | B.8 | ✅ | Lid-driven cavity Re=1000 (2D) | Viscous NS, Sutherland law, low-Mach | u-centerline min ≈−0.33 at y≈0.45 vs Ghia et al. | Ghia, Ghia & Shin (1982); Bruneau & Saad (2006) |
-| B.9 | 🔲 | Turbulent channel flow Re_τ=180 (3D, LES) | Dynamic Smagorinsky, Vreman, Neural SGS | Log-law u⁺=(1/0.41)ln(y⁺)+5.2; u′rms peak≈2.7 at y⁺≈14 | Moser, Kim & Mansour (1999) |
+| B.9 | ✅ | Turbulent channel flow Re_τ=180 (3D, LES) | Dynamic Smagorinsky, Vreman, Neural SGS | Log-law u⁺=(1/0.41)ln(y⁺)+5.2; u′rms peak≈2.7 at y⁺≈14 | Moser, Kim & Mansour (1999) |

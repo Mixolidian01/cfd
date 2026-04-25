@@ -39,6 +39,16 @@
 //         ensures entropy stability and monotonicity.
 //         Blend: F = (1−θ)·F_KEP + θ·F_WENO_ES,  θ = max(Φ_L, Φ_R).
 //         When θ < 1e-8 (smooth), WENO5 is skipped entirely (pure KEP path).
+//   B9  : No-slip wall faces detected in convective_rhs_impl.
+//         HLLC-ES at ghost↔interior boundary faces applies LF dissipation
+//         −½λ·ΔQ on all components.  For anti-symmetric no-slip ghost fill
+//         (Q[tang]_ghost = −Q[tang]_interior) this creates a tangential
+//         momentum drain of order λ·ρ·u/h >> body force or viscosity, locking
+//         the wall-adjacent cell to near-zero velocity.
+//         Fix: detect anti-symmetric tangential velocity (|u_L+u_R|/|u_L+u_R+ε| < 1e-8)
+//         and substitute F_KEP (arithmetic means → u_a=0 → zero tangential flux,
+//         correct wall pressure in normal direction) for HLLC-ES at those faces.
+//         AMR C/F faces are not affected (neighbour states are not anti-symmetric).
 
 #include "operators.hpp"
 #include <cmath>
@@ -601,6 +611,27 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
         return F;
     };
 
+    // Helper: detect no-slip wall ghost face.
+    //
+    // Discriminator: pL.p == pR.p (exact float equality) as primary check, plus
+    // all three velocity components anti-symmetric.
+    //
+    // Rationale:
+    //   Wall ghost (fill_channel_ghosts): Q[4]_g = Q[4]_i and Q[0]_g = Q[0]_i by
+    //   direct assignment; KE_g = KE_i (since |u_g|=|u_i|); so p_g = p_i EXACTLY.
+    //   AMR/periodic ghosts: values from coarse interpolation or periodic neighbour —
+    //   pressure differs in general (only coincidentally equal, e.g. uniform flow).
+    //   Adding all-velocity anti-symmetry excludes uniform-flow edge cases.
+    auto is_wall_face = [](const Prim& pL, const Prim& pR, bool bnd) -> bool {
+        if (!bnd) return false;
+        if (pL.p != pR.p) return false;    // AMR/periodic: pressure differs
+        auto antisym = [](double a, double b) -> bool {
+            const double s = std::fabs(a) + std::fabs(b) + 1e-300;
+            return std::fabs(a + b) < 1e-8 * s;
+        };
+        return antisym(pL.u, pR.u) && antisym(pL.v, pR.v) && antisym(pL.w, pR.w);
+    };
+
     // ── X-direction ────────────────────────────────────────────────────────────
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
@@ -625,6 +656,8 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
                 Prim qL, qR;
                 weno5_face(pc, i, j, k, 0, qL, qR);
                 Fs = hllc_es_flux(qL, qR, 0);
+            } else if (is_wall_face(pL, pR, is_bnd)) {
+                Fs = Fk;  // wall: KEP = {0, p, 0, 0, 0}, no LF tangential drain
             } else {
                 Fs = hllc_es_flux(pL, pR, 0);
             }
@@ -655,6 +688,8 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
                 Prim qL, qR;
                 weno5_face(pc, i, j, k, 1, qL, qR);
                 Fs = hllc_es_flux(qL, qR, 1);
+            } else if (is_wall_face(pL, pR, is_bnd)) {
+                Fs = Fk;  // wall: KEP = {0, 0, p, 0, 0}, no LF tangential drain
             } else {
                 Fs = hllc_es_flux(pL, pR, 1);
             }
@@ -685,6 +720,8 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
                 Prim qL, qR;
                 weno5_face(pc, i, j, k, 2, qL, qR);
                 Fs = hllc_es_flux(qL, qR, 2);
+            } else if (is_wall_face(pL, pR, is_bnd)) {
+                Fs = Fk;  // wall: KEP = {0, 0, 0, p, 0}, no LF tangential drain
             } else {
                 Fs = hllc_es_flux(pL, pR, 2);
             }

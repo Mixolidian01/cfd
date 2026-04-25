@@ -369,6 +369,17 @@ add_custom_target(tb8
     USES_TERMINAL
 )
 
+add_executable(test_bench_b9 tests/test_bench_b9.cpp)
+target_link_libraries(test_bench_b9 PRIVATE ns_solver m)
+add_test(NAME bench_b9 COMMAND test_bench_b9)
+
+add_custom_target(tb9
+    DEPENDS test_bench_b9
+    COMMAND $<TARGET_FILE:test_bench_b9>
+    COMMENT "B.9 benchmark: Turbulent channel flow Re_tau=180 (3D LES, Dynamic Smagorinsky)"
+    USES_TERMINAL
+)
+
 # =============================================================================
 # Workflow aliases
 # =============================================================================
