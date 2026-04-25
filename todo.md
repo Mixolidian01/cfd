@@ -134,3 +134,33 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | P6.6 | 🔲 | WebGPU compute-shader ray marcher; AMR block → GPUTexture3D |
 | P6.7 | 🔲 | Transfer function editor (opacity × color); interactive steering via bidirectional WS |
 | P6.8 | 🔲 | uint16 quantization + LZ4 compression (3–5× reduction vs raw float32) |
+
+---
+
+## System Dependencies — Missing Packages (Answer #44)
+
+> Audited: 2026-04-25. All packages below are **optional** — the solver builds and all 18 gate tests pass without them. Fallbacks are active.
+
+| Package | Status | Used by | Fallback when absent | Install command |
+|---------|--------|---------|----------------------|-----------------|
+| `liblz4-dev` | ❌ runtime only (`liblz4-1` installed, headers missing) | P6.8 — LZ4 stream frame compression | Uncompressed float32 frames | `sudo apt install liblz4-dev` |
+| `libonnxruntime-dev` | ❌ `.deb` downloaded to `/home/dkoffibi/` but not installed | P4.6 — Neural SGS ONNX inference | Vreman algebraic SGS | `sudo dpkg -i /home/dkoffibi/libonnxruntime1.21_1.21.0+dfsg-2_amd64.deb && sudo dpkg -i /home/dkoffibi/libonnxruntime-dev_1.21.0+dfsg-2_amd64.deb` |
+
+**Fully installed (no action needed):**
+- CUDA Toolkit 12.6 + 13.x — `nvcc` at `/usr/local/cuda/bin/nvcc`, GPU gates build
+- ZFP 1.0.1 (`libzfp-dev`) — `/usr/include/zfp.h` present, P4.5 gate passes
+- OpenMP 4.5 — leaf loop parallelised
+- pthreads — `LiveStreamer` threads run
+- POSIX socket headers (`arpa/inet.h`, `netinet/in.h`, `sys/socket.h`) — glibc
+
+**After installing `liblz4-dev`**, add to `CMakeLists.txt` (in the `ns_solver` block):
+```cmake
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LZ4 IMPORTED_TARGET liblz4)
+if(LZ4_FOUND)
+    target_link_libraries(ns_solver PUBLIC PkgConfig::LZ4)
+    target_compile_definitions(ns_solver PUBLIC HAVE_LZ4=1)
+endif()
+```
+
+**After installing `libonnxruntime-dev`**, re-run `cmake -S . -B build` and rebuild `t11`.
