@@ -231,6 +231,9 @@ double NSSolver::advance() {
         std::fflush(stdout);
     }
 
+    // Phase 6: push completed step to browser live feed (no-op when null).
+    if (streamer_) streamer_->snapshot(tree, step, t);
+
     return dt;
 }
 

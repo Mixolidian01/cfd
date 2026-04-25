@@ -72,7 +72,7 @@ else()
     message(STATUS "OpenMP not found — leaf loop runs serially")
 endif()
 
-# Layer 3: SSP-RK3 time loop, SGS plug-in, I/O
+# Layer 3: SSP-RK3 time loop, SGS plug-in, I/O, in-situ live streamer
 # amr_operators.cpp is already compiled in libblock; omit it here to
 # avoid duplicate-symbol ODR violations at link time.
 add_library(ns_solver STATIC
@@ -81,8 +81,12 @@ add_library(ns_solver STATIC
     src/sgs.cpp
     src/checkpoint.cpp
     src/vtk_writer.cpp
+    src/live_streamer.cpp
 )
 target_link_libraries(ns_solver PUBLIC operators)
+# live_streamer.cpp uses POSIX threads (accept/stream threads)
+find_package(Threads REQUIRED)
+target_link_libraries(ns_solver PUBLIC Threads::Threads)
 
 # =============================================================================
 # Gate test executables
@@ -141,6 +145,7 @@ if(NVCC)
         ${CMAKE_SOURCE_DIR}/src/sgs.cpp
         ${CMAKE_SOURCE_DIR}/src/checkpoint.cpp
         ${CMAKE_SOURCE_DIR}/src/vtk_writer.cpp
+        ${CMAKE_SOURCE_DIR}/src/live_streamer.cpp
     )
 
     add_custom_command(
@@ -377,6 +382,24 @@ add_custom_target(tb9
     DEPENDS test_bench_b9
     COMMAND $<TARGET_FILE:test_bench_b9>
     COMMENT "B.9 benchmark: Turbulent channel flow Re_tau=180 (3D LES, Dynamic Smagorinsky)"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Workflow aliases
+# =============================================================================
+
+# =============================================================================
+# Phase 6 — In-situ browser live feed gate (P6.5)
+# =============================================================================
+add_executable(test_streamer tests/test_streamer.cpp)
+target_link_libraries(test_streamer PRIVATE ns_solver m)
+add_test(NAME streamer COMMAND test_streamer)
+
+add_custom_target(t12
+    DEPENDS test_streamer
+    COMMAND $<TARGET_FILE:test_streamer>
+    COMMENT "P6.5 gate: LiveStreamer 2D slice protocol"
     USES_TERMINAL
 )
 

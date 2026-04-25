@@ -15,6 +15,7 @@
 #include <memory>
 #include "sgs.hpp"
 #include "operators.hpp"
+#include "live_streamer.hpp"
 #include <functional>
 #include <string>
 
@@ -79,6 +80,11 @@ struct NSSolver {
 
     StepDiag compute_diag() const;
     void     print_diag(const StepDiag& d) const;
+
+    // Phase 6: optional in-situ browser live feed.
+    // Set via set_streamer() before run()/advance().  Null = disabled.
+    LiveStreamer* streamer_ = nullptr;
+    void set_streamer(LiveStreamer* s) noexcept { streamer_ = s; }
 
     int  scratch_leaf_count_ = -1;  ///< FIX P5: tracks last alloc size
     void alloc_scratch();

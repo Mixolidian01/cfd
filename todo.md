@@ -102,3 +102,35 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | B.7 | ✅ | Rayleigh-Taylor instability (2D, Allaire) | 5-equation model + AMR; α₁∈[0,1] | Bubble/spike growth match linear theory γ=√(gkA) | Allaire et al. (2002) J.Comput.Phys. |
 | B.8 | ✅ | Lid-driven cavity Re=1000 (2D) | Viscous NS, Sutherland law, low-Mach | u-centerline min ≈−0.33 at y≈0.45 vs Ghia et al. | Ghia, Ghia & Shin (1982); Bruneau & Saad (2006) |
 | B.9 | ✅ | Turbulent channel flow Re_τ=180 (3D, LES) | Dynamic Smagorinsky, Vreman, Neural SGS | Log-law u⁺=(1/0.41)ln(y⁺)+5.2; u′rms peak≈2.7 at y⁺≈14 | Moser, Kim & Mansour (1999) |
+
+---
+
+## Phase 6 — In-situ Browser Live Feed ← **current phase**
+
+### Design: zero-dependency, direct-to-browser, AMR-aware 2D slice streaming
+
+**Architecture** (Answer #43):
+- `LiveStreamer` lives inside `NSSolver` as an optional plugin pointer (`streamer_`).
+- `snapshot()` is called once per `advance()`, after `apply_flux_correction()` — the one guaranteed quiescent point where all leaf data is final.
+- Double-buffer: solver writes `back_` (no lock), then atomically swaps with `front_` under `swap_mtx_`; stream thread steals `front_` into `work_` (O(1) `std::swap`) and serializes.
+- HTTP server: minimal POSIX sockets, no external deps. `GET /` → embedded HTML. `GET /stream` → HTTP/1.1 chunked binary stream. `POST /config` → JSON var/axis/pos.
+- Wire format: 4-byte length prefix + 32-byte frame header + n_blocks×16-byte block descriptors + n_blocks×NB×NB×float32 data.
+- Browser viewer: single HTML page (embedded as C++ raw string literal), `fetch()` + `ReadableStream`, viridis colormap polynomial, pixel-level canvas drawing.
+
+### Phase A — 2D axis-aligned slice
+
+| # | Status | Item | Notes |
+|---|--------|------|-------|
+| P6.1 | ✅ | Double-buffer snapshot protocol in `NSSolver::advance()` | `back_`/`front_`/`work_` triple; solver writes without lock; swap under `swap_mtx_`; stream thread steals via `std::swap` |
+| P6.2 | ✅ | `LiveStreamer` HTTP server (POSIX sockets, no external deps) | `run_accept()` thread spawns per-connection threads; `GET /` HTML; `GET /stream` chunked octet-stream; `POST /config` JSON update |
+| P6.3 | ✅ | 2D slice extraction: vars ρ, p, T, \|u\|, ρu, ρv, ρw, E; axis X/Y/Z; float32 wire | `blk.prim()` for derived vars; `blk.Q[v][cell_idx]` for conserved |
+| P6.4 | ✅ | Browser viewer (HTML+JS, embedded raw string literal) | viridis polynomial; canvas pixel fill; auto-reconnect; var/axis/pos controls |
+| P6.5 | ✅ | Gate test: solver runs 50 steps with streamer, viewer receives ≥1 frame, parses cleanly | `tests/test_streamer.cpp` — S1–S4 pass |
+
+### Phase B — 3D ray-marched volume rendering *(future)*
+
+| # | Status | Item |
+|---|--------|------|
+| P6.6 | 🔲 | WebGPU compute-shader ray marcher; AMR block → GPUTexture3D |
+| P6.7 | 🔲 | Transfer function editor (opacity × color); interactive steering via bidirectional WS |
+| P6.8 | 🔲 | uint16 quantization + LZ4 compression (3–5× reduction vs raw float32) |
