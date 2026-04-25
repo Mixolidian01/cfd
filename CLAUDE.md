@@ -37,7 +37,16 @@ cmake --build build -t t4    # Step 4: test_ns (time loop + conservation)
 cmake --build build -t t5    # Step 5: GPU gate (requires nvcc)
 cmake --build build -t t6    # Step 6: test_amr6 (AMR conservation)
 cmake --build build -t t7    # Step 7: test_step7 (SGS + checkpoint + VTK)
+cmake --build build -t t12   # Step 12: test_streamer (P6.5 live-feed gate)
 ```
+
+**Running a simulation:**
+```bash
+cmake --build build -t sim                     # Sod shock tube demo (apps/sod.json)
+build/simulate apps/taylor_green.json          # Taylor-Green vortex
+build/simulate my_run.json                     # custom JSON config
+```
+Open `http://localhost:8080` for the 2D slice viewer, `http://localhost:8080/volume` for the WebGPU 3D volume renderer (Chrome 113+ required).
 
 **Build types:**
 - `RelWithDebInfo` (default): `-O2 -g` — recommended for development
@@ -67,7 +76,7 @@ Kahan-compensated BLAS-1 primitives, a Conjugate Gradient solver, and a 3-level 
 
 Viscous RHS uses Sutherland-law viscosity and a Newtonian stress tensor with central differences; ghost cells must be filled before this is called.
 
-### Layer 3 — Time Loop & I/O (`ns_solver.hpp/cpp`, `sgs.hpp/cpp`, `checkpoint.hpp/cpp`, `vtk_writer.hpp/cpp`)
+### Layer 3 — Time Loop, I/O & Streaming (`ns_solver.hpp/cpp`, `sgs.hpp/cpp`, `checkpoint.hpp/cpp`, `vtk_writer.hpp/cpp`, `live_streamer.hpp/cpp`)
 
 `NSSolver::advance()` executes one time step in this exact order:
 ```
@@ -84,12 +93,25 @@ Q^(n+1) = 1/3·Q^n + 2/3·Q^(2) + (2/3)·dt·L(Q^(2))
 
 `SmagorinskyModel` is a plug-in (`virtual SGSModel::apply()`), applied post-RK3 via operator splitting.
 
+**LiveStreamer** (`include/live_streamer.hpp`, `src/live_streamer.cpp`) is an optional Phase 6 plugin. Attach via `solver.set_streamer(&streamer)` before `run()`. Endpoints:
+- `GET /` → 2D slice viewer (viridis, canvas API)
+- `GET /stream` → chunked binary 2D frames (magic `0xCFD00001`)
+- `GET /volume` → WebGPU 3D ray-marched volume viewer (Chrome 113+)
+- `GET /volume-stream` → chunked binary 3D frames (magic `0xCFD00003`, N³ r32float)
+- `POST /config` → JSON `{var, axis, pos}` hot-config
+
+Wire format: `[4-byte LE length][body]`. Both 2D and 3D use LZ4+uint16 compression when `HAVE_LZ4=1`. The 3D volume thread activates only when a volume client is connected; otherwise `snapshot()` skips `build_volume()`.
+
+**`apps/simulate`** is the standalone JSON-driven runner. All `SolverConfig` fields, five named ICs, `refine_levels`, checkpoint in/out, and `LiveStreamer` are configurable from a flat JSON file. See `apps/sod.json` and `apps/taylor_green.json` for examples.
+
 ## CMake Library Layout
 
 ```
 linalg  ←  block (block_tree.cpp + amr_operators.cpp)
                 ←  operators
-                        ←  ns_solver (ns_solver.cpp + flux_register.cpp + sgs.cpp + checkpoint.cpp + vtk_writer.cpp)
+                        ←  ns_solver (ns_solver.cpp + flux_register.cpp + sgs.cpp
+                                      + checkpoint.cpp + vtk_writer.cpp + live_streamer.cpp)
+                                ←  simulate (apps/simulate.cpp)
 ```
 
 `amr_operators.cpp` lives in `libblock` (not `libns_solver`) because `block_tree.cpp` calls `fill_cf_ghosts()` directly. Do not move it.
@@ -125,7 +147,9 @@ linalg  ←  block (block_tree.cpp + amr_operators.cpp)
 ## Active Development Context
 
 - git address: `https://github.com/Mixolidian01/cfd.git`
-- Current branch: `to_debug` — recent work on A05 (AMR mass conservation)
+- Current branch: `to_debug`
+- All Phases 0–6 complete: 19 gate tests pass (t1–t7, t8–t12, tb1–tb9)
 - `roadmap.md` is the authoritative Phase 0–4 plan
+- `todo.md` tracks Phases 0–6 status (all ✅)
 - `answers_register.md` logs session Q&A history
 - `to_avoid_bugs.md` records all derived rules (append on each new misbehaviour)

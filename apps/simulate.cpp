@@ -52,6 +52,7 @@
 //     "stream_axis"        : 2            slice axis 0=X 1=Y 2=Z
 //     "stream_pos"         : 0.5          slice position in [0,1] (fraction of domain_L)
 //     "stream_stride"      : 1            stream every N steps
+//     "volume_size"        : 32           N for the N³ 3D volume grid (GET /volume)
 //
 // Supported IC names:
 //   uniform           — constant state (ic_rho, ic_p, ic_u, ic_v, ic_w)
@@ -416,10 +417,11 @@ int main(int argc, char* argv[])
     int stream_port = cfg.i("stream_port", 0);
     if (stream_port > 0) {
         StreamConfig scfg;
-        scfg.port   = stream_port;
-        scfg.axis   = static_cast<uint8_t>(cfg.i("stream_axis", 2));
-        scfg.pos    = cfg.d("stream_pos",    0.5);
-        scfg.stride = cfg.i("stream_stride", 1);
+        scfg.port        = stream_port;
+        scfg.axis        = static_cast<uint8_t>(cfg.i("stream_axis",   2));
+        scfg.pos         = cfg.d("stream_pos",         0.5);
+        scfg.stride      = cfg.i("stream_stride",      1);
+        scfg.volume_size = cfg.i("volume_size",        32);  // N³ for 3D viewer
 
         // Map string var name → StreamVar
         std::string sv = cfg.str("stream_var", "rho");
