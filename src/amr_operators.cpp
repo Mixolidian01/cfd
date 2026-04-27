@@ -68,64 +68,108 @@ void restrict_conservative(CellBlock& coarse, const CellBlock* children[8]) {
 }
 
 // =============================================================================
-// fill_cf_ghosts: fill one ghost face of `fine` from `coarse` interior
+// fill_cf_ghosts — 5th-order Lagrange (P7.2) in the normal direction.
+//
+// Physics: fine ghost cells at the C/F interface must hold values consistent
+// with the coarse solution at the fine ghost centroid to ensure O(h^5) accuracy
+// near refinement boundaries (McCorquodale & Colella 2011).
+//
+// Geometry (h_fine = h_coarse/2, NG ghost layers):
+//   side=0: fine ghost gl=0 centroid at ic+1/4, gl=1 at ic-1/4
+//     where ic = NG+NB-1 (last interior coarse cell), stencil ic-4..ic.
+//   side=1: fine ghost gl=0 centroid at i0-1/4, gl=1 at i0+1/4
+//     where i0 = NG (first interior coarse cell), stencil i0..i0+4 (mirror).
+//
+// Two coefficient sets (nodes at {-4,-3,-2,-1,0}, stencil ends at ic):
+//   Lp: target +1/4 h_coarse  [585,-3060,6630,-7956,9945]/6144  (gl=0, side=0)
+//   Lm: target -1/4 h_coarse  [-231,1260,-2970,4620,3465]/6144  (gl=1, side=0)
+// side=1 uses the same arrays reversed: Lp[4-k] for gl=0, Lm[4-k] for gl=1.
+//
+// Transverse directions: nearest coarse cell (piecewise-constant).
+// Requires NB >= 5 so both 5-cell stencils fit inside the coarse interior.
 // =============================================================================
+static_assert(NB >= 5, "fill_cf_ghosts: need NB >= 5 for the 5-cell stencil");
+
 void fill_cf_ghosts(CellBlock& fine, const CellBlock& coarse,
                     int child_octant, int axis, int side) {
-    int ix = oct_ix(child_octant);
-    int iy = oct_iy(child_octant);
-    int iz = oct_iz(child_octant);
+    const int ix = oct_ix(child_octant);
+    const int iy = oct_iy(child_octant);
+    const int iz = oct_iz(child_octant);
 
-    auto clamp_c = [](int x) { return std::max(NG, std::min(NG + NB - 1, x)); };
-    auto local   = [](int a) {
+    // Transverse index: maps NB2-wide fine range to coarse half-cell offset.
+    auto local = [](int a) noexcept {
         return (a >= NG && a < NG + NB) ? (a - NG) : (a < NG ? 0 : NB - 1);
     };
 
-    // Fill NG ghost layers in the normal direction.
-    // For side=0 (minus face): ghost layers NG-1..0, reading deeper into coarse interior.
-    // For side=1 (plus  face): ghost layers NB2-NG..NB2-1, reading deeper into coarse interior.
-    for (int gl = 0; gl < NG; ++gl)
+    // 5-cell Lagrange, nodes {-4,-3,-2,-1,0} in units of h_coarse:
+    //   Lp: target at +1/4 (ghost just outside coarse interior, gl=0 side=0)
+    //   Lm: target at -1/4 (ghost one step inside stencil,    gl=1 side=0)
+    static constexpr double INV = 1.0 / 6144.0;
+    static constexpr double Lp[5] = {
+         585*INV, -3060*INV,  6630*INV, -7956*INV,  9945*INV
+    };
+    static constexpr double Lm[5] = {
+        -231*INV,  1260*INV, -2970*INV,  4620*INV,  3465*INV
+    };
+
+    for (int gl = 0; gl < NG; ++gl) {
+        // side=0: gl=0→Lp (target +1/4), gl=1→Lm (target -1/4)
+        // side=1: gl=0→Lp reversed  ,    gl=1→Lm reversed
+        const double* Lc = (gl == 0) ? Lp : Lm;
+
     for (int v  = 0; v  < NVAR; ++v)
     for (int a  = 0; a  < NB2; ++a)
     for (int b  = 0; b  < NB2; ++b) {
         int gf_i, gf_j, gf_k;
-        int cf_i, cf_j, cf_k;
+        double val = 0.0;
 
         if (axis == 0) {
             gf_i = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
             gf_j = a; gf_k = b;
-            cf_j = NG + iy * (NB / 2) + local(a) / 2;
-            cf_k = NG + iz * (NB / 2) + local(b) / 2;
-            {
-                int base = (side == 0) ? (NG + ix * (NB / 2) - 1)
-                                       : (NG + ix * (NB / 2) + NB / 2);
-                cf_i = clamp_c(base + (side == 0 ? -gl : +gl));
+            const int cj = NG + iy*(NB/2) + local(a)/2;
+            const int ck = NG + iz*(NB/2) + local(b)/2;
+            if (side == 0) {
+                const int i0 = NG + NB - 1;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[k] * coarse.Q[v][cell_idx(i0-4+k, cj, ck)];
+            } else {
+                const int i0 = NG;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[4-k] * coarse.Q[v][cell_idx(i0+k, cj, ck)];
             }
         } else if (axis == 1) {
             gf_j = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
             gf_i = a; gf_k = b;
-            cf_i = NG + ix * (NB / 2) + local(a) / 2;
-            cf_k = NG + iz * (NB / 2) + local(b) / 2;
-            {
-                int base = (side == 0) ? (NG + iy * (NB / 2) - 1)
-                                       : (NG + iy * (NB / 2) + NB / 2);
-                cf_j = clamp_c(base + (side == 0 ? -gl : +gl));
+            const int ci = NG + ix*(NB/2) + local(a)/2;
+            const int ck = NG + iz*(NB/2) + local(b)/2;
+            if (side == 0) {
+                const int j0 = NG + NB - 1;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[k] * coarse.Q[v][cell_idx(ci, j0-4+k, ck)];
+            } else {
+                const int j0 = NG;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[4-k] * coarse.Q[v][cell_idx(ci, j0+k, ck)];
             }
         } else {
             gf_k = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
             gf_i = a; gf_j = b;
-            cf_i = NG + ix * (NB / 2) + local(a) / 2;
-            cf_j = NG + iy * (NB / 2) + local(b) / 2;
-            {
-                int base = (side == 0) ? (NG + iz * (NB / 2) - 1)
-                                       : (NG + iz * (NB / 2) + NB / 2);
-                cf_k = clamp_c(base + (side == 0 ? -gl : +gl));
+            const int ci = NG + ix*(NB/2) + local(a)/2;
+            const int cj = NG + iy*(NB/2) + local(b)/2;
+            if (side == 0) {
+                const int k0 = NG + NB - 1;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[k] * coarse.Q[v][cell_idx(ci, cj, k0-4+k)];
+            } else {
+                const int k0 = NG;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[4-k] * coarse.Q[v][cell_idx(ci, cj, k0+k)];
             }
         }
 
-        fine.Q[v][cell_idx(gf_i, gf_j, gf_k)] =
-            coarse.Q[v][cell_idx(cf_i, cf_j, cf_k)];
+        fine.Q[v][cell_idx(gf_i, gf_j, gf_k)] = val;
     }
+    } // gl
 }
 
 // =============================================================================

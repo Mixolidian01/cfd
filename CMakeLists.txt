@@ -426,6 +426,19 @@ add_custom_target(t12
 )
 
 # =============================================================================
+# Phase 7 — WENO5 C/F ghost fill gate (P7.2)
+# =============================================================================
+add_executable(test_weno5_cf tests/test_weno5_cf.cpp)
+target_link_libraries(test_weno5_cf PRIVATE ns_solver m)
+
+add_custom_target(t14
+    DEPENDS test_weno5_cf
+    COMMAND $<TARGET_FILE:test_weno5_cf>
+    COMMENT "P7.2 gate: 5th-order Lagrange C/F ghost fill accuracy"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # Phase 7 — MPI gate test (P7.1)
 # =============================================================================
 add_executable(test_mpi tests/test_mpi.cpp)
