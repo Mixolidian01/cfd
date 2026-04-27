@@ -48,6 +48,7 @@ cmake --build build -t t19   # Step 19: test_p81_gpu_pool (P8.1 GPU memory pool,
 cmake --build build -t t20   # Step 20: test_p82_gpu_ghost (P8.2 GPU ghost fill, requires nvcc)
 cmake --build build -t t21   # Step 21: test_p83_gpu_rhs (P8.3 GPU WENO5-Z RHS, requires nvcc)
 cmake --build build -t t22   # Step 22: test_p85_gpu_cfl (P8.5 GPU CFL warp-shuffle, requires nvcc)
+cmake --build build -t t23   # Step 23: test_p84_gpu_amr (P8.4 GPU AMR prolong/restrict, requires nvcc)
 ```
 
 **Running a simulation:**

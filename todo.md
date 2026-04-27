@@ -161,7 +161,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | P8.1 | ✅ | **GPU memory pool** — `d_Q` pointer in `CellBlock`; lifecycle hooks `on_block_alloc_`/`on_block_free_` in `BlockTree`; `GpuPool` (CUDA free-list); `NSSolver::init()` wires the pool; gate test t19 (upload/download round-trip + lifecycle) | Foundation for all subsequent GPU items |
 | P8.2 | ✅ | **GPU ghost fill** — `GpuLeafGhostMeta` + `GpuGhostFillList`; `k_fill_faces` (same-level copy, CF 5th-order Lagrange, wall/open/periodic BCs) + `k_fill_edges_corners` (interior-self-ref); gate test t20 (F1–F4: wall, periodic, same-level, CF) | P8.1 |
 | P8.3 | ✅ | **GPU WENO5-Z RHS** — full `tree_rhs` loop on device; WENO5-Z + HLLC-ES + viscous/SGS in one kernel per block; shared-memory halo staging | P8.2 |
-| P8.4 | 🔲 | **GPU AMR refine/coarsen kernels** — GPU-resident prolongation and restriction; regrid entirely on device | P8.3 |
+| P8.4 | ✅ | **GPU AMR refine/coarsen kernels** — `k_prolong` (piecewise-constant, 512-thread 3D block per pair) + `k_restrict` (volume-weighted average); `GpuAmrList` with `build_prolong`/`build_restrict`/`exec_prolong`/`exec_restrict`; gate test t23 (A1–A4: 4/4 pass) | P8.3 |
 | P8.5 | ✅ | **GPU CFL + diagnostics reduce** — warp-shuffle tree reduction; `cudaMemcpyAsync` for dt only; zero D→H bandwidth on interior steps | P8.1 |
 | P8.6 | 🔲 | **CUDA Graph re-capture on regrid** — detect topology change, invalidate and rebuild graph; steady steps use graph replay | P8.3 + P8.4 |
 

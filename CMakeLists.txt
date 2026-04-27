@@ -370,8 +370,44 @@ if(NVCC)
         COMMENT "P8.5 gate: GPU CFL warp-shuffle tree reduction"
         USES_TERMINAL
     )
+
+    # ── P8.4: GPU AMR prolong/restrict gate (t23) ─────────────────────────────
+    set(_T23_BIN ${CMAKE_BINARY_DIR}/t23_gpu_amr)
+    set(_T23_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p84_gpu_amr.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_amr.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T23_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T23_SRCS}
+                -o ${_T23_BIN} -lm
+        DEPENDS ${_T23_SRCS}
+        COMMENT "nvcc: compiling P8.4 GPU AMR prolong/restrict gate"
+        VERBATIM
+    )
+
+    add_custom_target(t23
+        DEPENDS ${_T23_BIN}
+        COMMAND ${_T23_BIN}
+        COMMENT "P8.4 gate: GPU AMR prolongation and restriction kernels"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23 skipped")
 endif()
 
 # =============================================================================
