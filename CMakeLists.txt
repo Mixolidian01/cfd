@@ -297,8 +297,46 @@ if(NVCC)
         COMMENT "P8.2 gate: GPU ghost fill kernels"
         USES_TERMINAL
     )
+    # ── P8.3: GPU WENO5-Z RHS gate (t21) ─────────────────────────────────────
+    set(_T21_BIN ${CMAKE_BINARY_DIR}/t21_gpu_rhs)
+    set(_T21_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p83_gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T21_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --extended-lambda
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T21_SRCS}
+                -o ${_T21_BIN} -lm
+        DEPENDS ${_T21_SRCS}
+        COMMENT "nvcc: compiling P8.3 GPU WENO5-Z RHS gate"
+        VERBATIM
+    )
+
+    add_custom_target(t21
+        DEPENDS ${_T21_BIN}
+        COMMAND ${_T21_BIN}
+        COMMENT "P8.3 gate: GPU WENO5-Z RHS kernels"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21 skipped")
 endif()
 
 # =============================================================================

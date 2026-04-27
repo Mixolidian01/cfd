@@ -46,6 +46,7 @@ cmake --build build -t t17   # Step 17: test_p75_dns_tgv (P7.5 TGV DNS quantitat
 cmake --build build -t t18   # Step 18: test_wmles (P7.6 WMLES log-law + ODE)
 cmake --build build -t t19   # Step 19: test_p81_gpu_pool (P8.1 GPU memory pool, requires nvcc)
 cmake --build build -t t20   # Step 20: test_p82_gpu_ghost (P8.2 GPU ghost fill, requires nvcc)
+cmake --build build -t t21   # Step 21: test_p83_gpu_rhs (P8.3 GPU WENO5-Z RHS, requires nvcc)
 ```
 
 **Running a simulation:**
