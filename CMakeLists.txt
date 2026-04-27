@@ -426,6 +426,22 @@ add_custom_target(t12
 )
 
 # =============================================================================
+# Phase 7 — Multi-species Arrhenius chemistry (P7.4)
+# =============================================================================
+add_library(chemistry STATIC src/chemistry.cpp)
+target_link_libraries(chemistry PUBLIC ns_solver)
+
+add_executable(test_chemistry tests/test_chemistry.cpp)
+target_link_libraries(test_chemistry PRIVATE chemistry m)
+
+add_custom_target(t16
+    DEPENDS test_chemistry
+    COMMAND $<TARGET_FILE:test_chemistry>
+    COMMENT "P7.4 gate: multi-species Arrhenius reactive flow"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # Phase 7 — IBM ghost-cell library (P7.3) — depends on ns_solver for EOS/constants
 # =============================================================================
 add_library(ibm STATIC src/ibm.cpp)

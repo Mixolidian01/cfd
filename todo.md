@@ -146,7 +146,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | P7.1 | ✅ | **MPI domain decomposition** — Morton-curve leaf partitioning across ranks; non-blocking halo exchange (`exchange_halos()`); global CFL `MPI_Allreduce`; global diagnostics reduce; gate test: 2-rank Sod, mass conserved to 10⁻¹⁰ | Berger & Oliger (1984); Colella et al. (1999) |
 | P7.2 | ✅ | **WENO5 high-order prolongation at C/F interfaces** — replace piecewise-constant prolongation with 5th-order one-sided WENO stencil; restores O(h⁵) global accuracy in AMR regions | McCorquodale & Colella (2011) J.Comput.Phys. |
 | P7.3 | ✅ | **Ghost-cell immersed boundary method** — level-set surface representation; ghost-cell velocity/temperature reconstruction for no-slip walls; STL surface loader | Mittal & Iaccarino (2005) Annu.Rev.Fluid Mech. |
-| P7.4 | 🔲 | **Multi-species reactive flow** — N_spec species conservation equations (NVAR += N_spec); Arrhenius finite-rate chemistry source; IMEX stiff chemistry sub-step | Poinsot & Veynante (2005) |
+| P7.4 | ✅ | **Multi-species reactive flow** — N_spec species conservation equations (NVAR += N_spec); Arrhenius finite-rate chemistry source; IMEX stiff chemistry sub-step | Poinsot & Veynante (2005) |
 | P7.5 | 🔲 | **Quantitative DNS: TGV Re=1600 at 128³** (requires P7.1) — compare ε(t*) to Brachet (1983) DNS and HiOCFD4 data; error table in `answers_register.md` | Brachet et al. (1983) J.Fluid Mech. 130 |
 | P7.6 | 🔲 | **Wall-modelled LES (WMLES)** — algebraic/ODE wall model, log-law reconstruction at first off-wall cell; enables Re_τ ≫ 180 | Larsson et al. (2016) CTR Annual Research Briefs |
 
