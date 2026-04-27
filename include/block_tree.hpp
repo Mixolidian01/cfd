@@ -28,6 +28,7 @@
 #include <cassert>
 #include <cstdint>
 #include <deque>
+#include <functional>
 
 // Forward-declare to avoid circular include (mpi_comm.hpp includes block_tree.hpp)
 struct MpiPartition;
@@ -160,8 +161,26 @@ struct BlockTree {
     MpiPartition* mpi_ = nullptr;
     void set_mpi(MpiPartition* p) noexcept { mpi_ = p; }
 
+    // P8.1: GPU lifecycle hooks.
+    // on_block_alloc_: called after a leaf CellBlock's CPU data is ready
+    //   (after prolongation in refine; after restriction in coarsen).
+    //   Typical use: GpuPool::alloc + upload.
+    // on_block_free_: called before a CellBlock is destroyed
+    //   (parent in refine; children in coarsen).
+    //   Typical use: GpuPool::free.
+    // Both default to nullptr (disabled).
+    void set_gpu_callbacks(std::function<void(CellBlock*)> alloc_cb,
+                           std::function<void(CellBlock*)> free_cb) noexcept {
+        on_block_alloc_ = std::move(alloc_cb);
+        on_block_free_  = std::move(free_cb);
+    }
+
 private:
     double domain_L_ = 1.0;
+
+    // P8.1: GPU lifecycle callbacks (see set_gpu_callbacks above)
+    std::function<void(CellBlock*)> on_block_alloc_;
+    std::function<void(CellBlock*)> on_block_free_;
 
     // P1.1: free-list allocator
     // alloc_node()       — pop one slot (or append)

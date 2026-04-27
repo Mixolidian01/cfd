@@ -152,6 +152,21 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 ---
 
+## Phase 8 — Full GPU Integration ← **current phase**
+
+### Goal: make every leaf block's primary residence on-device; CPU is a staging buffer.
+
+| # | Status | Item | Key note |
+|---|--------|------|----------|
+| P8.1 | ⚠️ | **GPU memory pool** — `d_Q` pointer in `CellBlock`; lifecycle hooks `on_block_alloc_`/`on_block_free_` in `BlockTree`; `GpuPool` (CUDA free-list); `NSSolver::init()` wires the pool; gate test t19 (upload/download round-trip + lifecycle) | Foundation for all subsequent GPU items |
+| P8.2 | 🔲 | **GPU ghost fill** — CUDA kernels replacing CPU `fill_ghosts_periodic/wall/open`; same-level copy via `cudaMemcpy3DPeer`; C/F prolongation kernel | P8.1 |
+| P8.3 | 🔲 | **GPU WENO5-Z RHS** — full `tree_rhs` loop on device; WENO5-Z + HLLC-ES + viscous/SGS in one kernel per block; shared-memory halo staging | P8.2 |
+| P8.4 | 🔲 | **GPU AMR refine/coarsen kernels** — GPU-resident prolongation and restriction; regrid entirely on device | P8.3 |
+| P8.5 | 🔲 | **GPU CFL + diagnostics reduce** — warp-shuffle tree reduction; `cudaMemcpyAsync` for dt only; zero D→H bandwidth on interior steps | P8.1 |
+| P8.6 | 🔲 | **CUDA Graph re-capture on regrid** — detect topology change, invalidate and rebuild graph; steady steps use graph replay | P8.3 + P8.4 |
+
+---
+
 ## System Dependencies — Missing Packages (Answer #44)
 
 > Audited: 2026-04-25. All packages below are **optional** — the solver builds and all 18 gate tests pass without them. Fallbacks are active.

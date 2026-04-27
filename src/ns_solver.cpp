@@ -79,6 +79,9 @@ void NSSolver::init(double domain_L,
     }
 
     alloc_scratch();
+    // P8.1: GPU pool wiring (alloc+upload of IC, tree callbacks) is performed
+    // by the application TU after init() returns — see gpu_pool.hpp.
+    // NSSolver only stores the gpu_pool_ pointer; direct CUDA calls are in .cu TUs.
 }
 
 // =============================================================================

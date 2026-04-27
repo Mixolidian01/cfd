@@ -156,6 +156,15 @@ struct alignas(64) CellBlock {
     double ox = 0, oy = 0, oz = 0;
     double h  = 0;
 
+    // P8.1: device flat-SoA buffer (d_Q[v*NCELL + flat_idx]).
+    // Owned by GpuPool — NOT freed by CellBlock destructor.
+    // Null when GPU is disabled or pool hasn't allocated this block yet.
+    double* d_Q = nullptr;
+
+    static constexpr size_t gpu_buf_bytes() noexcept {
+        return static_cast<size_t>(NVAR) * NCELL * sizeof(double);
+    }
+
     // ── Constructors ──────────────────────────────────────────────────────────
     CellBlock() noexcept {
         init_views();

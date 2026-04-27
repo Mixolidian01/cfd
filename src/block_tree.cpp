@@ -321,6 +321,9 @@ void BlockTree::refine(int idx) {
     uint32_t saved_morton = nodes[idx].morton;
     CellBlock parent_data = *nodes[idx].block;  // cache before any resize
 
+    // P8.1: free GPU buffer for parent before replacing the block.
+    if (on_block_free_) on_block_free_(nodes[idx].block.get());
+
     // A05-fix: allocate 8 children as a CONTIGUOUS group so that
     // first_child + oct is always valid regardless of free-list state.
     int first = alloc_node_group(8);
@@ -339,6 +342,13 @@ void BlockTree::refine(int idx) {
 
     nodes[idx].block = std::make_unique<CellBlock>(parent_data);
     prolongate_to_children(idx);
+
+    // P8.1: alloc GPU buffers for children after prolongation (CPU data ready).
+    if (on_block_alloc_) {
+        for (int oct = 0; oct < 8; ++oct)
+            on_block_alloc_(nodes[first + oct].block.get());
+    }
+
     nodes[idx].block.reset();
 
     invalidate_leaf_cache();
@@ -364,7 +374,17 @@ void BlockTree::coarsen(int parent_idx) {
             std::make_unique<CellBlock>(ox, oy, oz, h_par);
     }
     restrict_to_parent(parent_idx);
+
+    // P8.1: alloc GPU buffer for parent after restriction (CPU data ready).
+    if (on_block_alloc_) on_block_alloc_(nodes[parent_idx].block.get());
+
     nodes[parent_idx].first_child = -1;
+
+    // P8.1: free GPU buffers for children before free_node destroys the blocks.
+    if (on_block_free_) {
+        for (int oct = 0; oct < 8; ++oct)
+            on_block_free_(nodes[fc + oct].block.get());
+    }
 
     for (int oct = 0; oct < 8; ++oct)
         free_node(fc + oct);

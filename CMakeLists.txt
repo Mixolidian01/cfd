@@ -228,8 +228,42 @@ if(NVCC)
         COMMENT "P4.3 gate: TBC ghost exchange"
         USES_TERMINAL
     )
+    # ── P8.1: GPU memory pool gate (t19) ─────────────────────────────────────
+    set(_T19_BIN ${CMAKE_BINARY_DIR}/t19_gpu_pool)
+    set(_T19_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p81_gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T19_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall
+                ${_T19_SRCS}
+                -o ${_T19_BIN} -lm
+        DEPENDS ${_T19_SRCS}
+        COMMENT "nvcc: compiling P8.1 GPU pool gate"
+        VERBATIM
+    )
+
+    add_custom_target(t19
+        DEPENDS ${_T19_BIN}
+        COMMAND ${_T19_BIN}
+        COMMENT "P8.1 gate: GPU memory pool"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5/t8 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19 skipped")
 endif()
 
 # =============================================================================

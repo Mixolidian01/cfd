@@ -1,5 +1,6 @@
 #pragma once
 // DESIGN.md reference: Layer 3 — Time Loop
+// P8.1: GpuPool forward-declared so ns_solver.hpp compiles without CUDA headers.
 //
 // NSSolver owns the BlockTree and drives the SSP-RK3 time integration.
 // It knows nothing about linear algebra (Layer 0) directly.
@@ -19,6 +20,9 @@
 #include "mpi_comm.hpp"
 #include <functional>
 #include <string>
+
+// Forward declaration — full definition in gpu_pool.hpp (CUDA TU only).
+struct GpuPool;
 
 // ── Diagnostics written every `diag_interval` steps ───────────────────────────────────
 struct StepDiag {
@@ -62,6 +66,9 @@ struct SolverConfig {
     // deeper trees recursively apply the same principle.
     bool use_lts   = false;
     int  lts_ratio = 2;   // refinement ratio (must match tree's geometric ratio)
+
+    // P8.1: run with GPU memory pool — all leaf blocks reside on device.
+    bool use_gpu = false;
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────
@@ -94,6 +101,13 @@ struct NSSolver {
         mpi_ = p;
         tree.set_mpi(p);
     }
+
+    // P8.1: optional GPU memory pool.  When cfg.use_gpu=true, init() creates the
+    // pool and wires BlockTree lifecycle callbacks.  All leaf blocks are uploaded
+    // to GPU after IC application.  Caller may also inject an external pool via
+    // set_gpu_pool() before init() to share a pool across solvers.
+    GpuPool* gpu_pool_ = nullptr;
+    void set_gpu_pool(GpuPool* p) noexcept { gpu_pool_ = p; }
 
     int  scratch_leaf_count_ = -1;  ///< FIX P5: tracks last alloc size
     void alloc_scratch();
