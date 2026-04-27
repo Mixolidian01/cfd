@@ -38,6 +38,12 @@ cmake --build build -t t5    # Step 5: GPU gate (requires nvcc)
 cmake --build build -t t6    # Step 6: test_amr6 (AMR conservation)
 cmake --build build -t t7    # Step 7: test_step7 (SGS + checkpoint + VTK)
 cmake --build build -t t12   # Step 12: test_streamer (P6.5 live-feed gate)
+cmake --build build -t t13   # Step 13: test_mpi (P7.1 MPI 2-rank Sod)
+cmake --build build -t t14   # Step 14: test_weno5_cf (P7.2 5th-order C/F ghost fill)
+cmake --build build -t t15   # Step 15: test_ibm (P7.3 ghost-cell IBM)
+cmake --build build -t t16   # Step 16: test_chemistry (P7.4 Arrhenius chemistry)
+cmake --build build -t t17   # Step 17: test_p75_dns_tgv (P7.5 TGV DNS quantitative)
+cmake --build build -t t18   # Step 18: test_wmles (P7.6 WMLES log-law + ODE)
 ```
 
 **Running a simulation:**
@@ -148,8 +154,8 @@ linalg  ←  block (block_tree.cpp + amr_operators.cpp)
 
 - git address: `https://github.com/Mixolidian01/cfd.git`
 - Current branch: `to_debug`
-- All Phases 0–6 complete: 19 gate tests pass (t1–t7, t8–t12, tb1–tb9)
+- All Phases 0–7 complete: 25 gate tests pass (t1–t7, t8–t12, tb1–tb9, t13–t18)
 - `roadmap.md` is the authoritative Phase 0–4 plan
-- `todo.md` tracks Phases 0–6 status (all ✅)
+- `todo.md` tracks Phases 0–7 status (all ✅)
 - `answers_register.md` logs session Q&A history
 - `to_avoid_bugs.md` records all derived rules (append on each new misbehaviour)

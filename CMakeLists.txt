@@ -471,6 +471,22 @@ add_custom_target(t14
 )
 
 # =============================================================================
+# Phase 7 — Wall-modelled LES gate (P7.6)
+# =============================================================================
+add_library(wall_model STATIC src/wall_model.cpp)
+target_link_libraries(wall_model PUBLIC ns_solver)
+
+add_executable(test_wmles tests/test_wmles.cpp)
+target_link_libraries(test_wmles PRIVATE wall_model m)
+
+add_custom_target(t18
+    DEPENDS test_wmles
+    COMMAND $<TARGET_FILE:test_wmles>
+    COMMENT "P7.6 gate: Wall-modelled LES (algebraic + ODE mixing-length)"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # Phase 7 — Quantitative DNS TGV gate (P7.5)
 # =============================================================================
 add_executable(test_p75_dns_tgv tests/test_p75_dns_tgv.cpp)
