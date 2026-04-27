@@ -335,8 +335,43 @@ if(NVCC)
         COMMENT "P8.3 gate: GPU WENO5-Z RHS kernels"
         USES_TERMINAL
     )
+    # ── P8.5: GPU CFL warp-shuffle reduction gate (t22) ──────────────────────
+    set(_T22_BIN ${CMAKE_BINARY_DIR}/t22_gpu_cfl)
+    set(_T22_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p85_gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T22_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T22_SRCS}
+                -o ${_T22_BIN} -lm
+        DEPENDS ${_T22_SRCS}
+        COMMENT "nvcc: compiling P8.5 GPU CFL warp-shuffle reduction gate"
+        VERBATIM
+    )
+
+    add_custom_target(t22
+        DEPENDS ${_T22_BIN}
+        COMMAND ${_T22_BIN}
+        COMMENT "P8.5 gate: GPU CFL warp-shuffle tree reduction"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22 skipped")
 endif()
 
 # =============================================================================
