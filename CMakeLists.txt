@@ -262,8 +262,43 @@ if(NVCC)
         COMMENT "P8.1 gate: GPU memory pool"
         USES_TERMINAL
     )
+    # ── P8.2: GPU ghost fill gate (t20) ──────────────────────────────────────
+    set(_T20_BIN ${CMAKE_BINARY_DIR}/t20_gpu_ghost)
+    set(_T20_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p82_gpu_ghost.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T20_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall
+                ${_T20_SRCS}
+                -o ${_T20_BIN} -lm
+        DEPENDS ${_T20_SRCS}
+        COMMENT "nvcc: compiling P8.2 GPU ghost fill gate"
+        VERBATIM
+    )
+
+    add_custom_target(t20
+        DEPENDS ${_T20_BIN}
+        COMMAND ${_T20_BIN}
+        COMMENT "P8.2 gate: GPU ghost fill kernels"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5/t8/t19 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20 skipped")
 endif()
 
 # =============================================================================
