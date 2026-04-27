@@ -426,6 +426,22 @@ add_custom_target(t12
 )
 
 # =============================================================================
+# Phase 7 — IBM ghost-cell library (P7.3) — depends on ns_solver for EOS/constants
+# =============================================================================
+add_library(ibm STATIC src/ibm.cpp)
+target_link_libraries(ibm PUBLIC ns_solver)
+
+add_executable(test_ibm tests/test_ibm.cpp)
+target_link_libraries(test_ibm PRIVATE ibm m)
+
+add_custom_target(t15
+    DEPENDS test_ibm
+    COMMAND $<TARGET_FILE:test_ibm>
+    COMMENT "P7.3 gate: ghost-cell immersed boundary method"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # Phase 7 — WENO5 C/F ghost fill gate (P7.2)
 # =============================================================================
 add_executable(test_weno5_cf tests/test_weno5_cf.cpp)
