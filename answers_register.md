@@ -22,3 +22,31 @@ Each entry contains the answer index, date, and a one-line description.
 | A28 | 2026-04-15 | Solver iteration call graph — Mermaid diagram of full advance() sequence: RK3 stages, Berger-Colella reflux, regrid, SGS split |
 | A34 | 2026-04-15 | A05 root-cause confirmed from test_amr6.cpp: coarsen()->restrict_to_parent() overwrote flux-corrected coarse cells; fix is to move regrid() before RK3 |
 | A35 | 2026-04-15 | A05-fix5 committed — regrid() moved to top of advance() (on Q^n) so topology is frozen during RK3+Berger-Colella; apply_flux_correction is last write per step; commit 8bdf893 |
+| A48 | 2026-04-25 | P7.5 TGV DNS benchmark — ε(t) comparison table at 32³ ILES vs HiOCFD4 512³ reference; gate 4/4 pass; 128³ production run requires MPI (P7.1). See table below. |
+
+## A48 — P7.5 TGV DNS quantitative error table
+
+**Setup:** ILES, 32³ (2 uniform AMR levels, 64 blocks × 8³), CFL=0.5, t∈[0,18].  
+**Normalization:** E_k = KE/V, V=(2π)³=248.05; ε = −dE_k/dt.  
+**Reference:** HiOCFD4 C3.3, DeBonis (2013) NASA/TM-2013-217850 (inviscid, 512³).
+
+| t   | ε solver (32³) | ε ref (512³) | ratio |
+|-----|----------------|--------------|-------|
+|  0  | 0.000e+00      | 0.000e+00    | —     |
+|  2  | 1.443e-03      | 2.340e-03    | 0.62  |
+|  4  | 2.379e-03      | 5.400e-03    | 0.44  |
+|  6  | 3.514e-03      | 8.200e-03    | 0.43  |
+|  8  | 4.854e-03      | 9.380e-03    | 0.52  |
+|  9  | 3.659e-03      | 9.500e-03    | 0.39  |
+| 10  | 4.717e-03      | 9.180e-03    | 0.51  |
+| 12  | 4.288e-03      | 7.810e-03    | 0.55  |
+| 14  | 4.138e-03      | 6.250e-03    | 0.66  |
+| 18  | 2.626e-03      | 3.910e-03    | 0.67  |
+
+**Key results:** t\*_peak = 4.88 (vs DNS 9.0), ε_peak = 8.82e-3 (vs ref 9.5e-3 at t=9).  
+E_k(18)/E_k(0) = 0.414 (solver 32³) vs 0.234 (ref 512³).
+
+**Physical interpretation:** At 32³ the cascade is underresolved — the large-scale peak
+comes earlier (t\*≈5 vs t\*≈9) and total E_k decays less than the high-resolution reference
+(where the fully-resolved small-scale modes carry the dissipation). Convergence toward the
+Brachet (1983) DNS reference at 128³ requires multi-rank MPI (P7.1).

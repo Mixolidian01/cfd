@@ -471,6 +471,19 @@ add_custom_target(t14
 )
 
 # =============================================================================
+# Phase 7 — Quantitative DNS TGV gate (P7.5)
+# =============================================================================
+add_executable(test_p75_dns_tgv tests/test_p75_dns_tgv.cpp)
+target_link_libraries(test_p75_dns_tgv PRIVATE ns_solver m)
+
+add_custom_target(t17
+    DEPENDS test_p75_dns_tgv
+    COMMAND $<TARGET_FILE:test_p75_dns_tgv>
+    COMMENT "P7.5 gate: Quantitative DNS TGV Re=1600 (32³ ILES, HiOCFD4 comparison)"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # Phase 7 — MPI gate test (P7.1)
 # =============================================================================
 add_executable(test_mpi tests/test_mpi.cpp)
