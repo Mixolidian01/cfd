@@ -12,7 +12,7 @@
 // Data flow:
 //   GpuCflList::build(tree)     — rebuild after each regrid
 //   GpuCflList::exec(cfl, stream) — launches k_cfl_reduce; returns host dt
-//   GpuCflList::d_dt_ptr()      — device pointer to dt for pointer-dt kernels
+//   GpuCflList::d_dt            — device pointer to dt for pointer-dt kernels
 //
 // Kernel layout:
 //   Grid: ceil(n_leaves × NB³ / blockDim.x) blocks
@@ -50,9 +50,6 @@ struct GpuCflList {
 
     // Launch k_cfl_reduce; synchronises; copies d_dt to host; returns dt.
     // If stream != nullptr, the memcpy is async on that stream and this
-    // function returns 0.0 — caller must sync and read d_dt_ptr() explicitly.
+    // function returns 0.0 — caller must sync and read d_dt explicitly.
     double exec(double cfl, cudaStream_t stream = nullptr) const;
-
-    // Device pointer to the dt scalar — for pointer-dt kernel launches.
-    const double* d_dt_ptr() const noexcept { return d_dt; }
 };

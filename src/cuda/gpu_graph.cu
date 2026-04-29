@@ -125,7 +125,7 @@ void GpuGraphSolver::build(const BlockTree& tree, int bc_type) {
 // that this path is identical to the replay path (same zero+launch order).
 void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) const {
     constexpr int TPB = 256;
-    const double* d_dt = cfl_list_.d_dt_ptr();
+    const double* d_dt = cfl_list_.d_dt;
     const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves_ * sizeof(double);
 
     k_save_qn<<<n_leaves_, TPB, 0, s>>>(d_rk3_metas_);
@@ -155,7 +155,7 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) const {
 // cudaMemsetAsync BEFORE each cudaGraphLaunch.
 void GpuGraphSolver::_capture_graphs() {
     constexpr int TPB = 256;
-    const double* d_dt = cfl_list_.d_dt_ptr();
+    const double* d_dt = cfl_list_.d_dt;
 
     auto capture_one = [&](cudaGraphExec_t& exec_out, auto body) {
         cudaGraph_t g;
@@ -224,10 +224,10 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
 }
 
 void GpuGraphSolver::download_q(const BlockTree& tree) const {
+    static thread_local double h_buf[NVAR * NCELL];
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
         if (!blk || !blk->d_Q) continue;
-        static thread_local double h_buf[NVAR * NCELL];
         CUDA_CHECK(cudaMemcpy(h_buf, blk->d_Q, NVAR * NCELL * sizeof(double),
                               cudaMemcpyDeviceToHost));
         for (int v = 0; v < NVAR; ++v)

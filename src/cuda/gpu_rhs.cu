@@ -85,45 +85,36 @@ void gpu_kep_flux(const GPrim& L, const GPrim& R, int axis,
     F[4] = mass*H_a;
 }
 
+// One-sided WENO5-Z upwind reconstruction (Borges et al. 2008).
+// Stencil [a,b,c,d,e] = [vm2,vm1,v0,vp1,vp2] for the left state.
+// For the right state, pass the mirrored stencil [vp3,vp2,vp1,v0,vm1].
+__device__ __forceinline__
+double weno5z_upwind(double a, double b, double c, double d, double e) noexcept {
+    constexpr double eps = 1.0e-36;
+    constexpr double d0 = 0.1, d1 = 0.6, d2 = 0.3;
+    const double s0 = ( 2.0*a -  7.0*b + 11.0*c) * (1.0/6.0);
+    const double s1 = (    -b +  5.0*c +  2.0*d) * (1.0/6.0);
+    const double s2 = ( 2.0*c +  5.0*d -      e) * (1.0/6.0);
+    const double b0 = (13.0/12.0)*(a-2.0*b+c)*(a-2.0*b+c)
+                    +  (1.0/ 4.0)*(a-4.0*b+3.0*c)*(a-4.0*b+3.0*c);
+    const double b1 = (13.0/12.0)*(b-2.0*c+d)*(b-2.0*c+d)
+                    +  (1.0/ 4.0)*(b-d)*(b-d);
+    const double b2 = (13.0/12.0)*(c-2.0*d+e)*(c-2.0*d+e)
+                    +  (1.0/ 4.0)*(3.0*c-4.0*d+e)*(3.0*c-4.0*d+e);
+    const double tau5 = fabs(b0 - b2);
+    const double a0 = d0*(1.0+(tau5/(b0+eps))*(tau5/(b0+eps)));
+    const double a1 = d1*(1.0+(tau5/(b1+eps))*(tau5/(b1+eps)));
+    const double a2 = d2*(1.0+(tau5/(b2+eps))*(tau5/(b2+eps)));
+    return (a0*s0 + a1*s1 + a2*s2) / (a0 + a1 + a2);
+}
+
 // WENO5-Z scalar reconstruction (Borges et al. 2008)
 __device__ __forceinline__
 void gpu_weno5z_scalar(double vm2, double vm1, double v0,
                        double vp1, double vp2, double vp3,
                        double& vL, double& vR) noexcept {
-    constexpr double eps = 1.0e-36;
-    constexpr double d0 = 0.1, d1 = 0.6, d2 = 0.3;
-
-    // ── Left state ───────────────────────────────────────────────────────────
-    const double L0 = ( 2.0*vm2 -  7.0*vm1 + 11.0*v0 ) * (1.0/6.0);
-    const double L1 = (    -vm1 +  5.0*v0  +  2.0*vp1) * (1.0/6.0);
-    const double L2 = ( 2.0*v0  +  5.0*vp1 -      vp2) * (1.0/6.0);
-    const double b0L = (13.0/12.0)*(vm2-2.0*vm1+v0)*(vm2-2.0*vm1+v0)
-                     +  (1.0/ 4.0)*(vm2-4.0*vm1+3.0*v0)*(vm2-4.0*vm1+3.0*v0);
-    const double b1L = (13.0/12.0)*(vm1-2.0*v0+vp1)*(vm1-2.0*v0+vp1)
-                     +  (1.0/ 4.0)*(vm1-vp1)*(vm1-vp1);
-    const double b2L = (13.0/12.0)*(v0-2.0*vp1+vp2)*(v0-2.0*vp1+vp2)
-                     +  (1.0/ 4.0)*(3.0*v0-4.0*vp1+vp2)*(3.0*v0-4.0*vp1+vp2);
-    const double tau5L = fabs(b0L - b2L);
-    const double a0L = d0*(1.0+(tau5L/(b0L+eps))*(tau5L/(b0L+eps)));
-    const double a1L = d1*(1.0+(tau5L/(b1L+eps))*(tau5L/(b1L+eps)));
-    const double a2L = d2*(1.0+(tau5L/(b2L+eps))*(tau5L/(b2L+eps)));
-    vL = (a0L*L0 + a1L*L1 + a2L*L2) / (a0L + a1L + a2L);
-
-    // ── Right state (mirrored stencil) ───────────────────────────────────────
-    const double R0 = ( 2.0*vp3 -  7.0*vp2 + 11.0*vp1) * (1.0/6.0);
-    const double R1 = (    -vp2 +  5.0*vp1 +  2.0*v0 ) * (1.0/6.0);
-    const double R2 = ( 2.0*vp1 +  5.0*v0  -      vm1) * (1.0/6.0);
-    const double b0R = (13.0/12.0)*(vp1-2.0*vp2+vp3)*(vp1-2.0*vp2+vp3)
-                     +  (1.0/ 4.0)*(3.0*vp1-4.0*vp2+vp3)*(3.0*vp1-4.0*vp2+vp3);
-    const double b1R = (13.0/12.0)*(v0-2.0*vp1+vp2)*(v0-2.0*vp1+vp2)
-                     +  (1.0/ 4.0)*(v0-vp2)*(v0-vp2);
-    const double b2R = (13.0/12.0)*(vm1-2.0*v0+vp1)*(vm1-2.0*v0+vp1)
-                     +  (1.0/ 4.0)*(vm1-4.0*v0+3.0*vp1)*(vm1-4.0*v0+3.0*vp1);
-    const double tau5R = fabs(b0R - b2R);
-    const double a0R = d0*(1.0+(tau5R/(b0R+eps))*(tau5R/(b0R+eps)));
-    const double a1R = d1*(1.0+(tau5R/(b1R+eps))*(tau5R/(b1R+eps)));
-    const double a2R = d2*(1.0+(tau5R/(b2R+eps))*(tau5R/(b2R+eps)));
-    vR = (a0R*R0 + a1R*R1 + a2R*R2) / (a0R + a1R + a2R);
+    vL = weno5z_upwind(vm2, vm1, v0,  vp1, vp2);   // left state
+    vR = weno5z_upwind(vp3, vp2, vp1, v0,  vm1);   // right state (mirrored)
 }
 
 // WENO5 face reconstruction with Roe characteristic decomposition.

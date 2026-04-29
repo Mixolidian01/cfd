@@ -23,6 +23,13 @@ __device__ __forceinline__ int cidx(int i, int j, int k) {
     return k * NB2 * NB2 + j * NB2 + i;
 }
 
+// Axis-dispatch flat index: axis dimension gets ax_val; transverse dims get a and b.
+__device__ __forceinline__ int cidx_axis(int axis, int ax_val, int a, int b) noexcept {
+    if      (axis == 0) return cidx(ax_val, a,      b     );
+    else if (axis == 1) return cidx(a,      ax_val, b     );
+    else                return cidx(a,      b,      ax_val);
+}
+
 // 5th-order Lagrange coefficients (P7.2 / McCorquodale-Colella 2011)
 // Nodes at {-4,-3,-2,-1,0} in units of h_coarse.
 // Lp: target at +1/4 h_c (gl=0, side=0)
@@ -119,22 +126,14 @@ __global__ void k_fill_faces(const GpuLeafGhostMeta* metas) {
         const int b  = ab % NB2;           // transverse dim-2 in [0, NB2-1]
 
         // Destination ghost index along axis
-        int dst_ax = (side == 0) ? (NG - 1 - gl) : (NB + NG + gl);
-        int dst_i, dst_j, dst_k;
-        if      (axis == 0) { dst_i = dst_ax; dst_j = a;      dst_k = b;      }
-        else if (axis == 1) { dst_i = a;      dst_j = dst_ax; dst_k = b;      }
-        else                { dst_i = a;      dst_j = b;      dst_k = dst_ax; }
-        const int dst_flat = cidx(dst_i, dst_j, dst_k);
+        const int dst_ax   = (side == 0) ? (NG - 1 - gl) : (NB + NG + gl);
+        const int dst_flat = cidx_axis(axis, dst_ax, a, b);
 
         // ── Same-level neighbor copy ─────────────────────────────────────────
         if (d_src != nullptr && lrel == 0) {
             if (a < NG || a >= NG + NB || b < NG || b >= NG + NB) continue;
-            int src_ax = (side == 0) ? (NB + NG - 1 - gl) : (NG + gl);
-            int src_i, src_j, src_k;
-            if      (axis == 0) { src_i = src_ax; src_j = a;      src_k = b;      }
-            else if (axis == 1) { src_i = a;      src_j = src_ax; src_k = b;      }
-            else                { src_i = a;      src_j = b;      src_k = src_ax; }
-            const int src_flat = cidx(src_i, src_j, src_k);
+            const int src_ax   = (side == 0) ? (NB + NG - 1 - gl) : (NG + gl);
+            const int src_flat = cidx_axis(axis, src_ax, a, b);
             for (int v = 0; v < NVAR; ++v)
                 d_dst[v * NCELL + dst_flat] = d_src[v * NCELL + src_flat];
 
@@ -148,12 +147,8 @@ __global__ void k_fill_faces(const GpuLeafGhostMeta* metas) {
         // ── CF coarse←fine: zero-gradient fallback (P8.2; average in P8.4) ──
         } else if (d_src != nullptr && lrel == +1) {
             if (a < NG || a >= NG + NB || b < NG || b >= NG + NB) continue;
-            int int_ax = (side == 0) ? NG : (NB + NG - 1);
-            int int_i, int_j, int_k;
-            if      (axis == 0) { int_i = int_ax; int_j = a;      int_k = b;      }
-            else if (axis == 1) { int_i = a;      int_j = int_ax; int_k = b;      }
-            else                { int_i = a;      int_j = b;      int_k = int_ax; }
-            const int int_flat = cidx(int_i, int_j, int_k);
+            const int int_ax   = (side == 0) ? NG : (NB + NG - 1);
+            const int int_flat = cidx_axis(axis, int_ax, a, b);
             for (int v = 0; v < NVAR; ++v)
                 d_dst[v * NCELL + dst_flat] = d_dst[v * NCELL + int_flat];
 
@@ -163,12 +158,8 @@ __global__ void k_fill_faces(const GpuLeafGhostMeta* metas) {
 
             if (m.bc_type == 1) {
                 // Wall: all momenta negated (no-slip adiabatic)
-                int mir_ax = (side == 0) ? (NG + gl) : (NB + NG - 1 - gl);
-                int mir_i, mir_j, mir_k;
-                if      (axis == 0) { mir_i = mir_ax; mir_j = a;      mir_k = b;      }
-                else if (axis == 1) { mir_i = a;      mir_j = mir_ax; mir_k = b;      }
-                else                { mir_i = a;      mir_j = b;      mir_k = mir_ax; }
-                const int mir_flat = cidx(mir_i, mir_j, mir_k);
+                const int mir_ax   = (side == 0) ? (NG + gl) : (NB + NG - 1 - gl);
+                const int mir_flat = cidx_axis(axis, mir_ax, a, b);
                 for (int v = 0; v < NVAR; ++v) {
                     double val = d_dst[v * NCELL + mir_flat];
                     // Negate all momentum components (v=1,2,3)
@@ -177,23 +168,15 @@ __global__ void k_fill_faces(const GpuLeafGhostMeta* metas) {
 
             } else if (m.bc_type == 2) {
                 // Open: zero gradient (ghost = nearest interior cell)
-                int int_ax = (side == 0) ? NG : (NB + NG - 1);
-                int int_i, int_j, int_k;
-                if      (axis == 0) { int_i = int_ax; int_j = a;      int_k = b;      }
-                else if (axis == 1) { int_i = a;      int_j = int_ax; int_k = b;      }
-                else                { int_i = a;      int_j = b;      int_k = int_ax; }
-                const int int_flat = cidx(int_i, int_j, int_k);
+                const int int_ax   = (side == 0) ? NG : (NB + NG - 1);
+                const int int_flat = cidx_axis(axis, int_ax, a, b);
                 for (int v = 0; v < NVAR; ++v)
                     d_dst[v * NCELL + dst_flat] = d_dst[v * NCELL + int_flat];
 
             } else {
                 // Periodic self-wrap (root block in single-block periodic domain)
-                int src_ax = (side == 0) ? (NB + NG - 1 - gl) : (NG + gl);
-                int src_i, src_j, src_k;
-                if      (axis == 0) { src_i = src_ax; src_j = a;      src_k = b;      }
-                else if (axis == 1) { src_i = a;      src_j = src_ax; src_k = b;      }
-                else                { src_i = a;      src_j = b;      src_k = src_ax; }
-                const int src_flat = cidx(src_i, src_j, src_k);
+                const int src_ax   = (side == 0) ? (NB + NG - 1 - gl) : (NG + gl);
+                const int src_flat = cidx_axis(axis, src_ax, a, b);
                 for (int v = 0; v < NVAR; ++v)
                     d_dst[v * NCELL + dst_flat] = d_dst[v * NCELL + src_flat];
             }

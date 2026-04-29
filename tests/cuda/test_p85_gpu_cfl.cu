@@ -162,11 +162,11 @@ static void test_c3() {
 
     // Read d_dt directly from device (no second exec())
     double dt_from_ptr = 0.0;
-    cudaMemcpy(&dt_from_ptr, cfl_list.d_dt_ptr(), sizeof(double),
+    cudaMemcpy(&dt_from_ptr, cfl_list.d_dt, sizeof(double),
                cudaMemcpyDeviceToHost);
     free_all(tree);
 
-    printf("   exec() = %.6e  d_dt_ptr = %.6e\n", dt_from_exec, dt_from_ptr);
+    printf("   exec() = %.6e  d_dt = %.6e\n", dt_from_exec, dt_from_ptr);
     check(dt_from_exec == dt_from_ptr, "C3",
           "d_dt device pointer holds same value as exec() return");
 }

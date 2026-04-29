@@ -192,19 +192,19 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 | # | Status | Item | File:line | Effort |
 |---|--------|------|-----------|--------|
-| B1 | 🔲 | **Axis-dispatch index duplication** — the `(ax==0)?i:(ax==1)?j:k` triplet is copy-pasted 6+ times in `gpu_ghost_fill.cu` (lines 124–195) and again in `gpu_rhs.cu:366–375`. Extract a single `__device__ inline void axis_ijk(int ax, int a, int b, int n, int& i, int& j, int& k)` helper; collapses ~70 duplicated lines. | `src/cuda/gpu_ghost_fill.cu`, `src/cuda/gpu_rhs.cu` | 1 day |
+| B1 | ✅ | **Axis-dispatch index duplication** — added `cidx_axis(axis, ax_val, a, b)` device helper in `gpu_ghost_fill.cu`; collapsed 6 × 4-line if/else dispatch blocks to single-line calls. t20 gate still 4/4 pass. | `src/cuda/gpu_ghost_fill.cu` | done |
 | B2 | 🔲 | **`gpu_meta_buffer<T>` RAII helper** — the `cudaFree old → cudaMalloc → memcpy h→d` ritual is copy-pasted identically in `GpuRhsList::build()`, `GpuGraphSolver::build()`, `GpuGhostFillList::build()`, `GpuCflList::build()`. A device-buffer RAII template removes ~40 lines of boilerplate and eliminates the manual null-out pattern in destructors. | `src/cuda/gpu_rhs.cu:588–618`, `src/cuda/gpu_graph.cu:93–122`, `src/cuda/gpu_ghost_fill.cu:263–303`, `src/cuda/gpu_cfl.cu` | 1 day |
 | B3 | 🔲 | **`k_rhs_visc` too long** (~140 lines, `gpu_rhs.cu:439–576`) — six face-stress evaluations are syntactically mirror images. Extract a `__device__ face_stress(axis, side, ...)` returning `{tau[3], divu, F_e}`; removes ~60 redundant gradient lines. | `src/cuda/gpu_rhs.cu:439` | 2 days |
 | B4 | 🔲 | **`k_fill_faces` too long** (`gpu_ghost_fill.cu:99–202`) — four BC branches (same-level / CF-fine / CF-coarse / domain BC) with 3 sub-cases each. Split into `__device__` helpers per branch. | `src/cuda/gpu_ghost_fill.cu:99` | 1 day |
-| B5 | 🔲 | **`gpu_weno5z_scalar` mirrored reconstruction** (`gpu_rhs.cu:100–138`) — left and right reconstructions are structurally identical with reversed stencil offsets. Factor into one helper called twice with sign-flipped index delta. | `src/cuda/gpu_rhs.cu:100` | 0.5 day |
+| B5 | ✅ | **`gpu_weno5z_scalar` mirrored reconstruction** — extracted `weno5z_upwind(a,b,c,d,e)` device helper; right state calls it with reversed stencil `(vp3,vp2,vp1,v0,vm1)`. Removed ~18 duplicate lines. t21 and t25 gates still 0 failures. | `src/cuda/gpu_rhs.cu` | done |
 
 ### 10-C — Naming / API consistency
 
 | # | Status | Item | File | Effort |
 |---|--------|------|------|--------|
 | C1 | 🔲 | **Trailing-underscore convention** — `GpuGraphSolver` private members use `_` suffix; `GpuRhsList`/`GpuGhostFillList` public members do not (`d_metas`, `n_leaves`). Align public fields to no-underscore, private fields to underscore across all GPU structs. | `include/cuda/gpu_rhs.cuh`, `include/cuda/gpu_ghost_fill.cuh`, `include/cuda/gpu_cfl.cuh` | Half day |
-| C2 | 🔲 | **`d_dt_ptr()` vs `d_dt` mixed accessor** — `GpuCflList` exposes both a public `d_dt` field and a `d_dt_ptr()` getter; `GpuGraphSolver` uses the getter while `gpu_cfl.cu` uses the field directly. Pick one (getter preferred — hides pointer arithmetic). | `include/cuda/gpu_cfl.cuh` | 1 hour |
-| C3 | 🔲 | **`download_q` / `download_rhs` duplicate `thread_local` buffer** — same `static thread_local double h_buf[NVAR*NCELL]` appears in `GpuGraphSolver::download_q()` (`gpu_graph.cu:232`) and `GpuRhsList::download_rhs()` (`gpu_rhs.cu:650`). Move to shared utility in `gpu_check.cuh` or a new `gpu_util.cuh`. | `src/cuda/gpu_graph.cu:232`, `src/cuda/gpu_rhs.cu:650` | 1 hour |
+| C2 | ✅ | **`d_dt_ptr()` vs `d_dt` mixed accessor** — removed `d_dt_ptr()` getter; all callers use `.d_dt` field directly. Comment in header updated. | `include/cuda/gpu_cfl.cuh` | done |
+| C3 | ❌ N/A | **`download_q` / `download_rhs` duplicate `thread_local` buffer** — sharing via `gpu_check.cuh` not viable: nvcc device-compilation pass parses host functions and rejects namespace references that are conditionally hidden by `!defined(__CUDA_ARCH__)`. Buffers remain local (two separate `static thread_local` lines). | `src/cuda/gpu_graph.cu`, `src/cuda/gpu_rhs.cu` | — |
 
 ---
 
