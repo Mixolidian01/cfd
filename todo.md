@@ -163,7 +163,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | P8.3 | ✅ | **GPU WENO5-Z RHS** — full `tree_rhs` loop on device; WENO5-Z + HLLC-ES + viscous/SGS in one kernel per block; shared-memory halo staging | P8.2 |
 | P8.4 | ✅ | **GPU AMR refine/coarsen kernels** — `k_prolong` (piecewise-constant, 512-thread 3D block per pair) + `k_restrict` (volume-weighted average); `GpuAmrList` with `build_prolong`/`build_restrict`/`exec_prolong`/`exec_restrict`; gate test t23 (A1–A4: 4/4 pass) | P8.3 |
 | P8.5 | ✅ | **GPU CFL + diagnostics reduce** — warp-shuffle tree reduction; `cudaMemcpyAsync` for dt only; zero D→H bandwidth on interior steps | P8.1 |
-| P8.6 | 🔲 | **CUDA Graph re-capture on regrid** — detect topology change, invalidate and rebuild graph; steady steps use graph replay | P8.3 + P8.4 |
+| P8.6 | ✅ | **CUDA Graph re-capture on regrid** — detect topology change, invalidate and rebuild graph; steady steps use graph replay; three per-stage sub-graphs (s1/s2/s3) with external cudaMemsetAsync zeroing; gate test t24 (G1–G4: 4/4 pass) | P8.3 + P8.4 |
 
 ---
 

@@ -55,7 +55,10 @@ struct GpuRhsList {
 
     // Launch the three RHS kernels on the given stream.
     // Prerequisites: d_Q must have ghost cells filled (call GpuGhostFillList::exec first).
-    void exec(cudaStream_t stream = nullptr) const;
+    // zero_rhs: if true, zeros d_rhs_pool first (safe for explicit use).
+    //           Pass false when the caller has already zeroed d_rhs_pool via
+    //           cudaMemsetAsync on the same stream (e.g. inside a CUDA graph stage).
+    void exec(cudaStream_t stream = nullptr, bool zero_rhs = true) const;
 
     // Copy d_RHS back to a CPU CellBlock for each leaf.
     // Called after exec() to verify results or feed the CPU time integrator.

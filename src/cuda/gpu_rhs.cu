@@ -617,33 +617,30 @@ void GpuRhsList::build(const BlockTree& tree) {
                           cudaMemcpyHostToDevice));
 }
 
-void GpuRhsList::exec(cudaStream_t stream) const {
+// k_zero_rhs: zero d_rhs_pool as a proper kernel node (graph-capture safe).
+// Using a kernel instead of cudaMemsetAsync guarantees explicit stream ordering
+// in the captured CUDA graph — no reliance on memset helper streams.
+__global__
+void k_zero_rhs(double* __restrict__ pool, int n) {
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += blockDim.x * gridDim.x)
+        pool[i] = 0.0;
+}
+
+void GpuRhsList::exec(cudaStream_t stream, bool zero_rhs) const {
     if (n_leaves == 0) return;
 
-    // Zero d_RHS for all leaves before atomicAdd accumulation
-    CUDA_CHECK(cudaMemsetAsync(d_rhs_pool, 0,
-        (size_t)NVAR * NCELL * n_leaves * sizeof(double), stream));
-
-    // k_prim_duc: prim + µ + Ducros → d_scratch
-    {
-        dim3 grid(n_leaves), blk(GPU_NB2, GPU_NB2);
-        k_prim_duc<<<grid, blk, 0, stream>>>(d_metas);
-        CUDA_CHECK(cudaGetLastError());
+    // Optional zeroing: callers that use cudaMemsetAsync on the same stream
+    // BEFORE launching this (e.g. the per-stage graph replay path) pass false
+    // to avoid a redundant zero inside any CUDA graph node.
+    if (zero_rhs) {
+        const int total = NVAR * NCELL * n_leaves;
+        const int nblks = (total + 255) / 256;
+        k_zero_rhs<<<nblks, 256, 0, stream>>>(d_rhs_pool, total);
     }
 
-    // k_rhs_conv: WENO5-Z/KEP/HLLC-ES face fluxes (atomicAdd)
-    {
-        dim3 grid(n_leaves), blk(192);
-        k_rhs_conv<<<grid, blk, 0, stream>>>(d_metas);
-        CUDA_CHECK(cudaGetLastError());
-    }
-
-    // k_rhs_visc: face-averaged µ viscous divergence (direct write)
-    {
-        dim3 grid(n_leaves), blk(GPU_NB, GPU_NB);
-        k_rhs_visc<<<grid, blk, 0, stream>>>(d_metas);
-        CUDA_CHECK(cudaGetLastError());
-    }
+    k_prim_duc<<<dim3(n_leaves), dim3(GPU_NB2, GPU_NB2), 0, stream>>>(d_metas);
+    k_rhs_conv <<<dim3(n_leaves), dim3(192),              0, stream>>>(d_metas);
+    k_rhs_visc <<<dim3(n_leaves), dim3(GPU_NB, GPU_NB),   0, stream>>>(d_metas);
 }
 
 void GpuRhsList::download_rhs(const BlockTree& tree) const {

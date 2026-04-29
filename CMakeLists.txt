@@ -406,8 +406,48 @@ if(NVCC)
         COMMENT "P8.4 gate: GPU AMR prolongation and restriction kernels"
         USES_TERMINAL
     )
+
+    # ── P8.6: CUDA Graph re-capture gate (t24) ────────────────────────────────
+    set(_T24_BIN ${CMAKE_BINARY_DIR}/t24_gpu_graph)
+    set(_T24_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p86_gpu_graph.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_graph.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T24_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T24_SRCS}
+                -o ${_T24_BIN} -lm
+        DEPENDS ${_T24_SRCS}
+        COMMENT "nvcc: compiling P8.6 CUDA Graph re-capture gate"
+        VERBATIM
+    )
+
+    add_custom_target(t24
+        DEPENDS ${_T24_BIN}
+        COMMAND ${_T24_BIN}
+        COMMENT "P8.6 gate: CUDA Graph re-capture on regrid"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24 skipped")
 endif()
 
 # =============================================================================
