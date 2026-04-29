@@ -176,6 +176,38 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 ---
 
+## Phase 10 — GPU Code Quality, Architecture & NSSolver Integration *(remaining items from 2026-04-29 review)*
+
+> Source: architecture review (agent a4d3e3ed7e34d2032) and code simplification audit (agent affaa432d02af1437), session 2026-04-29.  P9.2 closed the easy items; the below are the remaining open findings.
+
+### 10-A — Architecture corrections
+
+| # | Status | Item | File:line | Risk |
+|---|--------|------|-----------|------|
+| A1 | 🔲 | **`d_Q` layer violation** — `CellBlock` (Layer 1) carries a GPU pointer `d_Q` owned by `GpuPool` (Layer 3). Copy/move constructors shallow-copy `d_Q=nullptr`; any tree copy that aliases a CPU block produces a block with no device state. Fix: move `d_Q` + `d_Qn` into a thin `GpuBlockState` struct held by `GpuPool`; look it up by block address. | `include/cell_block.hpp:162` | Medium — latent bug if CPU+GPU paths mix |
+| A2 | 🔲 | **Missing `TimeIntegrator` interface** — SSP-RK3 is implemented three times: `NSSolver::advance()`, `lts_rk3_level()`, `GpuGraphSolver::_run_rk3_explicit()`. A virtual `TimeIntegrator::step(BlockTree&, double cfl)` would let all three share one call site and make the GPU path a first-class citizen of NSSolver. | `src/ns_solver.cpp`, `src/cuda/gpu_graph.cu` | Low urgency — refactor only |
+| A3 | 🔲 | **NSSolver GPU integration** — `GpuGraphSolver` is currently standalone; `NSSolver::advance()` has no GPU code path despite `cfg.use_gpu` existing. Wire `GpuGraphSolver` into `NSSolver::advance()` via `#ifdef HAVE_CUDA` guard (same pattern as MPI/LZ4) for flat-tree GPU runs. Gate test: CPU and GPU `NSSolver` produce same Q for uniform Sod. | `src/ns_solver.cpp`, `include/ns_solver.hpp` | High value — makes GPU useful from `simulate` |
+
+### 10-B — GPU kernel refactoring
+
+| # | Status | Item | File:line | Effort |
+|---|--------|------|-----------|--------|
+| B1 | 🔲 | **Axis-dispatch index duplication** — the `(ax==0)?i:(ax==1)?j:k` triplet is copy-pasted 6+ times in `gpu_ghost_fill.cu` (lines 124–195) and again in `gpu_rhs.cu:366–375`. Extract a single `__device__ inline void axis_ijk(int ax, int a, int b, int n, int& i, int& j, int& k)` helper; collapses ~70 duplicated lines. | `src/cuda/gpu_ghost_fill.cu`, `src/cuda/gpu_rhs.cu` | 1 day |
+| B2 | 🔲 | **`gpu_meta_buffer<T>` RAII helper** — the `cudaFree old → cudaMalloc → memcpy h→d` ritual is copy-pasted identically in `GpuRhsList::build()`, `GpuGraphSolver::build()`, `GpuGhostFillList::build()`, `GpuCflList::build()`. A device-buffer RAII template removes ~40 lines of boilerplate and eliminates the manual null-out pattern in destructors. | `src/cuda/gpu_rhs.cu:588–618`, `src/cuda/gpu_graph.cu:93–122`, `src/cuda/gpu_ghost_fill.cu:263–303`, `src/cuda/gpu_cfl.cu` | 1 day |
+| B3 | 🔲 | **`k_rhs_visc` too long** (~140 lines, `gpu_rhs.cu:439–576`) — six face-stress evaluations are syntactically mirror images. Extract a `__device__ face_stress(axis, side, ...)` returning `{tau[3], divu, F_e}`; removes ~60 redundant gradient lines. | `src/cuda/gpu_rhs.cu:439` | 2 days |
+| B4 | 🔲 | **`k_fill_faces` too long** (`gpu_ghost_fill.cu:99–202`) — four BC branches (same-level / CF-fine / CF-coarse / domain BC) with 3 sub-cases each. Split into `__device__` helpers per branch. | `src/cuda/gpu_ghost_fill.cu:99` | 1 day |
+| B5 | 🔲 | **`gpu_weno5z_scalar` mirrored reconstruction** (`gpu_rhs.cu:100–138`) — left and right reconstructions are structurally identical with reversed stencil offsets. Factor into one helper called twice with sign-flipped index delta. | `src/cuda/gpu_rhs.cu:100` | 0.5 day |
+
+### 10-C — Naming / API consistency
+
+| # | Status | Item | File | Effort |
+|---|--------|------|------|--------|
+| C1 | 🔲 | **Trailing-underscore convention** — `GpuGraphSolver` private members use `_` suffix; `GpuRhsList`/`GpuGhostFillList` public members do not (`d_metas`, `n_leaves`). Align public fields to no-underscore, private fields to underscore across all GPU structs. | `include/cuda/gpu_rhs.cuh`, `include/cuda/gpu_ghost_fill.cuh`, `include/cuda/gpu_cfl.cuh` | Half day |
+| C2 | 🔲 | **`d_dt_ptr()` vs `d_dt` mixed accessor** — `GpuCflList` exposes both a public `d_dt` field and a `d_dt_ptr()` getter; `GpuGraphSolver` uses the getter while `gpu_cfl.cu` uses the field directly. Pick one (getter preferred — hides pointer arithmetic). | `include/cuda/gpu_cfl.cuh` | 1 hour |
+| C3 | 🔲 | **`download_q` / `download_rhs` duplicate `thread_local` buffer** — same `static thread_local double h_buf[NVAR*NCELL]` appears in `GpuGraphSolver::download_q()` (`gpu_graph.cu:232`) and `GpuRhsList::download_rhs()` (`gpu_rhs.cu:650`). Move to shared utility in `gpu_check.cuh` or a new `gpu_util.cuh`. | `src/cuda/gpu_graph.cu:232`, `src/cuda/gpu_rhs.cu:650` | 1 hour |
+
+---
+
 ## System Dependencies — Missing Packages (Answer #44)
 
 > Audited: 2026-04-25. All packages below are **optional** — the solver builds and all 18 gate tests pass without them. Fallbacks are active.
