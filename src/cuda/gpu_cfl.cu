@@ -13,18 +13,10 @@
 
 #include "../../include/cuda/gpu_cfl.cuh"
 #include "../../include/cuda/gpu_block.cuh"
-#include <cstdio>
+#include "../../include/cuda/gpu_check.cuh"
 #include <cstring>
 #include <vector>
 #include <limits>
-
-#define CUDA_CHECK(call) do { \
-    cudaError_t _e = (call); \
-    if (_e != cudaSuccess) { \
-        fprintf(stderr,"CUDA %s:%d: %s\n",__FILE__,__LINE__,cudaGetErrorString(_e)); \
-        exit(1); \
-    } \
-} while(0)
 
 static inline unsigned long long double_to_ull(double x) noexcept {
     unsigned long long u; memcpy(&u, &x, sizeof(u)); return u;

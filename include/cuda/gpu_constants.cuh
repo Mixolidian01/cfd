@@ -1,6 +1,6 @@
 #pragma once
 // gpu_constants.cuh — compile-time constants mirroring cell_block.hpp
-// Must stay in sync with cell_block.hpp (static_assert enforced in test_gpu.cu).
+// Must stay in sync with cell_block.hpp (static_assert enforced in gpu_graph.cu).
 
 #include <cstdint>
 

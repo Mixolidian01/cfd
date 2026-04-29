@@ -13,15 +13,7 @@
 
 #include "../../include/cuda/gpu_amr.cuh"
 #include "../../include/cuda/gpu_constants.cuh"
-#include <cstdio>
-
-#define CUDA_CHECK(call) do { \
-    cudaError_t _e = (call); \
-    if (_e != cudaSuccess) { \
-        fprintf(stderr, "CUDA %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(_e)); \
-        exit(1); \
-    } \
-} while(0)
+#include "../../include/cuda/gpu_check.cuh"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // k_prolong

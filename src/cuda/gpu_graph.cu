@@ -16,19 +16,18 @@
 
 #include "../../include/cuda/gpu_graph.cuh"
 #include "../../include/cuda/gpu_constants.cuh"
-#include <cstdio>
+#include "../../include/cuda/gpu_check.cuh"
 #include <vector>
 
-#define CUDA_CHECK(call) do { \
-    cudaError_t _e = (call); \
-    if (_e != cudaSuccess) { \
-        fprintf(stderr, "CUDA %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(_e)); \
-        exit(1); \
-    } \
-} while(0)
+// Verify GPU constants match CPU constants (both headers available here)
+static_assert(GPU_NB   == NB,   "GPU_NB mismatch with NB in cell_block.hpp");
+static_assert(GPU_NG   == NG,   "GPU_NG mismatch with NG in cell_block.hpp");
+static_assert(GPU_NB2  == NB2,  "GPU_NB2 mismatch with NB2 in cell_block.hpp");
+static_assert(GPU_NCELL == NCELL, "GPU_NCELL mismatch with NCELL in cell_block.hpp");
+static_assert(GPU_NVAR == NVAR, "GPU_NVAR mismatch with NVAR in cell_block.hpp");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// k_save_qn: d_Qn ← d_Q  (all NVAR * NCELL scalars per leaf)
+// k_save_qn: d_Qn ← d_Q  (all GPU_NVAR * GPU_NCELL scalars per leaf)
 // gridDim.x = n_leaves,  blockDim.x = 256
 // ─────────────────────────────────────────────────────────────────────────────
 __global__
@@ -101,18 +100,18 @@ void GpuGraphSolver::build(const BlockTree& tree, int bc_type) {
     n_leaves_ = (int)leaves.size();
     if (n_leaves_ == 0) return;
 
-    // Qn pool: one NVAR*NCELL double buffer per leaf
+    // Qn pool: one GPU_NVAR*GPU_NCELL double buffer per leaf
     if (d_Qn_pool_) { cudaFree(d_Qn_pool_); d_Qn_pool_ = nullptr; }
     CUDA_CHECK(cudaMalloc(&d_Qn_pool_,
-        (size_t)NVAR * NCELL * n_leaves_ * sizeof(double)));
+        (size_t)GPU_NVAR * GPU_NCELL * n_leaves_ * sizeof(double)));
 
     // Per-leaf RK3 metadata (host → device)
     std::vector<GpuRk3LeafMeta> h_metas(n_leaves_);
     for (int li = 0; li < n_leaves_; ++li) {
         const BlockNode& nd = tree.nodes[leaves[li]];
         h_metas[li].d_Q  = nd.block->d_Q;
-        h_metas[li].d_Qn = d_Qn_pool_ + (size_t)li * NVAR * NCELL;
-        h_metas[li].d_RHS = rhs_list_.d_rhs_pool + (size_t)li * NVAR * NCELL;
+        h_metas[li].d_Qn = d_Qn_pool_ + (size_t)li * GPU_NVAR * GPU_NCELL;
+        h_metas[li].d_RHS = rhs_list_.d_rhs_pool + (size_t)li * GPU_NVAR * GPU_NCELL;
     }
     if (d_rk3_metas_) { cudaFree(d_rk3_metas_); d_rk3_metas_ = nullptr; }
     CUDA_CHECK(cudaMalloc(&d_rk3_metas_, n_leaves_ * sizeof(GpuRk3LeafMeta)));
@@ -127,7 +126,7 @@ void GpuGraphSolver::build(const BlockTree& tree, int bc_type) {
 void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) const {
     constexpr int TPB = 256;
     const double* d_dt = cfl_list_.d_dt_ptr();
-    const size_t rhs_bytes = (size_t)NVAR * NCELL * n_leaves_ * sizeof(double);
+    const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves_ * sizeof(double);
 
     k_save_qn<<<n_leaves_, TPB, 0, s>>>(d_rk3_metas_);
 
@@ -203,7 +202,7 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
     // CFL on stream_ — writes d_dt to device, syncs, returns host value
     const double dt = cfl_list_.exec(cfl, stream_);
 
-    const size_t rhs_bytes = (size_t)NVAR * NCELL * n_leaves_ * sizeof(double);
+    const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves_ * sizeof(double);
 
     if (!graph_valid_) {
         // First step after build: run explicit then capture sub-graphs
