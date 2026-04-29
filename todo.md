@@ -167,6 +167,15 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 ---
 
+## Phase 9 — GPU Correctness Validation & Code Quality
+
+| # | Status | Item | Key note |
+|---|--------|------|----------|
+| P9.1 | ✅ | **GPU vs CPU correctness** — gate test t25 (N1–N4: 4/4 pass); GPU Q matches CPU NSSolver to 3.4e-15; GPU dt matches CPU dt to 4.1e-16; mass conserved to 1.97e-15; validates GpuGraphSolver as drop-in for uniform meshes | Flat periodic tree, no AMR |
+| P9.2 | ✅ | **GPU code quality cleanup** — unified `CUDA_CHECK` macro in `include/cuda/gpu_check.cuh` (was duplicated in 5 TUs); `NVAR/NCELL` → `GPU_NVAR/GPU_NCELL` in `gpu_graph.cu`; compile-time consistency `static_assert`; removed 140-line dead `gpu_rhs_kernel`/`gpu_ghost_periodic_single` (from `gpu_solver.cu`, not compiled); fixed topology-detection UB in `advance()` (stale-pointer on same-count regrid) | Code quality / correctness |
+
+---
+
 ## System Dependencies — Missing Packages (Answer #44)
 
 > Audited: 2026-04-25. All packages below are **optional** — the solver builds and all 18 gate tests pass without them. Fallbacks are active.

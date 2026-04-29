@@ -69,10 +69,14 @@ struct GpuGraphSolver {
     // bc_type: 0=periodic, 1=wall, 2=open.
     void build(const BlockTree& tree, int bc_type = 0);
 
-    // Run one SSP-RK3 step.  If graphs are invalid (first step after build or
-    // regrid), runs explicitly and then captures three per-stage sub-graphs.
+    // Run one SSP-RK3 step.  If graphs are invalid (first step after build),
+    // runs explicitly and then captures three per-stage sub-graphs.
     // Otherwise replays the sub-graphs with explicit inter-stage zeroing.
     // Returns the CFL-limited dt.
+    //
+    // PRECONDITION: build() must be called before the first advance() and
+    // after every regrid — even when the leaf count is unchanged (a same-count
+    // regrid reallocates d_Q pointers; replaying a stale graph is UB).
     double advance(const BlockTree& tree, double cfl);
 
     // Copy device Q back to CPU CellBlocks for all leaves (for verification).

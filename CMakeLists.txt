@@ -446,8 +446,55 @@ if(NVCC)
         COMMENT "P8.6 gate: CUDA Graph re-capture on regrid"
         USES_TERMINAL
     )
+
+    # ── P9.1: GPU GpuGraphSolver vs CPU NSSolver gate (t25) ──────────────────
+    set(_T25_BIN ${CMAKE_BINARY_DIR}/t25_gpu_nssolver)
+    set(_T25_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p91_gpu_nssolver.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_graph.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/ns_solver.cpp
+        ${CMAKE_SOURCE_DIR}/src/flux_register.cpp
+        ${CMAKE_SOURCE_DIR}/src/sgs.cpp
+        ${CMAKE_SOURCE_DIR}/src/checkpoint.cpp
+        ${CMAKE_SOURCE_DIR}/src/vtk_writer.cpp
+        ${CMAKE_SOURCE_DIR}/src/live_streamer.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T25_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T25_SRCS}
+                -o ${_T25_BIN} -lm
+                $<$<BOOL:${LZ4_LIBRARY}>:-llz4>
+        DEPENDS ${_T25_SRCS}
+        COMMENT "nvcc: compiling P9.1 GPU vs CPU NSSolver gate"
+        VERBATIM
+    )
+
+    add_custom_target(t25
+        DEPENDS ${_T25_BIN}
+        COMMAND ${_T25_BIN}
+        COMMENT "P9.1 gate: GPU GpuGraphSolver vs CPU NSSolver"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25 skipped")
 endif()
 
 # =============================================================================

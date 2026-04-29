@@ -193,10 +193,9 @@ void GpuGraphSolver::_capture_graphs() {
 }
 
 double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
-    // Detect topology change
-    if (cfl_list_.n_leaves != (int)tree.leaf_indices().size()) {
-        build(tree);
-    }
+    // build() must be called before advance() and after every regrid, even
+    // if the leaf count is unchanged (same-count regrid reallocates d_Q
+    // pointers; a stale captured graph would dereference freed memory).
     if (n_leaves_ == 0) return 1.0e300;
 
     // CFL on stream_ — writes d_dt to device, syncs, returns host value
