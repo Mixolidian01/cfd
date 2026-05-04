@@ -15,8 +15,7 @@
 #  include <onnxruntime_cxx_api.h>
 #endif
 
-static constexpr double PR = 0.72;
-static constexpr double CP = GAMMA * R_GAS / (GAMMA - 1.0);
+static constexpr double CP = CPU_CP;
 
 // =============================================================================
 // ONNX pimpl: compiled away entirely when HAVE_ONNXRUNTIME is not defined

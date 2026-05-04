@@ -758,8 +758,7 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
 // Energy: cell-centred τ:S and κ·Δ(T) are unchanged (O(h²), conserved on
 // periodic domains to machine precision as confirmed by T04/S07).
 // =============================================================================
-static constexpr double PR = 0.72;
-static constexpr double CP = GAMMA * R_GAS / (GAMMA - 1.0);
+static constexpr double CP = CPU_CP;
 
 static void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
                               CellBlock& rhs, double h) noexcept

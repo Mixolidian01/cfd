@@ -10,13 +10,14 @@
 // WITHOUT any d_rhs_pool zeroing inside the graphs.
 //
 // In advance() replay mode, cudaMemsetAsync(d_rhs_pool, 0, ...) is issued on
-// stream_ before each sub-graph launch so the zeroing is a plain stream op —
+// stream before each sub-graph launch so the zeroing is a plain stream op —
 // never a captured graph node. This sidesteps the CUDA 13.x memset-in-graph
 // reliability issue observed with cudaStreamCaptureModeGlobal.
 
 #include "../../include/cuda/gpu_graph.cuh"
 #include "../../include/cuda/gpu_constants.cuh"
 #include "../../include/cuda/gpu_check.cuh"
+#include "../../include/cuda/gpu_meta_buffer.cuh"
 #include <vector>
 
 // Verify GPU constants match CPU constants (both headers available here)
@@ -70,54 +71,55 @@ void k_rk3s23(const GpuRk3LeafMeta* __restrict__ metas,
 // ─────────────────────────────────────────────────────────────────────────────
 
 GpuGraphSolver::GpuGraphSolver() {
-    CUDA_CHECK(cudaStreamCreate(&stream_));
+    CUDA_CHECK(cudaStreamCreate(&stream));
 }
 
 GpuGraphSolver::~GpuGraphSolver() {
     _destroy_graphs();
-    if (d_rk3_metas_) { cudaFree(d_rk3_metas_); d_rk3_metas_ = nullptr; }
-    if (d_Qn_pool_)   { cudaFree(d_Qn_pool_);   d_Qn_pool_   = nullptr; }
-    if (stream_)       { cudaStreamDestroy(stream_); stream_ = nullptr; }
+    if (d_rk3_metas) { cudaFree(d_rk3_metas); d_rk3_metas = nullptr; }
+    if (d_Qn_pool)   { cudaFree(d_Qn_pool);   d_Qn_pool   = nullptr; }
+    if (stream)       { cudaStreamDestroy(stream); stream = nullptr; }
 }
 
 void GpuGraphSolver::_destroy_graphs() {
-    if (graph_valid_) {
-        cudaGraphExecDestroy(graph_s1_); graph_s1_ = nullptr;
-        cudaGraphExecDestroy(graph_s2_); graph_s2_ = nullptr;
-        cudaGraphExecDestroy(graph_s3_); graph_s3_ = nullptr;
-        graph_valid_ = false;
+    if (graph_valid) {
+        cudaGraphExecDestroy(graph_s1); graph_s1 = nullptr;
+        cudaGraphExecDestroy(graph_s2); graph_s2 = nullptr;
+        cudaGraphExecDestroy(graph_s3); graph_s3 = nullptr;
+        graph_valid = false;
     }
 }
 
-void GpuGraphSolver::build(const BlockTree& tree, int bc_type) {
+void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_type) {
     _destroy_graphs();
 
-    ghost_list_.build(tree, bc_type);
-    rhs_list_.build(tree);
-    cfl_list_.build(tree);
+    ghost_list.build(tree, pool, bc_type);
+    rhs_list.build(tree, pool);
+    cfl_list.build(tree, pool);
 
     const auto& leaves = tree.leaf_indices();
-    n_leaves_ = (int)leaves.size();
-    if (n_leaves_ == 0) return;
+    n_leaves = (int)leaves.size();
+    download_pairs.clear();
+
+    if (n_leaves == 0) return;
 
     // Qn pool: one GPU_NVAR*GPU_NCELL double buffer per leaf
-    if (d_Qn_pool_) { cudaFree(d_Qn_pool_); d_Qn_pool_ = nullptr; }
-    CUDA_CHECK(cudaMalloc(&d_Qn_pool_,
-        (size_t)GPU_NVAR * GPU_NCELL * n_leaves_ * sizeof(double)));
+    if (d_Qn_pool) { cudaFree(d_Qn_pool); d_Qn_pool = nullptr; }
+    CUDA_CHECK(cudaMalloc(&d_Qn_pool,
+        (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double)));
 
     // Per-leaf RK3 metadata (host → device)
-    std::vector<GpuRk3LeafMeta> h_metas(n_leaves_);
-    for (int li = 0; li < n_leaves_; ++li) {
+    std::vector<GpuRk3LeafMeta> h_metas(n_leaves);
+    download_pairs.reserve(n_leaves);
+    for (int li = 0; li < n_leaves; ++li) {
         const BlockNode& nd = tree.nodes[leaves[li]];
-        h_metas[li].d_Q  = nd.block->d_Q;
-        h_metas[li].d_Qn = d_Qn_pool_ + (size_t)li * GPU_NVAR * GPU_NCELL;
-        h_metas[li].d_RHS = rhs_list_.d_rhs_pool + (size_t)li * GPU_NVAR * GPU_NCELL;
+        double* dptr = pool.d_Q(nd.block.get());
+        h_metas[li].d_Q  = dptr;
+        h_metas[li].d_Qn = d_Qn_pool + (size_t)li * GPU_NVAR * GPU_NCELL;
+        h_metas[li].d_RHS = rhs_list.d_rhs_pool + (size_t)li * GPU_NVAR * GPU_NCELL;
+        download_pairs.emplace_back(nd.block.get(), dptr);
     }
-    if (d_rk3_metas_) { cudaFree(d_rk3_metas_); d_rk3_metas_ = nullptr; }
-    CUDA_CHECK(cudaMalloc(&d_rk3_metas_, n_leaves_ * sizeof(GpuRk3LeafMeta)));
-    CUDA_CHECK(cudaMemcpy(d_rk3_metas_, h_metas.data(),
-                          n_leaves_ * sizeof(GpuRk3LeafMeta),
-                          cudaMemcpyHostToDevice));
+    gpu_upload_meta(d_rk3_metas, h_metas);
 }
 
 // One full SSP-RK3 step executed explicitly (not via graphs).
@@ -125,110 +127,109 @@ void GpuGraphSolver::build(const BlockTree& tree, int bc_type) {
 // that this path is identical to the replay path (same zero+launch order).
 void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) const {
     constexpr int TPB = 256;
-    const double* d_dt = cfl_list_.d_dt;
-    const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves_ * sizeof(double);
+    const double* d_dt = cfl_list.d_dt;
+    const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
 
-    k_save_qn<<<n_leaves_, TPB, 0, s>>>(d_rk3_metas_);
+    k_save_qn<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
 
     // Stage 1
-    CUDA_CHECK(cudaMemsetAsync(rhs_list_.d_rhs_pool, 0, rhs_bytes, s));
-    ghost_list_.exec(s);
-    rhs_list_.exec(s, /*zero_rhs=*/false);
-    k_rk3s1<<<n_leaves_, TPB, 0, s>>>(d_rk3_metas_, d_dt);
+    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
+    ghost_list.exec(s);
+    rhs_list.exec(s, /*zero_rhs=*/false);
+    k_rk3s1<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
 
     // Stage 2
-    CUDA_CHECK(cudaMemsetAsync(rhs_list_.d_rhs_pool, 0, rhs_bytes, s));
-    ghost_list_.exec(s);
-    rhs_list_.exec(s, /*zero_rhs=*/false);
-    k_rk3s23<<<n_leaves_, TPB, 0, s>>>(d_rk3_metas_, d_dt, 0.75, 0.25);
+    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
+    ghost_list.exec(s);
+    rhs_list.exec(s, /*zero_rhs=*/false);
+    k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, 0.75, 0.25);
 
     // Stage 3
-    CUDA_CHECK(cudaMemsetAsync(rhs_list_.d_rhs_pool, 0, rhs_bytes, s));
-    ghost_list_.exec(s);
-    rhs_list_.exec(s, /*zero_rhs=*/false);
-    k_rk3s23<<<n_leaves_, TPB, 0, s>>>(d_rk3_metas_, d_dt, 1.0/3.0, 2.0/3.0);
+    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
+    ghost_list.exec(s);
+    rhs_list.exec(s, /*zero_rhs=*/false);
+    k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
 }
 
 // Capture three per-stage sub-graphs.  Each captures (ghost fill + prim_duc +
 // rhs_conv + rhs_visc + rk3_update) WITHOUT zeroing d_rhs_pool so the graphs
-// contain no memset nodes.  The caller zeroes d_rhs_pool on stream_ via
+// contain no memset nodes.  The caller zeroes d_rhs_pool on stream via
 // cudaMemsetAsync BEFORE each cudaGraphLaunch.
 void GpuGraphSolver::_capture_graphs() {
     constexpr int TPB = 256;
-    const double* d_dt = cfl_list_.d_dt;
+    const double* d_dt = cfl_list.d_dt;
 
     auto capture_one = [&](cudaGraphExec_t& exec_out, auto body) {
         cudaGraph_t g;
-        CUDA_CHECK(cudaStreamBeginCapture(stream_,
+        CUDA_CHECK(cudaStreamBeginCapture(stream,
                                           cudaStreamCaptureModeRelaxed));
         body();
-        CUDA_CHECK(cudaStreamEndCapture(stream_, &g));
+        CUDA_CHECK(cudaStreamEndCapture(stream, &g));
         CUDA_CHECK(cudaGraphInstantiate(&exec_out, g, nullptr, nullptr, 0));
         CUDA_CHECK(cudaGraphDestroy(g));
     };
 
     // Sub-graph 1: k_save_qn + ghost fill + RHS(no zero) + k_rk3s1
-    capture_one(graph_s1_, [&]() {
-        k_save_qn<<<n_leaves_, TPB, 0, stream_>>>(d_rk3_metas_);
-        ghost_list_.exec(stream_);
-        rhs_list_.exec(stream_, /*zero_rhs=*/false);
-        k_rk3s1<<<n_leaves_, TPB, 0, stream_>>>(d_rk3_metas_, d_dt);
+    capture_one(graph_s1, [&]() {
+        k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+        ghost_list.exec(stream);
+        rhs_list.exec(stream, /*zero_rhs=*/false);
+        k_rk3s1<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt);
     });
 
     // Sub-graph 2: ghost fill + RHS(no zero) + k_rk3s23(0.75, 0.25)
-    capture_one(graph_s2_, [&]() {
-        ghost_list_.exec(stream_);
-        rhs_list_.exec(stream_, /*zero_rhs=*/false);
-        k_rk3s23<<<n_leaves_, TPB, 0, stream_>>>(d_rk3_metas_, d_dt, 0.75, 0.25);
+    capture_one(graph_s2, [&]() {
+        ghost_list.exec(stream);
+        rhs_list.exec(stream, /*zero_rhs=*/false);
+        k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 0.75, 0.25);
     });
 
     // Sub-graph 3: ghost fill + RHS(no zero) + k_rk3s23(1/3, 2/3)
-    capture_one(graph_s3_, [&]() {
-        ghost_list_.exec(stream_);
-        rhs_list_.exec(stream_, /*zero_rhs=*/false);
-        k_rk3s23<<<n_leaves_, TPB, 0, stream_>>>(d_rk3_metas_, d_dt, 1.0/3.0, 2.0/3.0);
+    capture_one(graph_s3, [&]() {
+        ghost_list.exec(stream);
+        rhs_list.exec(stream, /*zero_rhs=*/false);
+        k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
     });
 
-    graph_valid_ = true;
+    graph_valid = true;
 }
 
 double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
     // build() must be called before advance() and after every regrid, even
     // if the leaf count is unchanged (same-count regrid reallocates d_Q
     // pointers; a stale captured graph would dereference freed memory).
-    if (n_leaves_ == 0) return 1.0e300;
+    if (n_leaves == 0) return 1.0e300;
 
-    // CFL on stream_ — writes d_dt to device, syncs, returns host value
-    const double dt = cfl_list_.exec(cfl, stream_);
+    // CFL on stream — writes d_dt to device, syncs, returns host value
+    const double dt = cfl_list.exec(cfl, stream);
 
-    const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves_ * sizeof(double);
+    const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
 
-    if (!graph_valid_) {
+    if (!graph_valid) {
         // First step after build: run explicit then capture sub-graphs
-        _run_rk3_explicit(stream_);
-        CUDA_CHECK(cudaStreamSynchronize(stream_));
+        _run_rk3_explicit(stream);
+        CUDA_CHECK(cudaStreamSynchronize(stream));
         _capture_graphs();
     } else {
         // Graph replay: zero RHS on stream before each sub-graph launch
         // (memset is a plain stream op, never a captured graph node)
-        CUDA_CHECK(cudaMemsetAsync(rhs_list_.d_rhs_pool, 0, rhs_bytes, stream_));
-        CUDA_CHECK(cudaGraphLaunch(graph_s1_, stream_));
-        CUDA_CHECK(cudaMemsetAsync(rhs_list_.d_rhs_pool, 0, rhs_bytes, stream_));
-        CUDA_CHECK(cudaGraphLaunch(graph_s2_, stream_));
-        CUDA_CHECK(cudaMemsetAsync(rhs_list_.d_rhs_pool, 0, rhs_bytes, stream_));
-        CUDA_CHECK(cudaGraphLaunch(graph_s3_, stream_));
-        CUDA_CHECK(cudaStreamSynchronize(stream_));
+        CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
+        CUDA_CHECK(cudaGraphLaunch(graph_s1, stream));
+        CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
+        CUDA_CHECK(cudaGraphLaunch(graph_s2, stream));
+        CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
+        CUDA_CHECK(cudaGraphLaunch(graph_s3, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
     }
 
     return dt;
 }
 
-void GpuGraphSolver::download_q(const BlockTree& tree) const {
+void GpuGraphSolver::download_q(const BlockTree& /*tree*/) const {
     static thread_local double h_buf[NVAR * NCELL];
-    for (int li : tree.leaf_indices()) {
-        CellBlock* blk = tree.nodes[li].block.get();
-        if (!blk || !blk->d_Q) continue;
-        CUDA_CHECK(cudaMemcpy(h_buf, blk->d_Q, NVAR * NCELL * sizeof(double),
+    for (const auto& [blk, dptr] : download_pairs) {
+        if (!blk || !dptr) continue;
+        CUDA_CHECK(cudaMemcpy(h_buf, dptr, NVAR * NCELL * sizeof(double),
                               cudaMemcpyDeviceToHost));
         for (int v = 0; v < NVAR; ++v)
             blk->Q[v].assign_from_flat(h_buf + v * NCELL);

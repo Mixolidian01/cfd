@@ -33,6 +33,7 @@ inline constexpr int    NCELL  = NB2*NB2*NB2;// total cells per field = 1728
 inline constexpr int    NVAR   = 5;          // ρ, ρu, ρv, ρw, E
 inline constexpr double GAMMA  = 1.4;
 inline constexpr double R_GAS  = 287.058;    // J/(kg·K), dry air (CODATA)
+inline constexpr double PR     = 0.72;        // Prandtl number (dry air)
 static constexpr double CPU_CP = GAMMA * R_GAS / (GAMMA - 1.0);
 
 // ── Index helpers (always inline, zero overhead) ────────────────────────────────────────────
@@ -155,15 +156,6 @@ struct alignas(64) CellBlock {
     // ── Physical domain metadata ──────────────────────────────────────────────
     double ox = 0, oy = 0, oz = 0;
     double h  = 0;
-
-    // P8.1: device flat-SoA buffer (d_Q[v*NCELL + flat_idx]).
-    // Owned by GpuPool — NOT freed by CellBlock destructor.
-    // Null when GPU is disabled or pool hasn't allocated this block yet.
-    double* d_Q = nullptr;
-
-    static constexpr size_t gpu_buf_bytes() noexcept {
-        return static_cast<size_t>(NVAR) * NCELL * sizeof(double);
-    }
 
     // ── Constructors ──────────────────────────────────────────────────────────
     CellBlock() noexcept {

@@ -106,16 +106,25 @@ double CellBlock::total_momentum_x() const noexcept {
     return s * h*h*h;
 }
 double CellBlock::cfl_dt(double cfl) const noexcept {
+    // Convective CFL stability: dt_conv = cfl * h / max(|u|+c)
+    // Viscous  CFL stability:  dt_visc = h² / (2 * C_visc * max(µ/ρ))
+    //   C_visc = max(4/3, γ/Pr)  — momentum vs. thermal diffusivity
+    // Take the minimum of both constraints.
+    static constexpr double C_VISC = (GAMMA / PR > 4.0/3.0) ? GAMMA / PR : 4.0/3.0;
     double lam_max = 0.0;
+    double nu_max  = 0.0;  // µ/ρ
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i) {
         Prim q = prim(i,j,k);
         double lam = std::max({std::abs(q.u), std::abs(q.v), std::abs(q.w)}) + q.c;
         if (lam > lam_max) lam_max = lam;
+        double nu = sutherland(q.T) / q.rho;
+        if (nu > nu_max) nu_max = nu;
     }
-    if (lam_max < 1e-300) return 1e300;
-    return cfl * h / lam_max;
+    double dt_conv = (lam_max > 1e-300) ? cfl * h / lam_max : 1e300;
+    double dt_visc = (nu_max  > 1e-300) ? h * h / (2.0 * C_VISC * nu_max) : 1e300;
+    return std::min(dt_conv, dt_visc);
 }
 void CellBlock::zero_ghosts() noexcept {
     for (int v = 0; v < NVAR; ++v) {

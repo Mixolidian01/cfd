@@ -85,6 +85,31 @@ void NSSolver::init(double domain_L,
 }
 
 // =============================================================================
+// P11.3: Zhang-Shu positivity floor — ρ ≥ ε, p ≥ ε (interior cells only)
+// Applied after each SSP-RK3 stage before copy_stage_to_tree().
+// =============================================================================
+static constexpr double EPS_POS = 1e-12;
+
+static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
+    for (auto& blk : stage) {
+        for (int k = ilo(); k <= ihi(); ++k)
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i) {
+            const int f = cell_idx(i, j, k);
+            double rho  = blk.Q[0][f];
+            double rhou = blk.Q[1][f];
+            double rhov = blk.Q[2][f];
+            double rhow = blk.Q[3][f];
+            double E    = blk.Q[4][f];
+            if (rho < EPS_POS) { blk.Q[0][f] = rho = EPS_POS; }
+            const double ke = 0.5*(rhou*rhou + rhov*rhov + rhow*rhow) / rho;
+            if ((GAMMA - 1.0)*(E - ke) < EPS_POS)
+                blk.Q[4][f] = ke + EPS_POS / (GAMMA - 1.0);
+        }
+    }
+}
+
+// =============================================================================
 // copy helpers
 // =============================================================================
 void NSSolver::copy_tree_to_stage(std::vector<CellBlock>& stage) {
@@ -140,6 +165,18 @@ double NSSolver::advance() {
         step % cfg.regrid_interval == 0)
         regrid();
 
+    // A3: GPU flat-tree path — SSP-RK3 + CFL run entirely on device.
+    // No flux correction (AMR not yet on GPU path), no MPI, no SGS.
+    // download_q() brings Q to host for diagnostics and checkpointing.
+    if (gpu_solver_) {
+        const double dt = gpu_solver_->advance(tree, cfg.cfl);
+        gpu_solver_->download_q(tree);
+        last_dt_ = dt;
+        t    += dt;
+        step += 1;
+        return dt;
+    }
+
     double dt = tree_cfl_dt(tree, cfg.cfl);
     // P7.1: global CFL across all ranks
     if (mpi_) dt = mpi_allreduce_min(dt, *mpi_);
@@ -167,6 +204,7 @@ double NSSolver::advance() {
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = qn[lane] + dt * r[lane];
     }
+    apply_positivity_floor(Qs_);
     copy_stage_to_tree(Qs_);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
@@ -182,6 +220,7 @@ double NSSolver::advance() {
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
     }
+    apply_positivity_floor(Qs_);
     copy_stage_to_tree(Qs_);
 
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
@@ -197,6 +236,7 @@ double NSSolver::advance() {
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
     }
+    apply_positivity_floor(Qs_);
     copy_stage_to_tree(Qs_);
 
     // Apply time-averaged Berger-Colella correction once — last write to
@@ -297,6 +337,7 @@ double NSSolver::advance_imex() {
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = qn[lane] + dt * r[lane];
     }
+    apply_positivity_floor(Qs_);
     copy_stage_to_tree(Qs_);
 
     // Stage 2: Q^(2) = 3/4·Q^n + 1/4·(Q^(1) + dt·L(Q^(1)))   [RK weight 1/6]
@@ -311,6 +352,7 @@ double NSSolver::advance_imex() {
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
     }
+    apply_positivity_floor(Qs_);
     copy_stage_to_tree(Qs_);
 
     // Stage 3: Q^{n+1} = 1/3·Q^n + 2/3·(Q^(2) + dt·L(Q^(2)))  [RK weight 2/3]
@@ -325,6 +367,7 @@ double NSSolver::advance_imex() {
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
     }
+    apply_positivity_floor(Qs_);
     copy_stage_to_tree(Qs_);
 
     tree.apply_flux_correction(dt);
@@ -730,4 +773,13 @@ void NSSolver::regrid() {
 
     scratch_leaf_count_ = -1;
     alloc_scratch();
+
+    // A3: rebuild GPU lists after topology change (new d_Q pointers; stale
+    // CUDA graphs from the previous build would reference freed memory).
+    if (gpu_solver_) {
+        int bc_type = 0;
+        if (cfg.bc == BCType::Wall) bc_type = 1;
+        else if (cfg.bc == BCType::Open) bc_type = 2;
+        gpu_solver_->build(tree, *gpu_pool_, bc_type);
+    }
 }

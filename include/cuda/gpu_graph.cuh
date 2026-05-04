@@ -25,6 +25,7 @@
 //   cudaGraphLaunch(graph_s3_, stream_)
 //   cudaStreamSynchronize(stream_)
 
+#include "../ns_solver.hpp"     // IGpuSolver interface (pure C++)
 #include "../cell_block.hpp"
 #include "../block_tree.hpp"
 #include "gpu_ghost_fill.cuh"
@@ -42,23 +43,26 @@ struct GpuRk3LeafMeta {
 };
 
 // ── CUDA Graph solver ─────────────────────────────────────────────────────────
-struct GpuGraphSolver {
+struct GpuGraphSolver : IGpuSolver {
     // Component lists (rebuilt on each build())
-    GpuGhostFillList ghost_list_;
-    GpuRhsList       rhs_list_;
-    GpuCflList       cfl_list_;
+    GpuGhostFillList ghost_list;
+    GpuRhsList       rhs_list;
+    GpuCflList       cfl_list;
 
     // Per-leaf RK3 metadata and Qn pool
-    GpuRk3LeafMeta* d_rk3_metas_ = nullptr;
-    double*          d_Qn_pool_   = nullptr;
-    int              n_leaves_    = 0;
+    GpuRk3LeafMeta* d_rk3_metas = nullptr;
+    double*          d_Qn_pool   = nullptr;
+    int              n_leaves    = 0;
+
+    // Host-side (blk, d_Q) pairs kept for download_q() — pool not needed after build().
+    std::vector<std::pair<CellBlock*, double*>> download_pairs;
 
     // CUDA Graph state — three per-stage sub-graphs
-    cudaStream_t    stream_      = nullptr;
-    cudaGraphExec_t graph_s1_    = nullptr;
-    cudaGraphExec_t graph_s2_    = nullptr;
-    cudaGraphExec_t graph_s3_    = nullptr;
-    bool            graph_valid_ = false;
+    cudaStream_t    stream      = nullptr;
+    cudaGraphExec_t graph_s1    = nullptr;
+    cudaGraphExec_t graph_s2    = nullptr;
+    cudaGraphExec_t graph_s3    = nullptr;
+    bool            graph_valid = false;
 
     GpuGraphSolver();
     GpuGraphSolver(const GpuGraphSolver&) = delete;
@@ -67,20 +71,16 @@ struct GpuGraphSolver {
 
     // Rebuild all component lists from the tree; invalidates any captured graphs.
     // bc_type: 0=periodic, 1=wall, 2=open.
-    void build(const BlockTree& tree, int bc_type = 0);
+    void build(const BlockTree& tree, const GpuPool& pool, int bc_type = 0) override;
 
-    // Run one SSP-RK3 step.  If graphs are invalid (first step after build),
-    // runs explicitly and then captures three per-stage sub-graphs.
-    // Otherwise replays the sub-graphs with explicit inter-stage zeroing.
-    // Returns the CFL-limited dt.
-    //
+    // Run one SSP-RK3 step.  Returns the CFL-limited dt.
     // PRECONDITION: build() must be called before the first advance() and
     // after every regrid — even when the leaf count is unchanged (a same-count
     // regrid reallocates d_Q pointers; replaying a stale graph is UB).
-    double advance(const BlockTree& tree, double cfl);
+    double advance(const BlockTree& tree, double cfl) override;
 
-    // Copy device Q back to CPU CellBlocks for all leaves (for verification).
-    void download_q(const BlockTree& tree) const;
+    // Copy device Q back to CPU CellBlocks for all leaves.
+    void download_q(const BlockTree& tree) const override;
 
 private:
     void _run_rk3_explicit(cudaStream_t s) const;

@@ -14,6 +14,7 @@
 #include "../../include/cuda/gpu_cfl.cuh"
 #include "../../include/cuda/gpu_block.cuh"
 #include "../../include/cuda/gpu_check.cuh"
+#include "../../include/cuda/gpu_meta_buffer.cuh"
 #include <cstring>
 #include <vector>
 #include <limits>
@@ -59,10 +60,22 @@ void k_cfl_reduce(const GpuLeafCflMeta* __restrict__ metas,
             m.d_Q[2*GPU_NCELL+flat], m.d_Q[3*GPU_NCELL+flat],
             m.d_Q[4*GPU_NCELL+flat]);
 
+        // Convective: dt_conv = cfl * h / (|u|+c)
         const double sp = fmax(fabs(q.u)+q.c, fmax(fabs(q.v)+q.c, fabs(q.w)+q.c));
         if (sp > 0.0) {
             unsigned long long bits = __double_as_longlong(cfl * m.h / sp);
             if (bits < local_bits) local_bits = bits;
+        }
+        // Viscous: dt_visc = h² / (2 * C_visc * µ/ρ),  C_visc = max(4/3, γ/Pr)
+        {
+            constexpr double C_VISC = (GPU_GAMMA / GPU_PR > 4.0/3.0)
+                                      ? GPU_GAMMA / GPU_PR : 4.0/3.0;
+            const double nu = gpu_sutherland(q.T) / q.rho;
+            if (nu > 0.0) {
+                unsigned long long bits = __double_as_longlong(
+                    m.h * m.h / (2.0 * C_VISC * nu));
+                if (bits < local_bits) local_bits = bits;
+            }
         }
     }
 
@@ -108,8 +121,8 @@ GpuCflList::~GpuCflList() {
     if (d_dt)      { cudaFree(d_dt);      d_dt      = nullptr; }
 }
 
-void GpuCflList::build(const BlockTree& tree) {
-    cudaFree(d_metas);   d_metas   = nullptr;
+void GpuCflList::build(const BlockTree& tree, const GpuPool& pool) {
+    // d_metas freed inside gpu_upload_meta; d_dt_bits and d_dt freed manually
     cudaFree(d_dt_bits); d_dt_bits = nullptr;
     cudaFree(d_dt);      d_dt      = nullptr;
 
@@ -120,17 +133,14 @@ void GpuCflList::build(const BlockTree& tree) {
     std::vector<GpuLeafCflMeta> h_metas(n_leaves);
     for (int li = 0; li < n_leaves; ++li) {
         const BlockNode& nd = tree.nodes[leaves[li]];
-        h_metas[li].d_Q    = nd.block->d_Q;
+        h_metas[li].d_Q    = pool.d_Q(nd.block.get());
         h_metas[li].h      = nd.block->h;
         h_metas[li]._pad[0]= h_metas[li]._pad[1] = 0;
     }
 
-    CUDA_CHECK(cudaMalloc(&d_metas,   n_leaves * sizeof(GpuLeafCflMeta)));
+    gpu_upload_meta(d_metas, h_metas);
     CUDA_CHECK(cudaMalloc(&d_dt_bits, sizeof(unsigned long long)));
     CUDA_CHECK(cudaMalloc(&d_dt,      sizeof(double)));
-    CUDA_CHECK(cudaMemcpy(d_metas, h_metas.data(),
-                          n_leaves * sizeof(GpuLeafCflMeta),
-                          cudaMemcpyHostToDevice));
 }
 
 double GpuCflList::exec(double cfl, cudaStream_t stream) const {

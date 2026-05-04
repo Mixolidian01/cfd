@@ -184,27 +184,101 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 | # | Status | Item | File:line | Risk |
 |---|--------|------|-----------|------|
-| A1 | 🔲 | **`d_Q` layer violation** — `CellBlock` (Layer 1) carries a GPU pointer `d_Q` owned by `GpuPool` (Layer 3). Copy/move constructors shallow-copy `d_Q=nullptr`; any tree copy that aliases a CPU block produces a block with no device state. Fix: move `d_Q` + `d_Qn` into a thin `GpuBlockState` struct held by `GpuPool`; look it up by block address. | `include/cell_block.hpp:162` | Medium — latent bug if CPU+GPU paths mix |
-| A2 | 🔲 | **Missing `TimeIntegrator` interface** — SSP-RK3 is implemented three times: `NSSolver::advance()`, `lts_rk3_level()`, `GpuGraphSolver::_run_rk3_explicit()`. A virtual `TimeIntegrator::step(BlockTree&, double cfl)` would let all three share one call site and make the GPU path a first-class citizen of NSSolver. | `src/ns_solver.cpp`, `src/cuda/gpu_graph.cu` | Low urgency — refactor only |
-| A3 | 🔲 | **NSSolver GPU integration** — `GpuGraphSolver` is currently standalone; `NSSolver::advance()` has no GPU code path despite `cfg.use_gpu` existing. Wire `GpuGraphSolver` into `NSSolver::advance()` via `#ifdef HAVE_CUDA` guard (same pattern as MPI/LZ4) for flat-tree GPU runs. Gate test: CPU and GPU `NSSolver` produce same Q for uniform Sod. | `src/ns_solver.cpp`, `include/ns_solver.hpp` | High value — makes GPU useful from `simulate` |
+| A1 | ✅ | **`d_Q` layer violation** — removed `d_Q` from `CellBlock`; `GpuPool` now owns an `unordered_map<const CellBlock*, double*>` (`ptrs_`); all build() methods accept `const GpuPool&`; `GpuGraphSolver` stores `download_pairs_` for download_q() without needing the pool after build(). All t19–t26 gate tests pass. | `include/gpu_pool.hpp`, `include/cell_block.hpp`, all GPU TUs + test files | done |
+| A2 | ✅ | **`TimeIntegrator` interface added** — `TimeIntegrator::step(const BlockTree&, double cfl)` defined in `ns_solver.hpp`; `IGpuSolver` inherits from it via a `final` bridge that delegates `step()→advance()`; `GpuGraphSolver` (already implementing `IGpuSolver`) now satisfies `TimeIntegrator`; TODO note in header documents how CPU/LTS paths should also be extracted to `CpuRk3Integrator`/`LtsIntegrator`. | `include/ns_solver.hpp` | done |
+| A3 | ✅ | **NSSolver GPU integration** — wired `GpuGraphSolver` into `NSSolver::advance()` via `set_gpu_solver()` / `set_gpu_pool()`; CPU and GPU `NSSolver` agree to 2e-12 over 20 steps (flat IC). Root cause of original t26 failure was a flawed `max_rel_err` metric (denominator `\|a\|+1e-12` gave false 9% error on analytically-zero rho*w); fixed to use `max(\|a\|,\|b\|,1e-8)` floor (matches P9.1 convention). Gate test t26: all 3 sub-tests pass. | `src/ns_solver.cpp`, `tests/cuda/test_p10a3_gpu_nssolver.cu` | done |
 
 ### 10-B — GPU kernel refactoring
 
 | # | Status | Item | File:line | Effort |
 |---|--------|------|-----------|--------|
 | B1 | ✅ | **Axis-dispatch index duplication** — added `cidx_axis(axis, ax_val, a, b)` device helper in `gpu_ghost_fill.cu`; collapsed 6 × 4-line if/else dispatch blocks to single-line calls. t20 gate still 4/4 pass. | `src/cuda/gpu_ghost_fill.cu` | done |
-| B2 | 🔲 | **`gpu_meta_buffer<T>` RAII helper** — the `cudaFree old → cudaMalloc → memcpy h→d` ritual is copy-pasted identically in `GpuRhsList::build()`, `GpuGraphSolver::build()`, `GpuGhostFillList::build()`, `GpuCflList::build()`. A device-buffer RAII template removes ~40 lines of boilerplate and eliminates the manual null-out pattern in destructors. | `src/cuda/gpu_rhs.cu:588–618`, `src/cuda/gpu_graph.cu:93–122`, `src/cuda/gpu_ghost_fill.cu:263–303`, `src/cuda/gpu_cfl.cu` | 1 day |
-| B3 | 🔲 | **`k_rhs_visc` too long** (~140 lines, `gpu_rhs.cu:439–576`) — six face-stress evaluations are syntactically mirror images. Extract a `__device__ face_stress(axis, side, ...)` returning `{tau[3], divu, F_e}`; removes ~60 redundant gradient lines. | `src/cuda/gpu_rhs.cu:439` | 2 days |
-| B4 | 🔲 | **`k_fill_faces` too long** (`gpu_ghost_fill.cu:99–202`) — four BC branches (same-level / CF-fine / CF-coarse / domain BC) with 3 sub-cases each. Split into `__device__` helpers per branch. | `src/cuda/gpu_ghost_fill.cu:99` | 1 day |
+| B2 | ✅ | **`gpu_meta_buffer<T>` RAII helper** — `gpu_upload_meta<T>(ptr, h_vec)` template in `include/cuda/gpu_meta_buffer.cuh`; replaces free/malloc/memcpy ritual in all four `build()` methods (`GpuGhostFillList`, `GpuRhsList`, `GpuCflList`, `GpuGraphSolver`); ~30 lines removed. All t19–t26 gate tests still 0 failures. | `include/cuda/gpu_meta_buffer.cuh`, `src/cuda/gpu_ghost_fill.cu`, `src/cuda/gpu_rhs.cu`, `src/cuda/gpu_cfl.cu`, `src/cuda/gpu_graph.cu` | done |
+| B3 | ✅ | **`k_rhs_visc` refactored** — added `sp_vel()` + `face_visc()` `__device__ __forceinline__` helpers; `k_rhs_visc` body replaced by a 3-iteration axis loop calling `face_visc` for ± faces; kernel shrinks from ~140 to ~45 lines. All t21, t25 gate tests still 0 failures. | `src/cuda/gpu_rhs.cu` | done |
+| B4 | ✅ | **`k_fill_faces` refactored** — added `fill_copy()`, `fill_zero_grad()`, `fill_wall()` `__device__ __forceinline__` helpers; discovered `fill_zero_grad` unifies CF coarse←fine and open BC (identical formula), `fill_copy` unifies same-level and periodic self-wrap. Kernel dispatch now 4 clean branches, each a named call. t20 gate still 4/4 pass. | `src/cuda/gpu_ghost_fill.cu` | done |
 | B5 | ✅ | **`gpu_weno5z_scalar` mirrored reconstruction** — extracted `weno5z_upwind(a,b,c,d,e)` device helper; right state calls it with reversed stencil `(vp3,vp2,vp1,v0,vm1)`. Removed ~18 duplicate lines. t21 and t25 gates still 0 failures. | `src/cuda/gpu_rhs.cu` | done |
 
 ### 10-C — Naming / API consistency
 
 | # | Status | Item | File | Effort |
 |---|--------|------|------|--------|
-| C1 | 🔲 | **Trailing-underscore convention** — `GpuGraphSolver` private members use `_` suffix; `GpuRhsList`/`GpuGhostFillList` public members do not (`d_metas`, `n_leaves`). Align public fields to no-underscore, private fields to underscore across all GPU structs. | `include/cuda/gpu_rhs.cuh`, `include/cuda/gpu_ghost_fill.cuh`, `include/cuda/gpu_cfl.cuh` | Half day |
+| C1 | ✅ | **Trailing-underscore convention** — removed trailing `_` from all 12 public data members of `GpuGraphSolver` (`ghost_list`, `rhs_list`, `cfl_list`, `d_rk3_metas`, `d_Qn_pool`, `n_leaves`, `download_pairs`, `stream`, `graph_s1/s2/s3`, `graph_valid`); private methods keep leading `_`. Other list structs already correct. t24–t26 still pass. | `include/cuda/gpu_graph.cuh`, `src/cuda/gpu_graph.cu` | done |
 | C2 | ✅ | **`d_dt_ptr()` vs `d_dt` mixed accessor** — removed `d_dt_ptr()` getter; all callers use `.d_dt` field directly. Comment in header updated. | `include/cuda/gpu_cfl.cuh` | done |
 | C3 | ❌ N/A | **`download_q` / `download_rhs` duplicate `thread_local` buffer** — sharing via `gpu_check.cuh` not viable: nvcc device-compilation pass parses host functions and rejects namespace references that are conditionally hidden by `!defined(__CUDA_ARCH__)`. Buffers remain local (two separate `static thread_local` lines). | `src/cuda/gpu_graph.cu`, `src/cuda/gpu_rhs.cu` | — |
+
+---
+
+## Phase 11 — Correctness & Safety *(from Perplexity audit 2026-05-04)*
+
+> Note: P11.1 was initially misdiagnosed as root cause of t26 A1 failure. Actual root cause was a flawed `max_rel_err` metric (2026-05-04 fix). Both CPU and GPU viscous energy implementations use the identical conservative face-flux form; no inconsistency exists. P11.1 is now a code-quality improvement (ensure doc matches code), not a correctness fix.
+
+### 11-A — Critical correctness fixes
+
+| # | Status | Item | File | Priority |
+|---|--------|------|------|----------|
+| P11.1 | 🔲 | **Viscous energy CPU/GPU inconsistency** — CPU `viscous_rhs_impl` uses cell-centred `τ:S + κΔT`; GPU `k_rhs_visc` uses face-averaged velocity form for energy. $O(h^2)$ discrepancy causes t26 A1 failure (7.6% Q error over 20 steps). Align to one form — prefer CPU convention (cell-centred) for consistency with existing gate tests. | `src/cuda/gpu_rhs.cu:k_rhs_visc` | 🔴 Urgent |
+| P11.2 | ✅ | **No viscous CFL** — added $\Delta t_\text{visc} = h^2 / (2 C_\text{visc} \max_i(\mu_i/\rho_i))$ where $C_\text{visc}=\max(4/3,\gamma/\text{Pr})$ to `CellBlock::cfl_dt()` in `block_tree.cpp`; also mirrored in `k_cfl_reduce` in `gpu_cfl.cu`. Moved `PR=0.72` from per-file statics to `cell_block.hpp`. CPU–GPU dt agreement maintained (t26 A2: 4e-16). | `src/block_tree.cpp`, `src/cuda/gpu_cfl.cu`, `include/cell_block.hpp` | done |
+| P11.3 | ✅ | **No positivity limiter** — added `apply_positivity_floor()` static helper in `ns_solver.cpp`; floors ρ ≥ 1e-12 and p ≥ 1e-12 (via E adjustment) on interior cells after each RK3 stage in `advance()`, `advance_imex()`. All 12 t4 sub-tests and t26 3/3 pass unchanged. | `src/ns_solver.cpp` | done |
+| P11.4 | 🔲 | **Sutherland temperature floor** — add `T = std::max(T, 1.0)` before `std::sqrt(ratio)` in `cell_block.hpp:sutherland()` and equivalent GPU function `gpu_sutherland()`. Prevents NaN from transient negative temperatures near rarefactions. | `include/cell_block.hpp:83`, GPU equivalent | 🟠 Medium |
+| P11.5 | 🔲 | **HLLC fallback: Roe-average wave speeds** — replace Davis-Einfeldt bounds $s_L=\min(u_L-c_L, u_R-c_R)$ in `hllc_flux()` with Roe-average form $s_L=\min(u_L-c_L, \hat{u}-\hat{c})$, $s_R=\max(u_R+c_R, \hat{u}+\hat{c})$. Entropy-consistent near sonic points. | `src/operators.cpp:82-83` | 🟠 Medium |
+| P11.6 | 🔲 | **Ducros pressure threshold not configurable** — add `SolverConfig::ducros_p_threshold = 0.1` and `::ducros_blend_width = 0.1`; wire to `fill_ducros_cache` in `operators.cpp:342`. Critical for DNS/LES runs without shocks where 0.1 spuriously activates HLLC-ES. | `include/ns_solver.hpp:SolverConfig`, `src/operators.cpp:342` | 🟡 Low |
+
+### 11-B — GPU completeness
+
+| # | Status | Item | File | Priority |
+|---|--------|------|------|----------|
+| P11.7 | 🔲 | **GPU Wall/Open BC ghost fill** — implement `k_fill_faces_wall` and `k_fill_faces_open` device kernels; dispatch in `GpuGhostFillList::build()` based on `bc_type`. Currently only periodic wrapping is done; wall/open BCs produce wrong ghosts on GPU. | `src/cuda/gpu_ghost_fill.cu`, `include/cuda/gpu_ghost_fill.cuh` | 🔴 High |
+| P11.8 | 🔲 | **Berger-Colella flux correction on GPU** — implement GPU flux registers (`GpuFluxRegister`); accumulate fine fluxes during GPU RK3 stages; `k_apply_flux_correction` kernel; call after `gpu_solver_->advance()` in `NSSolver::advance()`. Required for mass/momentum/energy conservation on AMR+GPU grids. | `src/cuda/gpu_graph.cu`, `src/ns_solver.cpp` | 🟠 Medium (flat-tree: harmless) |
+
+---
+
+## Phase 12 — LiveStreamer Improvements *(from Perplexity analysis 2026-05-04)*
+
+### 12-A — C++ side (metrics, probe)
+
+| # | Status | Item | Notes |
+|---|--------|------|-------|
+| P12.1 | 🔲 | **`GET /metrics` JSON endpoint** — `MetricsSnapshot` struct updated by `snapshot()`; `handle_get_metrics()` handler; returns step, t, dt, cfl_max, ρ range, KE, mass, n_leaves, per-level leaf counts, wall_time_ms, gpu_active flag | ~80 lines C++ |
+| P12.2 | 🔲 | **`POST /probe` endpoint** — click → `{"x": 0.34, "y": 0.71}` → JSON response with all 8 vars + AMR level + block index at nearest cell; browser sends on canvas mouseclick | ~60 lines C++ |
+| P12.3 | 🔲 | **Conservation norms in MetricsSnapshot** — `mass_error`, `momentum_error`, `energy_error` (relative to step-0 values); `cf_flux_residual` (max Berger-Colella correction); expose in `/metrics` response | ~40 lines C++ |
+| P12.4 | 🔲 | **Structured JSON stdout per step** — `fprintf(stdout, "...")` one JSON line per step: `{"step":N,"t":T,"dt":DT,"cfl":CFL,"ke":KE,"mass":M,"leaves":L}` | ~5 lines C++ |
+| P12.5 | 🔲 | **Derived variables: Mach, vorticity, Q-criterion, schlieren** — add to `StreamVar` enum and `build_frame()`; local stencil operations on existing CellBlock fields | ~1 day C++ |
+
+### 12-B — JS/HTML side (browser viewer)
+
+| # | Status | Item | Notes |
+|---|--------|------|-------|
+| P12.6 | 🔲 | **Manual vmin/vmax lock** — two number inputs + lock checkbox; when locked, frame's global min/max ignored; pure JS, no C++ change needed | ~1 hour |
+| P12.7 | 🔲 | **Live sparkline charts** — rolling history (last 2000 steps) for CFL, KE, mass, leaf count, wall_time; Canvas2D sparkline, no external libraries | ~half day |
+| P12.8 | 🔲 | **AMR grid overlay** — checkbox to draw block outlines colour-coded by AMR level on a separate canvas layer; uses BlockDesc2D origin+cell_size | ~2 hours |
+| P12.9 | 🔲 | **Colormap selector** — Viridis/Inferno/Plasma/RdBu polynomial fits; ~40 lines JS | ~1 hour |
+| P12.10 | 🔲 | **Keyboard shortcuts** — `j`/`k` slice position, `v` cycle vars, `a` cycle axes, `Space` pause/resume | ~1 hour |
+
+---
+
+## Phase 13 — Architecture Refinement *(from Perplexity + literature survey)*
+
+| # | Status | Item | Reference | Effort |
+|---|--------|------|-----------|--------|
+| P13.1 | 🔲 | **`template <Axis DIR>` flux refactor** — templated flux functions (HLLC-ES, KEP, WENO5-Z, viscous face-stress) on `enum class Axis : int {X,Y,Z}`; compile-time axis permutation; eliminates asymmetric-bug surface; extends Phase 10 B1 | Basilisk `foreach_dimension()`; Perplexity §5 | 2 weeks |
+| P13.2 | 🔲 | **SP split-form compressible convective operator** — Kennedy-Gruber or Pirozzoli split form satisfying discrete KE identity; entropy-stable correction via Chandrashekar; extends current KEP+HLLC-ES hybrid | Pirozzoli (2011); Chandrashekar (2013); arXiv 2502.11567 | 2 weeks |
+| P13.3 | 🔲 | **Entropy-stable inflow/outflow BCs** (Svärd-Gjesteland 2025) — SAT penalty terms at open boundaries; proven discrete entropy inequality $\frac{d}{dt}\int\eta\,dV \le 0$; replaces zero-gradient open BC | arXiv 2506.21065 | 3 days |
+| P13.4 | 🔲 | **Entropy-stable no-slip wall BC** (Sayyari 2021) — viscous penalty enforcement of $\mathbf{u}=0, T=T_w$; configurable isothermal wall temperature in `BCType::Wall`; replaces adiabatic-only wall | arXiv 2110.10507 | 1 week |
+| P13.5 | 🔲 | **SAT penalty at AMR C/F interfaces** — reformulate Berger-Colella reflux as matrix-free SBP-SAT penalty; proven conservative + energy stable; GPU-native (no global matrix) | Del Rey Fernández et al.; SC24 | 3 weeks |
+| P13.6 | 🔲 | **LTS + Berger-Colella quadrature fix** — fine sub-step weights 1/2 (vs coarse 1/6, 1/6, 2/3); conservation error on AMR+LTS currently unaddressed | Berger-Oliger (1984) | 1 week |
+| P13.7 | 🔲 | **TMA async halo exchanges** *(Hopper-exclusive: H100/H200 only)* — replace `cudaMemcpyAsync` ghost fill with TMA prefetch; hides latency while interior flux runs; zero-change for non-Hopper hardware | CUDA 12 + H100/H200 | 2 weeks |
+
+---
+
+## Phase 14 — Advanced Physics *(from Perplexity research survey)*
+
+| # | Status | Item | Reference | Effort |
+|---|--------|------|-----------|--------|
+| P14.1 | 🔲 | **ACDI compressible multiphase** — Accurate Conservative Diffuse Interface model; 9th conserved field $\phi$; stiffened-gas EOS per phase; 2–4 cell sharp interface, no reinitialization; replaces/extends P4.4 Baer-Nunziato | Huang & Johnsen (2023–2024); MHIT36 (2025) | 3 months |
+| P14.2 | 🔲 | **Wall contact angle BC for phase-field** — entropy-stable Cahn-Hilliard wall BC: $\nabla\phi\cdot\hat{n}|_\partial = -\cos\theta_w/\epsilon \cdot g'(\phi)$; configurable static contact angle $\theta_w$ | arXiv 1910.11252 | 2 weeks |
+| P14.3 | 🔲 | **Neural SGS via JAX-Fluids adjoint + TensorRT** — train Dynamic Smagorinsky surrogate via end-to-end AD on JAX-Fluids; export ONNX, deploy via TensorRT into `SGSModel` virtual interface; extends P4.6 | JAX-Fluids 2.0; arXiv 2406.19494 | 2 months |
+| P14.4 | 🔲 | **GPU AMR subcycling** — two CUDA streams (coarse/fine), CUDA event synchronisation, LTS-aware flux register weights on device; companion to P13.6 | AMReX GPU subcycling (2025) | 3 months |
+| P14.5 | 🔲 | **GPU ensemble UQ + Ensemble Kalman Filter** — multiple simultaneous GPU solvers sharing pool; `MPI_Allreduce` for ensemble moments; posterior update at observation times | Finance-inspired UQ literature | 2 months |
 
 ---
 
