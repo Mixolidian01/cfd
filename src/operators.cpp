@@ -79,8 +79,22 @@ std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept
     double uL = (axis==0)?L.u:(axis==1)?L.v:L.w;
     double uR = (axis==0)?R.u:(axis==1)?R.v:R.w;
 
-    double sL = std::min(uL - L.c, uR - R.c);
-    double sR = std::max(uL + L.c, uR + R.c);
+    // Roe-average wave speeds (Einfeldt-Roe): entropy-consistent near sonic points.
+    // H = c²/(γ-1) + ½|u|²  is the specific total enthalpy.
+    const double sqL = std::sqrt(L.rho);
+    const double sqR = std::sqrt(R.rho);
+    const double isq = 1.0 / (sqL + sqR);
+    const double HL  = L.c*L.c/(GAMMA-1.0) + 0.5*(L.u*L.u + L.v*L.v + L.w*L.w);
+    const double HR  = R.c*R.c/(GAMMA-1.0) + 0.5*(R.u*R.u + R.v*R.v + R.w*R.w);
+    const double uh  = (sqL*L.u + sqR*R.u)*isq;
+    const double vh  = (sqL*L.v + sqR*R.v)*isq;
+    const double wh  = (sqL*L.w + sqR*R.w)*isq;
+    const double Hh  = (sqL*HL  + sqR*HR )*isq;
+    const double c2h = (GAMMA-1.0)*(Hh - 0.5*(uh*uh + vh*vh + wh*wh));
+    const double ch  = (c2h > 0.0) ? std::sqrt(c2h) : 0.5*(L.c + R.c);
+    const double u_h = (axis==0) ? uh : (axis==1) ? vh : wh;  // normal component
+    double sL = std::min(uL - L.c, u_h - ch);
+    double sR = std::max(uR + R.c, u_h + ch);
 
     double numer = R.p - L.p + L.rho*uL*(sL - uL) - R.rho*uR*(sR - uR);
     double denom = L.rho*(sL - uL) - R.rho*(sR - uR);

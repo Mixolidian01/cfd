@@ -80,6 +80,7 @@ inline double sutherland(double T) noexcept {
     constexpr double mu_ref  = 1.716e-5;
     constexpr double T_ref   = 273.15;
     constexpr double S       = 110.4;
+    if (T < 1.0) T = 1.0;  // floor prevents NaN from transient negative T
     double ratio = T / T_ref;
     return mu_ref * ratio * std::sqrt(ratio) * (T_ref + S) / (T + S);
 }

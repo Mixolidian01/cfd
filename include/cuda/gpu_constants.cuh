@@ -42,6 +42,7 @@ __host__ __device__ __forceinline__ int gpu_ihi() { return GPU_NB + GPU_NG - 1; 
 // Sutherland viscosity
 __host__ __device__ __forceinline__
 double gpu_sutherland(double T) noexcept {
+    if (T < 1.0) T = 1.0;  // floor prevents NaN from transient negative T
     return GPU_MU_REF * (GPU_T_REF + GPU_S_SUTH) / (T + GPU_S_SUTH)
          * (T / GPU_T_REF) * sqrt(T / GPU_T_REF);
 }
