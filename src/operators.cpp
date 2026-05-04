@@ -294,6 +294,11 @@ static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
     return F;
 }
 
+template<Axis DIR>
+static std::array<double,NVAR> kep_flux_t(const Prim& L, const Prim& R) noexcept {
+    return kep_flux(L, R, static_cast<int>(DIR));
+}
+
 // =============================================================================
 // P3.2 — Combined shock sensor: Ducros (1999) + pressure-ratio
 // =============================================================================
@@ -600,6 +605,12 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
     qR_out = safe_prim(QRv, pR);
 }
 
+template<Axis DIR>
+static void weno5_face_t(const Prim* pc, int i, int j, int k,
+                         Prim& qL, Prim& qR) noexcept {
+    weno5_face(pc, i, j, k, static_cast<int>(DIR), qL, qR);
+}
+
 // =============================================================================
 // P2.2/P3.2 — Convective RHS: face-centred hybrid loop
 // =============================================================================
@@ -671,14 +682,14 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
         std::array<double,NVAR> F;
         if (!is_bnd && theta < kep_threshold) {
             // Pure KEP: smooth/turbulent interior region
-            F = kep_flux(pL, pR, 0);
+            F = kep_flux_t<Axis::X>(pL, pR);
         } else {
             // Shock region, WENO5+ES interior, or block-boundary face (hllc_es)
-            const auto Fk = kep_flux(pL, pR, 0);
+            const auto Fk = kep_flux_t<Axis::X>(pL, pR);
             std::array<double,NVAR> Fs;
             if (!is_bnd && i >= ilo() && i < ihi()) {
                 Prim qL, qR;
-                weno5_face(pc, i, j, k, 0, qL, qR);
+                weno5_face_t<Axis::X>(pc, i, j, k, qL, qR);
                 Fs = hllc_es_flux_t<Axis::X>(qL, qR);
             } else if (is_wall_face(pL, pR, is_bnd)) {
                 Fs = Fk;  // wall: KEP = {0, p, 0, 0, 0}, no LF tangential drain
@@ -704,13 +715,13 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
         const bool is_bnd = (j < ilo() || j+1 > ihi());
         std::array<double,NVAR> F;
         if (!is_bnd && theta < kep_threshold) {
-            F = kep_flux(pL, pR, 1);
+            F = kep_flux_t<Axis::Y>(pL, pR);
         } else {
-            const auto Fk = kep_flux(pL, pR, 1);
+            const auto Fk = kep_flux_t<Axis::Y>(pL, pR);
             std::array<double,NVAR> Fs;
             if (!is_bnd && j >= ilo() && j < ihi()) {
                 Prim qL, qR;
-                weno5_face(pc, i, j, k, 1, qL, qR);
+                weno5_face_t<Axis::Y>(pc, i, j, k, qL, qR);
                 Fs = hllc_es_flux_t<Axis::Y>(qL, qR);
             } else if (is_wall_face(pL, pR, is_bnd)) {
                 Fs = Fk;  // wall: KEP = {0, 0, p, 0, 0}, no LF tangential drain
@@ -736,13 +747,13 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
         const bool is_bnd = (k < ilo() || k+1 > ihi());
         std::array<double,NVAR> F;
         if (!is_bnd && theta < kep_threshold) {
-            F = kep_flux(pL, pR, 2);
+            F = kep_flux_t<Axis::Z>(pL, pR);
         } else {
-            const auto Fk = kep_flux(pL, pR, 2);
+            const auto Fk = kep_flux_t<Axis::Z>(pL, pR);
             std::array<double,NVAR> Fs;
             if (!is_bnd && k >= ilo() && k < ihi()) {
                 Prim qL, qR;
-                weno5_face(pc, i, j, k, 2, qL, qR);
+                weno5_face_t<Axis::Z>(pc, i, j, k, qL, qR);
                 Fs = hllc_es_flux_t<Axis::Z>(qL, qR);
             } else if (is_wall_face(pL, pR, is_bnd)) {
                 Fs = Fk;  // wall: KEP = {0, 0, 0, p, 0}, no LF tangential drain

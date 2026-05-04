@@ -260,7 +260,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 | # | Status | Item | Reference | Effort |
 |---|--------|------|-----------|--------|
-| P13.1 | 🔲 | **`template <Axis DIR>` flux refactor** — templated flux functions (HLLC-ES, KEP, WENO5-Z, viscous face-stress) on `enum class Axis : int {X,Y,Z}`; compile-time axis permutation; eliminates asymmetric-bug surface; extends Phase 10 B1 | Basilisk `foreach_dimension()`; Perplexity §5 | 2 weeks |
+| P13.1 | ⚠️ | **`template <Axis DIR>` flux refactor** — `enum class Axis` + `hllc_es_flux_t/hllc_flux_t/kep_flux_t/weno5_face_t<DIR>` wrappers added; all 15 int-axis calls in `convective_rhs_impl` replaced (stages 1+2 ✅). Remaining: template `kep_flux`/`weno5_face` internals + viscous face-stress; `undo_cf_face_flux`/`accumulate_fine_fluxes` remain runtime (loop over all axes). | Basilisk `foreach_dimension()`; Perplexity §5 | 2 weeks |
 | P13.2 | 🔲 | **SP split-form compressible convective operator** — Kennedy-Gruber or Pirozzoli split form satisfying discrete KE identity; entropy-stable correction via Chandrashekar; extends current KEP+HLLC-ES hybrid | Pirozzoli (2011); Chandrashekar (2013); arXiv 2502.11567 | 2 weeks |
 | P13.3 | 🔲 | **Entropy-stable inflow/outflow BCs** (Svärd-Gjesteland 2025) — SAT penalty terms at open boundaries; proven discrete entropy inequality $\frac{d}{dt}\int\eta\,dV \le 0$; replaces zero-gradient open BC | arXiv 2506.21065 | 3 days |
 | P13.4 | 🔲 | **Entropy-stable no-slip wall BC** (Sayyari 2021) — viscous penalty enforcement of $\mathbf{u}=0, T=T_w$; configurable isothermal wall temperature in `BCType::Wall`; replaces adiabatic-only wall | arXiv 2110.10507 | 1 week |
