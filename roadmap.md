@@ -271,6 +271,99 @@ P4  (independent items)                                  ↓
 
 ---
 
+---
+
+## Perplexity External Code Review (2026-05-04)
+
+> Source: `20260504_perplexity_analysis.md` — full Perplexity AI audit of the `to_debug` branch,
+> covering numerical correctness, physical correctness, GPU completeness, and research advances.
+> Assessment and compatibility analysis by Claude Code (session 2026-05-04).
+
+### Assessment of Findings
+
+| ID | Perplexity claim | Verdict | Phase mapping |
+|---|---|---|---|
+| **PC1** | HLLC Davis-Einfeldt bounds: entropy-inconsistent near sonic points | ✅ Real — `hllc_flux()` in `operators.cpp:82-83` uses $s_L=\min(u_L-c_L, u_R-c_R)$; note this is the *fallback* path; HLLC-ES (P3.3) is used for interior faces | Phase 11: fix fallback |
+| **PC2** | No viscous CFL condition | ✅ Real — `tree_cfl_dt` ignores $\Delta t_\text{visc} = \rho h^2/(2\mu\max(4/3,\gamma/\text{Pr}))$; dangerous at fine AMR levels | Phase 11 |
+| **PC3** | First-order PCM at ghost faces | ✅ Real — ghost faces (i=ilo()-1, i=ihi()) use PCM + HLLC-ES per P3.1 design; WENO5 needs 6-cell stencil inside domain | Documented limitation |
+| **PC4** | Ducros pressure threshold 0.1 hardcoded | ✅ Real but **controlled** — threshold is in `operators.cpp:342` as a `constexpr double`; `SolverConfig` does not expose it; should be configurable for DNS/LES | Phase 11 |
+| **PC5** | LTS + Berger-Colella quadrature inconsistency | ✅ Real (fine level sub-step weights differ from uniform dt) — not yet exercised | Phase 13 |
+| **PH1** | No positivity limiter after RK3 updates | ✅ Critical — WENO5-Z can produce $\rho\le 0$ near shocks; currently the `safe_prim` fallback in `weno5_face` catches WENO overshoot but not the RK3 update | Phase 11 |
+| **PH2** | Viscous energy CPU/GPU inconsistency | ✅ **Root cause of current A1 t26 failure** — CPU: cell-centred `tau:S`; GPU `k_rhs_visc`: face-avg velocity form; $O(h^2)$ discrepancy in energy dissipation | Phase 11 (urgent) |
+| **PH3** | Sutherland: no temperature floor | ✅ Real — `std::sqrt(T/T_ref)` returns NaN for $T<0$; no guard in either CPU or GPU Sutherland | Phase 11 |
+| **PH4** | Wall BC adiabatic only | ✅ Documented limitation; isothermal wall $T_w$ not configurable | Phase 13 |
+| **PG1** | Berger-Colella missing on GPU | ✅ Critical for AMR+GPU — `gpu_solver_->advance()` never calls `apply_flux_correction()`; harmless for flat-tree tests | Phase 11 |
+| **PG2** | Wall/Open BC ghost fill always periodic on GPU | ✅ Real — `gpu_ghost_x/y/z` only wrap periodically; wall/open BCs give wrong ghosts on GPU | Phase 11 |
+| **PG3** | `d_Q` shallow copy / dangling pointer | ✅ Real — `CellBlock` copy/move copies `d_Q` by value; tracked as A1 in Phase 10 | Phase 10 A1 |
+| **PA1** | TMA async halo exchanges | ⚠️ Hardware-gated (Hopper-exclusive H100/H200); `cudaMemcpyAsync` on non-null stream already overlaps | Phase 13 (hardware gate) |
+| **PA2** | WGMMA/ConvStencil Tensor-Core WENO kernels | ⚠️ Hopper-exclusive; 3–5× speedup but architecture-gated | Phase 13 (hardware gate) |
+| **PA3** | ACDI compressible multiphase (9th field) | ✅ Valid extension aligned with Phase 4.4; Huang-Johnsen ACDI preferred over Baer-Nunziato | Phase 14 |
+| **PA4** | SP split-form compressible operator | ✅ Aligned with solver goals; Kennedy-Gruber + Chandrashekar flux; extends KEP+HLLC-ES | Phase 13 |
+| **PA5** | `template <Axis DIR>` flux refactor (Basilisk analogy) | ✅ Architecturally correct; B1 in Phase 10 started this direction; full refactor deferred | Phase 13 |
+| **PA6** | Entropy-stable BCs: Svärd-Gjesteland inflow/outflow | ✅ Directly applicable when open BC is used; no current open-BC implementation | Phase 13 |
+| **PA7** | Entropy-stable no-slip wall BC (Sayyari 2021) | ✅ Replaces current adiabatic-only wall with provably stable penalty form | Phase 13 |
+| **PA8** | JAX-Fluids differentiable CFD + TensorRT neural SGS | ✅ Extends Phase 4.6; use JAX-Fluids adjoint to train, deploy via TensorRT | Phase 14 |
+
+### New Phase Structure (post-Perplexity)
+
+| Phase | Theme | Gate |
+|---|---|---|
+| **11** | Correctness & Safety fixes | All gate tests (t1–t26) pass; new t27–t30 |
+| **12** | LiveStreamer improvements (metrics, probe, charts) | Browser dashboard functional |
+| **13** | Architecture refinement (SP+SBP-SAT, axis templates, entropy-stable BCs) | Entropy inequality proven; axis isotropy verified |
+| **14** | Advanced physics (ACDI multiphase, neural SGS, GPU Berger-Colella) | B.4/B.7 benchmarks pass on GPU |
+
+### Phase 11 — Correctness & Safety *(1–2 weeks)*
+
+| ID | Issue | Fix | Priority |
+|---|---|---|---|
+| **P11.1** | Viscous energy CPU/GPU inconsistency — root cause of A1 t26 failure | Align GPU `k_rhs_visc` energy term to cell-centred `tau:S + κ∇T` form (or vice-versa) | 🔴 Urgent |
+| **P11.2** | No positivity limiter after RK3 stage update | Add Zhang-Shu positivity floor (ρ, p ≥ ε_pos = 1e-12) after each stage copy-back | 🔴 High |
+| **P11.3** | No viscous CFL | Add $\Delta t_\text{visc}$ in `tree_cfl_dt`: $h^2 \rho / (2\mu \max(4/3, \gamma/\text{Pr}))$; take min with acoustic CFL | 🔴 High |
+| **P11.4** | Sutherland temperature floor | Add `T = std::max(T, 1.0)` before `sqrt` in both `cell_block.hpp:sutherland()` and GPU equivalent | 🟠 Medium |
+| **P11.5** | HLLC fallback wave speeds: Roe-average form | Replace Davis-Einfeldt bounds in `hllc_flux()` with Roe-average: $s_L=\min(u_L-c_L, \hat{u}-\hat{c})$ | 🟠 Medium |
+| **P11.6** | Ducros threshold not configurable | Add `SolverConfig::ducros_p_threshold = 0.1` and wire to `fill_ducros_cache` | 🟡 Low |
+| **P11.7** | GPU wall/open BC ghost fill | Implement `k_fill_faces_wall`, `k_fill_faces_open` device kernels; dispatch based on `bc_type` | 🔴 High |
+| **P11.8** | Berger-Colella missing on GPU | Implement GPU flux register accumulation + `k_apply_flux_correction`; call after GPU RK3 | 🟠 Medium |
+
+### Phase 12 — LiveStreamer Improvements *(3–5 days)*
+
+| ID | Item | C++ or JS | Priority |
+|---|---|---|---|
+| **P12.1** | `GET /metrics` JSON endpoint: step, t, dt, cfl_max, ρ range, KE, mass, n_leaves, wall_time_ms | C++ | 🔴 High |
+| **P12.2** | `POST /probe` endpoint: click → per-cell JSON (all 8 vars + AMR level) | C++ | 🔴 High |
+| **P12.3** | Conservation norms in `MetricsSnapshot`: Δmass, Δmomentum, ΔE (relative) | C++ | 🔴 High |
+| **P12.4** | Manual vmin/vmax lock with checkbox | JS | 🔴 High |
+| **P12.5** | Sparkline charts: CFL, KE, mass, leaf count over time | JS | 🟠 Medium |
+| **P12.6** | Derived variables: Mach, vorticity magnitude, Q-criterion, numerical schlieren | C++ | 🟠 Medium |
+| **P12.7** | AMR grid overlay (block outlines color-coded by level) | JS | 🟠 Medium |
+| **P12.8** | Colormap selector in 2D viewer (Viridis/Inferno/Plasma/RdBu) | JS | 🟡 Low |
+| **P12.9** | Keyboard shortcuts (j/k slice position, v cycle vars, Space pause) | JS | 🟡 Low |
+
+### Phase 13 — Architecture Refinement *(3–5 weeks)*
+
+| ID | Item | Reference |
+|---|---|---|
+| **P13.1** | `template <Axis DIR>` flux function refactor — flux functions templated on axis; compile-time specialisations; extends B1 (Phase 10) to full solver | Basilisk `foreach_dimension()` analogue |
+| **P13.2** | SP split-form compressible convective operator — Kennedy-Gruber or Pirozzoli split form with entropy-stable (Chandrashekar) correction; replaces/extends KEP+HLLC-ES | Pirozzoli (2011); Chandrashekar (2013) |
+| **P13.3** | Entropy-stable inflow/outflow BCs — Svärd-Gjesteland (2025) penalty terms at open boundaries | arXiv 2506.21065 |
+| **P13.4** | Entropy-stable no-slip wall (Sayyari 2021) with configurable isothermal $T_w$ | arXiv 2110.10507 |
+| **P13.5** | SAT penalty at AMR C/F interfaces — reformulate Berger-Colella reflux as SBP-SAT penalty | Del Rey Fernández et al.; SC24 |
+| **P13.6** | LTS + Berger-Colella quadrature fix — fine sub-step weights 1/2 each vs coarse 1/6, 1/6, 2/3 | Berger-Oliger (1984) |
+| **P13.7** | TMA async halo exchanges (Hopper-exclusive) — replace `cudaMemcpyAsync` ghost fill with TMA prefetch | CUDA 12 + H100/H200 |
+
+### Phase 14 — Advanced Physics *(8–16 weeks)*
+
+| ID | Item | Reference |
+|---|---|---|
+| **P14.1** | ACDI compressible multiphase — Accurate Conservative Diffuse Interface, 9th field $\phi$, stiffened-gas EOS; replaces/extends P4.4 Baer-Nunziato | Huang & Johnsen (2023–2024); MHIT36 (2025) |
+| **P14.2** | Wall contact angle BC for phase-field — entropy-stable Cahn-Hilliard wall BC, $\nabla\phi\cdot\hat{n}|_\partial = -\cos\theta_w/\epsilon \cdot g'(\phi)$ | arXiv 1910.11252 |
+| **P14.3** | Neural SGS via JAX-Fluids adjoint — train on Dynamic Smagorinsky outputs; deploy via TensorRT into `SGSModel` virtual interface | JAX-Fluids 2.0; arXiv 2406.19494 |
+| **P14.4** | GPU AMR subcycling — two CUDA streams (coarse/fine), event synchronisation, LTS-aware flux register weights; companion to P13.6 | AMReX GPU subcycling (2025) |
+| **P14.5** | GPU ensemble UQ + Ensemble Kalman Filter — GPU Monte Carlo with multiple simultaneous runs; `MPI_Allreduce` for ensemble moments | Finance-inspired UQ |
+
+---
+
 ## Bug Register Reference (Answer \#4)
 
 | ID | Severity | File | Issue |
