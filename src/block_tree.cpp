@@ -547,6 +547,40 @@ static inline int fd_side(int d) { return d & 1;  }  // 0→minus, 1→plus
 static double g_wall_T = 0.0;
 void BlockTree::set_wall_T(double T_w) noexcept { g_wall_T = T_w; }
 
+// P13.3: far-field pressure for characteristic open BC (0 = zero-gradient, default)
+static double g_open_bc_p = 0.0;
+void BlockTree::set_open_bc_pressure(double p_inf) noexcept { g_open_bc_p = p_inf; }
+
+// Compute characteristic ghost Prim for one open-boundary cell.
+// axis: 0/1/2 = x/y/z; outward_sign: +1 for + faces, -1 for - faces.
+// Returns zero-gradient state when g_open_bc_p == 0 or supersonic outflow.
+static Prim open_char_ghost(const Prim& p, int axis, double outward_sign) noexcept {
+    // Normal velocity component (positive = flow exits the domain)
+    const double u_n = outward_sign * (axis==0 ? p.u : axis==1 ? p.v : p.w);
+
+    // Zero-gradient: no far-field pressure, supersonic outflow, or inflow
+    if (g_open_bc_p <= 0.0 || u_n >= p.c || u_n < 0.0) return p;
+
+    // Subsonic outflow: set p_ghost = p_∞, isentropic ρ, Riemann-invariant u_n
+    // ρ_g = ρ·(p∞/p)^(1/γ),  c_g = c·(p∞/p)^((γ-1)/(2γ))
+    // Incoming Riemann char: u_n_g - outward_sign·2c_g/(γ-1) = u_n_i - outward_sign·2c_i/(γ-1)
+    //   → δu_n_g = outward_sign·2·(c_g - c_i)/(γ-1)  (both + and - face use same formula
+    //               because outward_sign cancels from both sides of the invariant eq.)
+    const double ratio = g_open_bc_p / p.p;
+    const double c_g   = p.c * std::pow(ratio, (GAMMA-1.0)/(2.0*GAMMA));
+    const double delta_u_n = outward_sign * 2.0*(c_g - p.c)/(GAMMA-1.0);
+
+    Prim g = p;
+    g.p   = g_open_bc_p;
+    g.rho = p.rho * std::pow(ratio, 1.0/GAMMA);
+    if (axis==0) g.u = p.u + delta_u_n;
+    else if (axis==1) g.v = p.v + delta_u_n;
+    else g.w = p.w + delta_u_n;
+    g.T = g.p / (g.rho * R_GAS);
+    g.c = c_g;
+    return g;
+}
+
 // Helper: octant of child li relative to its parent (needed for fill_cf_ghosts)
 // Children are contiguous by alloc_node_group invariant, so li - first_child
 // gives the correct octant index.
@@ -1039,7 +1073,11 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
     }
 }
 
-// ── fill_ghosts_open (zero-gradient transmissive, no reflection) ─────────────
+// ── fill_ghosts_open (P13.3: characteristic open BC with optional p∞) ────────
+// When g_open_bc_p == 0: zero-gradient transmissive (legacy behaviour).
+// When g_open_bc_p >  0: subsonic outflow uses isentropic ghost + Riemann-
+//   invariant velocity; HLLC-ES then adds entropy dissipation at the face.
+//   Supersonic outflow and inflow fall back to zero-gradient.
 void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
     const auto& leaves = leaf_indices();
     for (int li : leaves) {
@@ -1047,24 +1085,30 @@ void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
         if (!nd.has_block()) continue;  // P7.1: remote leaf
         auto& blk = *nd.block;
 
-        // Zero-gradient: ghost layer copies the nearest interior layer
-        auto open_x = [&](int gi, int mi) noexcept {
+        // Write a ghost Prim back into conserved Q of blk at index (gi,gj,gk)
+        auto write_ghost = [&](int gi, int gj, int gk, const Prim& g) noexcept {
+            blk.rho (gi,gj,gk) = g.rho;
+            blk.rhou(gi,gj,gk) = g.rho * g.u;
+            blk.rhov(gi,gj,gk) = g.rho * g.v;
+            blk.rhow(gi,gj,gk) = g.rho * g.w;
+            blk.E   (gi,gj,gk) = g.p/(GAMMA-1.0)
+                                + 0.5*g.rho*(g.u*g.u+g.v*g.v+g.w*g.w);
+        };
+
+        auto open_x = [&](int gi, int mi, double outward_sign) noexcept {
             for (int k=ilo();k<=ihi();++k)
             for (int j=ilo();j<=ihi();++j)
-            for (int v=0;v<NVAR;++v)
-                blk.Q[v][cell_idx(gi,j,k)] = blk.Q[v][cell_idx(mi,j,k)];
+                write_ghost(gi, j, k, open_char_ghost(blk.prim(mi,j,k), 0, outward_sign));
         };
-        auto open_y = [&](int gj, int mj) noexcept {
+        auto open_y = [&](int gj, int mj, double outward_sign) noexcept {
             for (int k=ilo();k<=ihi();++k)
             for (int i=ilo();i<=ihi();++i)
-            for (int v=0;v<NVAR;++v)
-                blk.Q[v][cell_idx(i,gj,k)] = blk.Q[v][cell_idx(i,mj,k)];
+                write_ghost(i, gj, k, open_char_ghost(blk.prim(i,mj,k), 1, outward_sign));
         };
-        auto open_z = [&](int gk, int mk) noexcept {
+        auto open_z = [&](int gk, int mk, double outward_sign) noexcept {
             for (int j=ilo();j<=ihi();++j)
             for (int i=ilo();i<=ihi();++i)
-            for (int v=0;v<NVAR;++v)
-                blk.Q[v][cell_idx(i,j,gk)] = blk.Q[v][cell_idx(i,j,mk)];
+                write_ghost(i, j, gk, open_char_ghost(blk.prim(i,j,mk), 2, outward_sign));
         };
 
         const bool xm = (nd.neighbours[XMINUS] < 0);
@@ -1124,13 +1168,13 @@ void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
             }
         }
 
-        // Open boundary ghost fill (zero-gradient: each ghost = nearest interior)
-        if (xm) { for (int gl=0;gl<NG;++gl) open_x(NG-1-gl,   ilo()); }
-        if (xp) { for (int gl=0;gl<NG;++gl) open_x(NB2-NG+gl, ihi()); }
-        if (ym) { for (int gl=0;gl<NG;++gl) open_y(NG-1-gl,   ilo()); }
-        if (yp) { for (int gl=0;gl<NG;++gl) open_y(NB2-NG+gl, ihi()); }
-        if (zm) { for (int gl=0;gl<NG;++gl) open_z(NG-1-gl,   ilo()); }
-        if (zp) { for (int gl=0;gl<NG;++gl) open_z(NB2-NG+gl, ihi()); }
+        // Open boundary ghost fill (P13.3: characteristic or zero-gradient)
+        if (xm) { for (int gl=0;gl<NG;++gl) open_x(NG-1-gl,   ilo(), -1.0); }
+        if (xp) { for (int gl=0;gl<NG;++gl) open_x(NB2-NG+gl, ihi(), +1.0); }
+        if (ym) { for (int gl=0;gl<NG;++gl) open_y(NG-1-gl,   ilo(), -1.0); }
+        if (yp) { for (int gl=0;gl<NG;++gl) open_y(NB2-NG+gl, ihi(), +1.0); }
+        if (zm) { for (int gl=0;gl<NG;++gl) open_z(NG-1-gl,   ilo(), -1.0); }
+        if (zp) { for (int gl=0;gl<NG;++gl) open_z(NB2-NG+gl, ihi(), +1.0); }
 
         // Edge ghosts (same as wall version — copy from face-filled ghost)
         for (int k=ilo();k<=ihi();++k)

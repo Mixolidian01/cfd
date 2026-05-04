@@ -105,6 +105,12 @@ struct SolverConfig {
     // 0.0 (default) → adiabatic wall (∂T/∂n = 0, current behaviour).
     // > 0 → isothermal: ghost E is set to enforce T_ghost = 2*wall_T - T_interior.
     double wall_T = 0.0;
+
+    // P13.3: far-field pressure for entropy-stable open BCs (BCType::Open only).
+    // 0.0 (default) → zero-gradient transmissive (current behaviour).
+    // > 0 → characteristic BC: ghost pressure = open_bc_p; isentropic density +
+    //        Riemann-invariant normal velocity enforce subsonic non-reflecting outflow.
+    double open_bc_p = 0.0;
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────

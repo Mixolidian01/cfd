@@ -162,6 +162,8 @@ double NSSolver::advance() {
     set_ducros_thresholds(cfg.ducros_p_threshold, cfg.ducros_blend_width);
     // P13.4: propagate isothermal wall temperature (0 = adiabatic).
     BlockTree::set_wall_T(cfg.wall_T);
+    // P13.3: propagate far-field pressure for characteristic open BC (0 = zero-gradient).
+    BlockTree::set_open_bc_pressure(cfg.open_bc_p);
 
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
     // topology is immutable during zero_regs → stages → apply_correction.
