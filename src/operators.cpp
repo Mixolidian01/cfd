@@ -269,6 +269,7 @@ static void fill_mu_cache(const Prim* pc, double* mu_arr) noexcept {
 //   F[0] = ρ̄ · ū_n
 //   F[mom] = ρ̄ · ū_n · ū_i + p̄ · δ_{in}
 //   F[4]   = ρ̄ · ū_n · H̄   where H̄ = ½(H_L + H_R), H = (E+p)/ρ
+// Runtime fallback — used by undo_cf_face_flux / accumulate_fine_fluxes
 static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
                                          int axis) noexcept
 {
@@ -294,9 +295,28 @@ static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
     return F;
 }
 
+// P13.1 stage 3 — compile-time axis: dead branches eliminated by constexpr if
 template<Axis DIR>
 static std::array<double,NVAR> kep_flux_t(const Prim& L, const Prim& R) noexcept {
-    return kep_flux(L, R, static_cast<int>(DIR));
+    const double rho_a = 0.5*(L.rho + R.rho);
+    const double u_a   = 0.5*(L.u   + R.u  );
+    const double v_a   = 0.5*(L.v   + R.v  );
+    const double w_a   = 0.5*(L.w   + R.w  );
+    const double p_a   = 0.5*(L.p   + R.p  );
+    const double E_L   = L.p/(GAMMA-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
+    const double E_R   = R.p/(GAMMA-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
+    const double H_a   = 0.5*((E_L+L.p)/L.rho + (E_R+R.p)/R.rho);
+
+    const double un_a = (DIR==Axis::X) ? u_a : (DIR==Axis::Y) ? v_a : w_a;
+    const double mass = rho_a * un_a;
+
+    std::array<double,NVAR> F;
+    F[0] = mass;
+    F[1] = mass*u_a + (DIR==Axis::X ? p_a : 0.0);
+    F[2] = mass*v_a + (DIR==Axis::Y ? p_a : 0.0);
+    F[3] = mass*w_a + (DIR==Axis::Z ? p_a : 0.0);
+    F[4] = mass*H_a;
+    return F;
 }
 
 // =============================================================================
@@ -605,10 +625,106 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
     qR_out = safe_prim(QRv, pR);
 }
 
+// P13.1 stage 3 — compile-time axis: idx_at + Roe-velocity selection via if constexpr
 template<Axis DIR>
 static void weno5_face_t(const Prim* pc, int i, int j, int k,
-                         Prim& qL, Prim& qR) noexcept {
-    weno5_face(pc, i, j, k, static_cast<int>(DIR), qL, qR);
+                         Prim& qL_out, Prim& qR_out) noexcept {
+    // Stencil index: offset d along the compile-time axis
+    auto idx_at = [&](int d) -> int {
+        if constexpr (DIR == Axis::X) return cell_idx(i+d, j, k);
+        if constexpr (DIR == Axis::Y) return cell_idx(i, j+d, k);
+        return                              cell_idx(i, j, k+d);
+    };
+
+    double Q[6][NVAR];
+    for (int m = 0; m < 6; ++m) {
+        const Prim& p = pc[idx_at(m - 2)];
+        Q[m][0] = p.rho;
+        Q[m][1] = p.rho * p.u;
+        Q[m][2] = p.rho * p.v;
+        Q[m][3] = p.rho * p.w;
+        Q[m][4] = p.p/(GAMMA-1.0) + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
+    }
+
+    const Prim& pL = pc[idx_at(0)];
+    const Prim& pR = pc[idx_at(1)];
+    const double sqL   = std::sqrt(pL.rho);
+    const double sqR   = std::sqrt(pR.rho);
+    const double denom = sqL + sqR;
+    const double u_roe = (sqL*pL.u + sqR*pR.u) / denom;
+    const double v_roe = (sqL*pL.v + sqR*pR.v) / denom;
+    const double w_roe = (sqL*pL.w + sqR*pR.w) / denom;
+    const double HL    = (Q[2][4] + pL.p) / pL.rho;
+    const double HR    = (Q[3][4] + pR.p) / pR.rho;
+    const double H_roe = (sqL*HL + sqR*HR) / denom;
+    const double KE    = 0.5*(u_roe*u_roe + v_roe*v_roe + w_roe*w_roe);
+    const double c2    = std::max((GAMMA-1.0)*(H_roe - KE), 1.0e-300);
+    const double c_roe = std::sqrt(c2);
+
+    // Compile-time normal/tangential velocity and Q-array index selection
+    constexpr int n_idx  = (DIR==Axis::X) ? 1 : (DIR==Axis::Y) ? 2 : 3;
+    constexpr int t1_idx = (DIR==Axis::X) ? 2 : 1;
+    constexpr int t2_idx = (DIR==Axis::Z) ? 2 : 3;
+    const double un  = (DIR==Axis::X) ? u_roe : (DIR==Axis::Y) ? v_roe : w_roe;
+    const double ut1 = (DIR==Axis::X) ? v_roe : u_roe;
+    const double ut2 = (DIR==Axis::Z) ? v_roe : w_roe;
+
+    const double b  = (GAMMA-1.0) / c2;
+    const double b2 = b * KE;
+    const double ioc = 1.0 / c_roe;
+
+    double W[5][6];
+    for (int m = 0; m < 6; ++m) {
+        const double rho = Q[m][0];
+        const double qn  = Q[m][n_idx ];
+        const double qt1 = Q[m][t1_idx];
+        const double qt2 = Q[m][t2_idx];
+        const double E   = Q[m][4];
+        const double inner   = b2*rho - b*(un*qn + ut1*qt1 + ut2*qt2) + b*E;
+        const double delta_n = ioc*(un*rho - qn);
+        W[0][m] = 0.5*(inner + delta_n);
+        W[1][m] = (1.0 - b2)*rho + b*(un*qn + ut1*qt1 + ut2*qt2) - b*E;
+        W[2][m] = -ut1*rho + qt1;
+        W[3][m] = -ut2*rho + qt2;
+        W[4][m] = 0.5*(inner - delta_n);
+    }
+
+    double wL[5], wR[5];
+    for (int kk = 0; kk < 5; ++kk)
+        weno5z_scalar(W[kk][0], W[kk][1], W[kk][2],
+                      W[kk][3], W[kk][4], W[kk][5],
+                      wL[kk], wR[kk]);
+
+    auto back_project = [&](const double w[5], double Qrec[NVAR]) {
+        const double w014 = w[0] + w[1] + w[4];
+        const double dw04 = w[4] - w[0];
+        Qrec[0]      = w014;
+        Qrec[n_idx]  = w014*un  + dw04*c_roe;
+        Qrec[t1_idx] = w014*ut1 + w[2];
+        Qrec[t2_idx] = w014*ut2 + w[3];
+        Qrec[4]      = (w[0]+w[4])*H_roe + dw04*un*c_roe
+                     + w[1]*KE + w[2]*ut1 + w[3]*ut2;
+    };
+
+    double QL[NVAR], QRv[NVAR];
+    back_project(wL, QL);
+    back_project(wR, QRv);
+
+    auto safe_prim = [](const double Qc[NVAR], const Prim& fallback) -> Prim {
+        const double rho = Qc[0];
+        if (rho <= 0.0) return fallback;
+        const double u   = Qc[1] / rho;
+        const double v   = Qc[2] / rho;
+        const double w   = Qc[3] / rho;
+        const double p   = (GAMMA-1.0)*(Qc[4] - 0.5*rho*(u*u+v*v+w*w));
+        if (p <= 0.0) return fallback;
+        Prim q; q.rho=rho; q.u=u; q.v=v; q.w=w; q.p=p;
+        q.T=p/(rho*R_GAS); q.c=std::sqrt(GAMMA*p/rho);
+        return q;
+    };
+
+    qL_out = safe_prim(QL,  pL);
+    qR_out = safe_prim(QRv, pR);
 }
 
 // =============================================================================
