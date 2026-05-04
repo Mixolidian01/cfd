@@ -235,3 +235,16 @@ void GpuGraphSolver::download_q(const BlockTree& /*tree*/) const {
             blk->Q[v].assign_from_flat(h_buf + v * NCELL);
     }
 }
+
+// P11.8: CPU → GPU re-upload (reverse of download_q).
+// Called when the previous step used the CPU AMR path (gpu_q_stale_).
+void GpuGraphSolver::upload_q() const {
+    static thread_local double h_buf[NVAR * NCELL];
+    for (const auto& [blk, dptr] : download_pairs) {
+        if (!blk || !dptr) continue;
+        for (int v = 0; v < NVAR; ++v)
+            blk->Q[v].copy_to_flat(h_buf + v * NCELL);
+        CUDA_CHECK(cudaMemcpy(dptr, h_buf, NVAR * NCELL * sizeof(double),
+                              cudaMemcpyHostToDevice));
+    }
+}

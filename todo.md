@@ -228,7 +228,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | # | Status | Item | File | Priority |
 |---|--------|------|------|----------|
 | P11.7 | ✅ | **GPU Wall/Open BC ghost fill** — already resolved by P10-B4: `k_fill_faces` dispatches `fill_wall()` (bc_type=1), `fill_zero_grad()` (bc_type=2), periodic self-wrap (bc_type=0) in the `d_src==nullptr` branch. `GpuGhostFillList::build()` stores `bc_type` per-leaf in `GpuLeafGhostMeta`. No separate kernel needed. | `src/cuda/gpu_ghost_fill.cu` | done |
-| P11.8 | 🔲 | **Berger-Colella flux correction on GPU** — implement GPU flux registers (`GpuFluxRegister`); accumulate fine fluxes during GPU RK3 stages; `k_apply_flux_correction` kernel; call after `gpu_solver_->advance()` in `NSSolver::advance()`. Required for mass/momentum/energy conservation on AMR+GPU grids. | `src/cuda/gpu_graph.cu`, `src/ns_solver.cpp` | 🟠 Medium (flat-tree: harmless) |
+| P11.8 | ✅ | **AMR+GPU correctness (fallback)** — added `IGpuSolver::upload_q()` pure virtual + `GpuGraphSolver::upload_q()` (CPU→GPU AoSoA→flat SoA); added `gpu_q_stale_` flag to `NSSolver`; `NSSolver::advance()` now: (a) if stale → upload before GPU step; (b) if `tree.max_leaf_level() > 0` → CPU path + set stale. Gate test A4a/A4b (new in t26): GPU+AMR mass error = 1.554e-14 (tol 1e-8), matches pure CPU path. Note: full GPU Berger-Colella kernel (accumulate fine fluxes in GPU RK3 stages) deferred — requires new `GpuFluxRegister` struct + `k_apply_flux_correction` kernel. | `include/ns_solver.hpp`, `include/cuda/gpu_graph.cuh`, `src/cuda/gpu_graph.cu`, `src/ns_solver.cpp`, `tests/cuda/test_p10a3_gpu_nssolver.cu` | done |
 
 ---
 

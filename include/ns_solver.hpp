@@ -38,13 +38,15 @@ struct TimeIntegrator {
     virtual ~TimeIntegrator() = default;
 };
 
-// IGpuSolver extends TimeIntegrator with GPU lifecycle (build, download_q).
+// IGpuSolver extends TimeIntegrator with GPU lifecycle (build, download_q, upload_q).
 // Implemented by GpuGraphSolver in src/cuda/gpu_graph.cu (CUDA TU only).
 struct IGpuSolver : TimeIntegrator {
     // Bridge: TimeIntegrator::step() delegates to the GPU-named advance().
     double step(const BlockTree& tree, double cfl) final { return advance(tree, cfl); }
     virtual double advance(const BlockTree& tree, double cfl)                      = 0;
     virtual void   download_q(const BlockTree& tree)                         const = 0;
+    // P11.8: re-upload CPU Q → GPU after CPU fallback steps (AMR path).
+    virtual void   upload_q()                                                 const = 0;
     virtual void   build(const BlockTree& tree, const GpuPool& pool, int bc_type) = 0;
 };
 
@@ -177,6 +179,8 @@ private:
     // P12.3: step-0 conservation baselines (sentinel -1 = uninitialized)
     double mass0_    = -1.0;
     double mtm0_     = -1.0;  // |total momentum| = sqrt(px²+py²+pz²)
+    // P11.8: CPU path was used last step → GPU Q is stale; re-upload before next GPU step.
+    bool gpu_q_stale_ = false;
     double energy0_  = -1.0;
 
     void save_Qn();

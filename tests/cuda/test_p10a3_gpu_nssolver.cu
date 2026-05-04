@@ -199,12 +199,88 @@ static void test_a3() {
 }
 
 // =============================================================================
+// P11.8 A4: GPU solver with AMR falls back to CPU path; mass conserved
+// =============================================================================
+// IC: density step (high gradient triggers should_refine).
+// GPU solver with regrid_interval=1 should use CPU path when AMR levels > 0.
+// Mass conservation across CPU-fallback + potential GPU steps validates P11.8.
+static Prim amr_ic(double x, double, double) {
+    return {(x < 0.5) ? 1.0 : 2.0, 0.0, 0.0, 0.0, 1.0e5};
+}
+
+static void test_a4() {
+    printf("\n-- A4  P11.8 AMR fallback: GPU solver uses CPU path when AMR active --\n");
+    const int    nstep = 10;
+    const double cfl   = 0.4;
+
+    // ── Pure CPU solver with AMR (reference) ─────────────────────────────────
+    NSSolver cpu_solver;
+    cpu_solver.cfg = make_cfg(cfl);
+    cpu_solver.cfg.regrid_interval = 1;
+    cpu_solver.cfg.max_level       = 1;
+    cpu_solver.init(1.0, amr_ic);
+
+    const double m0_cpu = total_mass(cpu_solver.tree);
+    for (int s = 0; s < nstep; ++s) cpu_solver.advance();
+    const double m1_cpu = total_mass(cpu_solver.tree);
+
+    // ── GPU-dispatched solver with AMR ────────────────────────────────────────
+    NSSolver gpu_solver;
+    gpu_solver.cfg = make_cfg(cfl);
+    gpu_solver.cfg.regrid_interval = 1;
+    gpu_solver.cfg.max_level       = 1;
+    gpu_solver.cfg.use_gpu         = true;
+    gpu_solver.init(1.0, amr_ic);
+
+    GpuPool pool;
+    // Wire GPU pool callbacks so refine/coarsen manage GPU memory correctly.
+    gpu_solver.tree.set_gpu_callbacks(
+        [&pool](CellBlock* blk) { pool.alloc(blk); pool.upload(blk); },
+        [&pool](CellBlock* blk) { pool.free(blk); }
+    );
+    // Allocate initial blocks.
+    for (int li : gpu_solver.tree.leaf_indices()) {
+        CellBlock* blk = gpu_solver.tree.nodes[li].block.get();
+        if (!blk) continue;
+        pool.alloc(blk);
+        pool.upload(blk);
+    }
+
+    GpuGraphSolver graph_solver;
+    gpu_solver.set_gpu_pool(&pool);
+    graph_solver.build(gpu_solver.tree, pool, /*bc_type=*/0);
+    gpu_solver.set_gpu_solver(&graph_solver);
+
+    const double m0_gpu = total_mass(gpu_solver.tree);
+    for (int s = 0; s < nstep; ++s) gpu_solver.advance();
+    const double m1_gpu = total_mass(gpu_solver.tree);
+
+    // Cleanup live blocks in the pool.
+    for (int li : gpu_solver.tree.leaf_indices()) {
+        CellBlock* blk = gpu_solver.tree.nodes[li].block.get();
+        if (blk && pool.has_device(blk)) pool.free(blk);
+    }
+    // Remove callbacks to avoid dangling references after pool goes out of scope.
+    gpu_solver.tree.set_gpu_callbacks(nullptr, nullptr);
+
+    const double cpu_mass_err = std::fabs(m1_cpu - m0_cpu) / m0_cpu;
+    const double gpu_mass_err = std::fabs(m1_gpu - m0_gpu) / m0_gpu;
+    printf("   CPU-AMR mass rel err = %.3e  (tol 1e-8)\n", cpu_mass_err);
+    printf("   GPU-AMR mass rel err = %.3e  (tol 1e-8)\n", gpu_mass_err);
+    check(cpu_mass_err < 1.0e-8, "A4a",
+          "CPU AMR mass conserved (10 steps, tol 1e-8)", cpu_mass_err);
+    check(gpu_mass_err < 1.0e-8, "A4b",
+          "GPU+AMR fallback mass conserved (10 steps, tol 1e-8)", gpu_mass_err);
+}
+
+// =============================================================================
 // main
 // =============================================================================
 int main() {
-    printf("=== P10-A3 NSSolver GPU dispatch gate test ===\n");
+    printf("=== P10-A3 / P11.8 NSSolver GPU dispatch gate test ===\n");
     test_a1_a2();
     test_a3();
+    test_a4();
     printf("\n=== Result: %d failure(s) ===\n", nfail);
     return nfail == 0 ? 0 : 1;
 }

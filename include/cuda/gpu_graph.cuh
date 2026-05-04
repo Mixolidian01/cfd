@@ -82,6 +82,10 @@ struct GpuGraphSolver : IGpuSolver {
     // Copy device Q back to CPU CellBlocks for all leaves.
     void download_q(const BlockTree& tree) const override;
 
+    // P11.8: Copy CPU CellBlock Q → device (reverse of download_q).
+    // Called before GPU advance() when CPU path ran the previous step (AMR fallback).
+    void upload_q() const override;
+
 private:
     void _run_rk3_explicit(cudaStream_t s) const;
     void _capture_graphs();

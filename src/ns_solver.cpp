@@ -172,16 +172,26 @@ double NSSolver::advance() {
         step % cfg.regrid_interval == 0)
         regrid();
 
-    // A3: GPU flat-tree path — SSP-RK3 + CFL run entirely on device.
-    // No flux correction (AMR not yet on GPU path), no MPI, no SGS.
-    // download_q() brings Q to host for diagnostics and checkpointing.
+    // P11.8: GPU path — flat tree only.
+    // When AMR is active (max_leaf_level > 0), fall back to CPU path which handles
+    // Berger-Colella flux registers correctly.  Re-upload Q before the next GPU step
+    // because the CPU path modifies CellBlock::Q without going through the GPU pool.
     if (gpu_solver_) {
-        const double dt = gpu_solver_->advance(tree, cfg.cfl);
-        gpu_solver_->download_q(tree);
-        last_dt_ = dt;
-        t    += dt;
-        step += 1;
-        return dt;
+        if (gpu_q_stale_) {
+            gpu_solver_->upload_q();
+            gpu_q_stale_ = false;
+        }
+        if (tree.max_leaf_level() == 0) {
+            // Flat tree: full GPU path (no flux correction needed).
+            const double dt = gpu_solver_->advance(tree, cfg.cfl);
+            gpu_solver_->download_q(tree);
+            last_dt_ = dt;
+            t    += dt;
+            step += 1;
+            return dt;
+        }
+        // AMR active: fall through to CPU path; mark GPU Q stale for next flat step.
+        gpu_q_stale_ = true;
     }
 
     double dt = tree_cfl_dt(tree, cfg.cfl);
