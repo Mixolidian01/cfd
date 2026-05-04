@@ -294,6 +294,52 @@ static void t11_wall_ghost() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// P13.4: isothermal wall — verify E_ghost = ρ·Cv·(2Tw−Ti) + ½ρ|u|²
+static void t12_isothermal_wall() {
+    BlockTree tree; tree.init(1.0);
+    auto& blk = *tree.nodes[0].block;
+
+    // Interior: uniform state with known T
+    Prim p0; p0.rho=1.2; p0.u=50.0; p0.v=30.0; p0.w=10.0; p0.p=101325.0;
+    p0.T=p0.p/(p0.rho*R_GAS); p0.c=std::sqrt(GAMMA*p0.p/p0.rho);
+    double rho,rhou,rhov,rhow,E;
+    eos_prim_to_cons(p0, rho, rhou, rhov, rhow, E);
+    for (int k=ilo();k<=ihi();++k)
+    for (int j=ilo();j<=ihi();++j)
+    for (int i=ilo();i<=ihi();++i) {
+        blk.rho(i,j,k)=rho; blk.rhou(i,j,k)=rhou;
+        blk.rhov(i,j,k)=rhov; blk.rhow(i,j,k)=rhow; blk.E(i,j,k)=E;
+    }
+
+    const double T_wall = 350.0;   // hot wall
+    BlockTree::set_wall_T(T_wall);
+    tree.fill_ghosts_wall();
+    BlockTree::set_wall_T(0.0);    // reset to adiabatic for other tests
+
+    // Expected E_ghost = ρ·Cv·(2Tw−T_int) + ½ρ|u|²
+    const double Cv = R_GAS / (GAMMA - 1.0);
+    const double T_ghost_exp = 2.0*T_wall - p0.T;
+    const double KE = 0.5*rho*(p0.u*p0.u + p0.v*p0.v + p0.w*p0.w);
+    const double E_ghost_exp = rho*Cv*T_ghost_exp + KE;
+
+    // x-minus ghost (index 0, i interior = ilo())
+    double E_gx = blk.E(0, ilo(), ilo());
+    check("T12a isothermal wall E_ghost x-face", std::abs(E_gx - E_ghost_exp) < 1e-8*E_ghost_exp);
+
+    // y-minus ghost (index 0, j interior = ilo())
+    double E_gy = blk.E(ilo(), 0, ilo());
+    check("T12b isothermal wall E_ghost y-face", std::abs(E_gy - E_ghost_exp) < 1e-8*E_ghost_exp);
+
+    // z-minus ghost (index 0, k interior = ilo())
+    double E_gz = blk.E(ilo(), ilo(), 0);
+    check("T12c isothermal wall E_ghost z-face", std::abs(E_gz - E_ghost_exp) < 1e-8*E_ghost_exp);
+
+    // rho unchanged, rhou negated (no-slip)
+    check("T12d isothermal wall rho unchanged", std::abs(blk.rho(0,ilo(),ilo()) - rho) < 1e-14);
+    check("T12e isothermal wall rhou negated",  std::abs(blk.rhou(0,ilo(),ilo()) + rhou) < 1e-14);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 2: Layer 1 — Cell Block + Block Tree ===\n");
     printf("    Gate: mass conserved through refine/coarsen < 1e-13\n");
@@ -311,6 +357,7 @@ int main() {
     t09_balance();
     t10_periodic_ghost();
     t11_wall_ghost();
+    t12_isothermal_wall();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)

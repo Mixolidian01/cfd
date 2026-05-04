@@ -138,6 +138,10 @@ struct BlockTree {
     void fill_ghosts_wall    (bool cf_zero_grad = false);
     void fill_ghosts_open    (bool cf_zero_grad = false); // zero-gradient transmissive
 
+    // P13.4: configure isothermal wall temperature (0 = adiabatic, default).
+    // Call once before advancing; thread-safe (read-only during ghost fill).
+    static void set_wall_T(double T_w) noexcept;
+
     // ── Flux register management (P1.4) ───────────────────────────────────────
     void zero_flux_registers();
     void accumulate_fine_flux(int fine_leaf, FaceDir d,

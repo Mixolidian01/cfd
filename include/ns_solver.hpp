@@ -100,6 +100,11 @@ struct SolverConfig {
     // For DNS/LES without shocks, raise threshold (e.g. 0.5) to suppress spurious HLLC-ES.
     double ducros_p_threshold = 0.1;
     double ducros_blend_width = 0.1;
+
+    // P13.4: wall temperature for isothermal no-slip walls (BCType::Wall only).
+    // 0.0 (default) → adiabatic wall (∂T/∂n = 0, current behaviour).
+    // > 0 → isothermal: ghost E is set to enforce T_ghost = 2*wall_T - T_interior.
+    double wall_T = 0.0;
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────

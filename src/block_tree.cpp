@@ -543,6 +543,10 @@ int BlockTree::balance() {
 static inline int fd_axis(int d) { return d >> 1; }  // 0→x, 2→y, 4→z
 static inline int fd_side(int d) { return d & 1;  }  // 0→minus, 1→plus
 
+// P13.4: isothermal wall temperature (0 = adiabatic, default)
+static double g_wall_T = 0.0;
+void BlockTree::set_wall_T(double T_w) noexcept { g_wall_T = T_w; }
+
 // Helper: octant of child li relative to its parent (needed for fill_cf_ghosts)
 // Children are contiguous by alloc_node_group invariant, so li - first_child
 // gives the correct octant index.
@@ -878,6 +882,16 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
         if (!nd.has_block()) continue;  // P7.1: remote leaf
         auto& blk = *nd.block;
 
+        // P13.4: isothermal ghost energy: E_g = ρ·Cv·(2Tw−Ti) + ½ρ|u|²
+        // Adiabatic (g_wall_T == 0): copy E directly (∂T/∂n = 0 at wall).
+        auto wall_E = [](const CellBlock& b, int mi, int mj, int mk) noexcept {
+            if (g_wall_T <= 0.0) return b.E(mi, mj, mk);
+            const Prim p = b.prim(mi, mj, mk);
+            const double T_ghost = 2.0*g_wall_T - p.T;
+            const double KE = 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
+            return p.rho * (R_GAS/(GAMMA-1.0)) * T_ghost + KE;
+        };
+
         auto wall_x = [&](int gi, int mi) noexcept {
             for (int k=ilo();k<=ihi();++k)
             for (int j=ilo();j<=ihi();++j) {
@@ -885,7 +899,7 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
                 blk.rhou(gi,j,k) = -blk.rhou(mi,j,k);
                 blk.rhov(gi,j,k) = -blk.rhov(mi,j,k);
                 blk.rhow(gi,j,k) = -blk.rhow(mi,j,k);
-                blk.E   (gi,j,k) =  blk.E   (mi,j,k);
+                blk.E   (gi,j,k) =  wall_E(blk, mi,j,k);
             }
         };
         auto wall_y = [&](int gj, int mj) noexcept {
@@ -895,7 +909,7 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
                 blk.rhou(i,gj,k) = -blk.rhou(i,mj,k);
                 blk.rhov(i,gj,k) = -blk.rhov(i,mj,k);
                 blk.rhow(i,gj,k) = -blk.rhow(i,mj,k);
-                blk.E   (i,gj,k) =  blk.E   (i,mj,k);
+                blk.E   (i,gj,k) =  wall_E(blk, i,mj,k);
             }
         };
         auto wall_z = [&](int gk, int mk) noexcept {
@@ -905,7 +919,7 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
                 blk.rhou(i,j,gk) = -blk.rhou(i,j,mk);
                 blk.rhov(i,j,gk) = -blk.rhov(i,j,mk);
                 blk.rhow(i,j,gk) = -blk.rhow(i,j,mk);
-                blk.E   (i,j,gk) =  blk.E   (i,j,mk);
+                blk.E   (i,j,gk) =  wall_E(blk, i,j,mk);
             }
         };
 

@@ -160,6 +160,8 @@ double NSSolver::advance() {
 
     // P11.6: propagate configurable Ducros thresholds before RHS evaluation.
     set_ducros_thresholds(cfg.ducros_p_threshold, cfg.ducros_blend_width);
+    // P13.4: propagate isothermal wall temperature (0 = adiabatic).
+    BlockTree::set_wall_T(cfg.wall_T);
 
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
     // topology is immutable during zero_regs → stages → apply_correction.
