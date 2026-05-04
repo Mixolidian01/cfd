@@ -118,6 +118,9 @@ body{background:#0d0d0d;color:#bbb;font-family:monospace;font-size:12px;
      display:flex;gap:14px;align-items:center;flex-shrink:0;flex-wrap:wrap}
 #cw{flex:1;position:relative;overflow:hidden}
 canvas{display:block;width:100%;height:100%;image-rendering:pixelated}
+#cw{flex:1;overflow:hidden}
+#spkw{height:88px;flex-shrink:0;background:#111;border-top:1px solid #222}
+#spk{display:block;width:100%;height:100%}
 label{display:flex;align-items:center;gap:5px}
 select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
      padding:2px 5px;cursor:pointer}
@@ -170,6 +173,7 @@ select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
   <span id="info">connecting&hellip;</span>
 </div>
 <div id="cw"><canvas id="c"></canvas></div>
+<div id="spkw"><canvas id="spk"></canvas></div>
 <script>
 const NB=8;
 const canvas=document.getElementById('c');
@@ -177,10 +181,19 @@ const ctx=canvas.getContext('2d');
 const infoEl=document.getElementById('info');
 let imgData=null, domainL=1.0, blocks=[];
 
+// P12.7 — sparkline panel
+const spkCanvas=document.getElementById('spk');
+const sctx=spkCanvas.getContext('2d');
+const SPK_MAX=2000;
+const spkHist={cfl:[],ke:[],mass:[],leaves:[]};
+let spkFetching=false;
+
 function resize(){
   const w=document.getElementById('cw');
   canvas.width=w.clientWidth; canvas.height=w.clientHeight;
   imgData=ctx.createImageData(canvas.width,canvas.height);
+  const sw=document.getElementById('spkw');
+  spkCanvas.width=sw.clientWidth; spkCanvas.height=sw.clientHeight;
 }
 window.addEventListener('resize',resize); resize();
 
@@ -285,6 +298,59 @@ function drawAmrOverlay(nB){
   ctx.restore();
 }
 
+// P12.7 — draw 4 sparklines (CFL, KE, mass, leaves) in the panel.
+function drawSparklines(){
+  const W=spkCanvas.width,H=spkCanvas.height;
+  sctx.fillStyle='#111';sctx.fillRect(0,0,W,H);
+  const series=[
+    {data:spkHist.cfl,   label:'CFL',    color:'#fa0'},
+    {data:spkHist.ke,    label:'KE',     color:'#4af'},
+    {data:spkHist.mass,  label:'mass',   color:'#4fa'},
+    {data:spkHist.leaves,label:'leaves', color:'#f4a'}
+  ];
+  const nS=series.length,sw=W/nS;
+  series.forEach((s,idx)=>{
+    const x0=idx*sw;
+    // divider
+    if(idx>0){sctx.strokeStyle='#2a2a2a';sctx.lineWidth=1;
+      sctx.beginPath();sctx.moveTo(x0,0);sctx.lineTo(x0,H);sctx.stroke();}
+    if(s.data.length<2) return;
+    const vals=s.data;
+    let mn=Infinity,mx=-Infinity;
+    for(const v of vals){if(v<mn)mn=v;if(v>mx)mx=v;}
+    const rng=(mx>mn)?(mx-mn):1;
+    const n=vals.length;
+    sctx.strokeStyle=s.color;sctx.lineWidth=1;
+    sctx.beginPath();
+    for(let i=0;i<n;i++){
+      const px=x0+1+(i/(n-1))*(sw-2);
+      const py=H-14-((vals[i]-mn)/rng)*(H-18);
+      i===0?sctx.moveTo(px,py):sctx.lineTo(px,py);
+    }
+    sctx.stroke();
+    sctx.fillStyle=s.color;sctx.font='10px monospace';
+    const cur=vals[vals.length-1];
+    sctx.fillText(s.label+': '+cur.toPrecision(3),x0+3,H-3);
+  });
+}
+
+function fetchMetrics(){
+  if(spkFetching) return;
+  spkFetching=true;
+  fetch('/metrics').then(r=>r.json()).then(m=>{
+    if(spkHist.cfl.length>=SPK_MAX)   spkHist.cfl.shift();
+    if(spkHist.ke.length>=SPK_MAX)    spkHist.ke.shift();
+    if(spkHist.mass.length>=SPK_MAX)  spkHist.mass.shift();
+    if(spkHist.leaves.length>=SPK_MAX)spkHist.leaves.shift();
+    spkHist.cfl.push(m.cfl);
+    spkHist.ke.push(m.ke);
+    spkHist.mass.push(m.mass);
+    spkHist.leaves.push(m.n_leaves);
+    drawSparklines();
+    spkFetching=false;
+  }).catch(()=>{spkFetching=false;});
+}
+
 function parseFrame(bytes){
   const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   let o=0;
@@ -335,6 +401,7 @@ function parseFrame(bytes){
     drawAmrOverlay(nB);
   }
   infoEl.textContent=`step=${step} t=${t.toExponential(3)} [${vmin.toPrecision(3)}, ${vmax.toPrecision(3)}]${lck?' 🔒':''}`;
+  fetchMetrics();
 }
 
 async function connect(){
