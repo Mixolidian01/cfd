@@ -77,12 +77,11 @@ static double ghost_err_face(const Snap& gpu, const Snap& cpu) {
     return e;
 }
 
-// Upload all leaves; alloc if d_Q is nullptr.
 static void upload_leaves(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
         if (!blk) continue;
-        if (!blk->d_Q) pool.alloc(blk);
+        if (!pool.has_device(blk)) pool.alloc(blk);
         pool.upload(blk);
     }
 }
@@ -90,7 +89,7 @@ static void upload_leaves(BlockTree& tree) {
 static void download_leaves(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
-        if (!blk || !blk->d_Q) continue;
+        if (!blk || !pool.has_device(blk)) continue;
         pool.download(blk);
     }
 }
@@ -98,7 +97,7 @@ static void download_leaves(BlockTree& tree) {
 static void free_leaves(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
-        if (blk && blk->d_Q) pool.free(blk);
+        if (blk && pool.has_device(blk)) pool.free(blk);
     }
 }
 
@@ -125,7 +124,7 @@ static void test_f1() {
 
     // GPU fill
     GpuGhostFillList gfl;
-    gfl.build(tree, /*bc_type=*/1);
+    gfl.build(tree, pool, /*bc_type=*/1);
     gfl.exec(nullptr);
     cudaDeviceSynchronize();
 
@@ -159,7 +158,7 @@ static void test_f2() {
     upload_leaves(tree);
 
     GpuGhostFillList gfl;
-    gfl.build(tree, /*bc_type=*/0);
+    gfl.build(tree, pool, /*bc_type=*/0);
     gfl.exec(nullptr);
     cudaDeviceSynchronize();
 
@@ -204,7 +203,7 @@ static void test_f3() {
     upload_leaves(tree);
 
     GpuGhostFillList gfl;
-    gfl.build(tree, /*bc_type=*/0);
+    gfl.build(tree, pool, /*bc_type=*/0);
     gfl.exec(nullptr);
     cudaDeviceSynchronize();
 
@@ -268,7 +267,7 @@ static void test_f4() {
     upload_leaves(tree);
 
     GpuGhostFillList gfl;
-    gfl.build(tree, /*bc_type=*/0);
+    gfl.build(tree, pool, /*bc_type=*/0);
     gfl.exec(nullptr);
     cudaDeviceSynchronize();
 

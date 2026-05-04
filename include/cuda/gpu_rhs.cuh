@@ -22,6 +22,7 @@
 
 #include "../cell_block.hpp"
 #include "../block_tree.hpp"
+#include "../gpu_pool.hpp"
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <vector>
@@ -51,7 +52,7 @@ struct GpuRhsList {
     ~GpuRhsList();
 
     // Rebuild after regrid.
-    void build(const BlockTree& tree);
+    void build(const BlockTree& tree, const GpuPool& pool);
 
     // Launch the three RHS kernels on the given stream.
     // Prerequisites: d_Q must have ghost cells filled (call GpuGhostFillList::exec first).

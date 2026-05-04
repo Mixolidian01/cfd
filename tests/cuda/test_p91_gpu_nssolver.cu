@@ -53,7 +53,7 @@ static void upload_all(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
         if (!blk) continue;
-        if (!blk->d_Q) pool.alloc(blk);
+        if (!pool.has_device(blk)) pool.alloc(blk);
         pool.upload(blk);
     }
 }
@@ -61,7 +61,7 @@ static void upload_all(BlockTree& tree) {
 static void free_all(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
-        if (blk && blk->d_Q) pool.free(blk);
+        if (blk && pool.has_device(blk)) pool.free(blk);
     }
 }
 
@@ -154,7 +154,7 @@ static QSnap run_gpu(int nstep, double cfl, std::vector<double>* dts = nullptr) 
     upload_all(tree);
 
     GpuGraphSolver solver;
-    solver.build(tree);
+    solver.build(tree, pool);
 
     if (dts) dts->resize(nstep);
     for (int s = 0; s < nstep; ++s) {
@@ -237,7 +237,7 @@ static void test_n4() {
     const double m0 = total_mass(tree);
 
     GpuGraphSolver solver;
-    solver.build(tree);
+    solver.build(tree, pool);
     for (int s = 0; s < NSTEP; ++s)
         solver.advance(tree, cfl);
     solver.download_q(tree);

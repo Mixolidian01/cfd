@@ -22,6 +22,7 @@
 
 #include "../cell_block.hpp"
 #include "../block_tree.hpp"
+#include "../gpu_pool.hpp"
 #include <cuda_runtime.h>
 #include <cstdint>
 
@@ -46,7 +47,7 @@ struct GpuCflList {
     ~GpuCflList();
 
     // Rebuild after regrid.
-    void build(const BlockTree& tree);
+    void build(const BlockTree& tree, const GpuPool& pool);
 
     // Launch k_cfl_reduce; synchronises; copies d_dt to host; returns dt.
     // If stream != nullptr, the memcpy is async on that stream and this

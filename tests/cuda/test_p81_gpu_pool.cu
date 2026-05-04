@@ -1,9 +1,9 @@
 // P8.1 gate test — GPU memory pool for AMR leaf CellBlocks
 //
 // Protocol:
-//   G1a: GpuPool::alloc sets blk->d_Q to a non-null device pointer
+//   G1a: GpuPool::alloc registers a non-null device pointer (pool.has_device)
 //   G1b: upload → corrupt CPU → download → CPU matches original (exact round-trip)
-//   G1c: GpuPool::free clears blk->d_Q to nullptr; slot re-used on next alloc
+//   G1c: GpuPool::free removes device mapping; slot re-used on next alloc
 //   G2a: BlockTree::refine triggers on_block_alloc_ × 8 (children)
 //   G2b: BlockTree::refine triggers on_block_free_  × 1 (parent)
 //   G2c: BlockTree::coarsen triggers on_block_alloc_ × 1 (parent)
@@ -59,9 +59,9 @@ static void test_g1() {
 
     GpuPool pool;
 
-    // G1a: alloc → non-null d_Q
+    // G1a: alloc → pool reports device allocated
     pool.alloc(&blk);
-    check(blk.d_Q != nullptr, "G1a", "alloc sets d_Q != nullptr");
+    check(pool.has_device(&blk), "G1a", "alloc: pool.has_device(&blk) is true");
 
     // G1b: upload → corrupt CPU → download → exact match
     pool.upload(&blk);
@@ -75,15 +75,15 @@ static void test_g1() {
     printf("   upload→download max error = %.2e  (expect 0)\n", err);
     check(err == 0.0, "G1b", "upload/download round-trip exact", err, 0.0);
 
-    // G1c: free clears d_Q; slot is re-used on next alloc
-    void* first_ptr = blk.d_Q;
+    // G1c: free removes device mapping; slot is re-used on next alloc
+    void* first_ptr = pool.d_Q(&blk);
     pool.free(&blk);
-    check(blk.d_Q == nullptr, "G1c", "free clears d_Q to nullptr");
+    check(!pool.has_device(&blk), "G1c", "free: pool.has_device(&blk) is false");
     check(pool.n_active() == 0, "G1c2", "n_active == 0 after free");
 
     CellBlock blk2(0.0, 0.0, 0.0, 1.0/NB);
     pool.alloc(&blk2);
-    check(blk2.d_Q == first_ptr, "G1c3", "freed slot is reused");
+    check(pool.d_Q(&blk2) == first_ptr, "G1c3", "freed slot is reused");
     pool.free(&blk2);
 }
 
@@ -152,17 +152,17 @@ static void test_g3() {
     check(pool.n_active() == 8, "G3b", "8 active slots after refine",
           static_cast<double>(pool.n_active()), 8.0);
 
-    // All child d_Q pointers should be non-null
+    // All child blocks should have a live device buffer in the pool
     bool all_set = true;
     for (int li : tree.leaf_indices())
-        if (tree.nodes[li].block->d_Q == nullptr) all_set = false;
+        if (!pool.has_device(tree.nodes[li].block.get())) all_set = false;
     check(all_set, "G3c", "all child d_Q pointers are non-null");
 
     // Coarsen: 8 children freed (→ 0 active), 1 parent allocated (→ 1)
     tree.coarsen(0);
     check(pool.n_active() == 1, "G3d", "1 active slot after coarsen",
           static_cast<double>(pool.n_active()), 1.0);
-    check(tree.nodes[0].block->d_Q != nullptr, "G3e",
+    check(pool.has_device(tree.nodes[0].block.get()), "G3e",
           "root d_Q non-null after coarsen");
 
     // Download parent and verify restriction produced finite values

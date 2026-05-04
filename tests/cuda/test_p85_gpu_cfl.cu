@@ -77,7 +77,7 @@ static void upload_all(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
         if (!blk) continue;
-        if (!blk->d_Q) pool.alloc(blk);
+        if (!pool.has_device(blk)) pool.alloc(blk);
         pool.upload(blk);
     }
 }
@@ -85,7 +85,7 @@ static void upload_all(BlockTree& tree) {
 static void free_all(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
-        if (blk && blk->d_Q) pool.free(blk);
+        if (blk && pool.has_device(blk)) pool.free(blk);
     }
 }
 
@@ -103,7 +103,7 @@ static void test_c1() {
     const double cpu_dt = cpu_cfl_dt(blk, cfl);
 
     upload_all(tree);
-    GpuCflList cfl_list; cfl_list.build(tree);
+    GpuCflList cfl_list; cfl_list.build(tree, pool);
     const double gpu_dt = cfl_list.exec(cfl);
     free_all(tree);
 
@@ -135,7 +135,7 @@ static void test_c2() {
     }
 
     upload_all(tree);
-    GpuCflList cfl_list; cfl_list.build(tree);
+    GpuCflList cfl_list; cfl_list.build(tree, pool);
     const double gpu_dt = cfl_list.exec(cfl);
     free_all(tree);
 
@@ -157,7 +157,7 @@ static void test_c3() {
     fill_sod(blk, 1.0);
     upload_all(tree);
 
-    GpuCflList cfl_list; cfl_list.build(tree);
+    GpuCflList cfl_list; cfl_list.build(tree, pool);
     double dt_from_exec = cfl_list.exec(cfl);
 
     // Read d_dt directly from device (no second exec())
@@ -183,7 +183,7 @@ static void test_c4() {
     fill_sod(blk, 1.0);
     upload_all(tree);
 
-    GpuCflList cfl_list; cfl_list.build(tree);
+    GpuCflList cfl_list; cfl_list.build(tree, pool);
     const double dt1 = cfl_list.exec(cfl);
     const double dt2 = cfl_list.exec(cfl);
     free_all(tree);

@@ -93,7 +93,7 @@ static void upload_all(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
         if (!blk) continue;
-        if (!blk->d_Q) pool.alloc(blk);
+        if (!pool.has_device(blk)) pool.alloc(blk);
         pool.upload(blk);
     }
 }
@@ -101,7 +101,7 @@ static void upload_all(BlockTree& tree) {
 static void free_all(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
-        if (blk && blk->d_Q) pool.free(blk);
+        if (blk && pool.has_device(blk)) pool.free(blk);
     }
 }
 
@@ -161,7 +161,7 @@ static void test_g1() {
     upload_all(tree);
 
     GpuGraphSolver solver;
-    solver.build(tree);
+    solver.build(tree, pool);
 
     const QSnapshot before = snap(tree);
 
@@ -193,7 +193,7 @@ static QSnapshot run_explicit(int nstep, double cfl) {
     fill_sod(*t.nodes[0].block);
     upload_all(t);
     GpuGraphSolver s;
-    for (int i = 0; i < nstep; ++i) { s.build(t); s.advance(t, cfl); }
+    for (int i = 0; i < nstep; ++i) { s.build(t, pool); s.advance(t, cfl); }
     s.download_q(t);
     auto q = snap(t);
     free_all(t);
@@ -206,7 +206,7 @@ static QSnapshot run_graph(int nstep, double cfl) {
     fill_sod(*t.nodes[0].block);
     upload_all(t);
     GpuGraphSolver s;
-    s.build(t);
+    s.build(t, pool);
     for (int i = 0; i < nstep; ++i) s.advance(t, cfl);
     s.download_q(t);
     auto q = snap(t);
@@ -231,7 +231,7 @@ static void test_g2() {
     // SolverA: explicit every step (build before each advance)
     GpuGraphSolver solverA;
     for (int s = 0; s < NSTEP; ++s) {
-        solverA.build(treeA);
+        solverA.build(treeA, pool);
         solverA.advance(treeA, cfl);
     }
     solverA.download_q(treeA);
@@ -240,7 +240,7 @@ static void test_g2() {
 
     // SolverB: build once → step 1 explicit+capture, steps 2-4 replay
     GpuGraphSolver solverB;
-    solverB.build(treeB);
+    solverB.build(treeB, pool);
     for (int s = 0; s < NSTEP; ++s)
         solverB.advance(treeB, cfl);
     solverB.download_q(treeB);
@@ -271,7 +271,7 @@ static void test_g3() {
     upload_all(treeRef);
     GpuGraphSolver ref;
     for (int s = 0; s < 4; ++s) {
-        ref.build(treeRef);
+        ref.build(treeRef, pool);
         ref.advance(treeRef, cfl);
     }
     ref.download_q(treeRef);
@@ -283,10 +283,10 @@ static void test_g3() {
     fill_sod(*treeT.nodes[0].block);
     upload_all(treeT);
     GpuGraphSolver solver;
-    solver.build(treeT);
+    solver.build(treeT, pool);
     solver.advance(treeT, cfl);   // explicit + capture
     solver.advance(treeT, cfl);   // replay
-    solver.build(treeT);          // simulate regrid → invalidate + rebuild
+    solver.build(treeT, pool);          // simulate regrid → invalidate + rebuild
     solver.advance(treeT, cfl);   // explicit + re-capture
     solver.advance(treeT, cfl);   // replay
     solver.download_q(treeT);
@@ -323,7 +323,7 @@ static void test_g4() {
     // SolverA: always explicit (build before each step)
     GpuGraphSolver solverA;
     for (int s = 0; s < NSTEP; ++s) {
-        solverA.build(treeA);
+        solverA.build(treeA, pool);
         solverA.advance(treeA, cfl);
     }
     solverA.download_q(treeA);
@@ -332,7 +332,7 @@ static void test_g4() {
 
     // SolverB: graph replay after first step
     GpuGraphSolver solverB;
-    solverB.build(treeB);
+    solverB.build(treeB, pool);
     for (int s = 0; s < NSTEP; ++s)
         solverB.advance(treeB, cfl);
     solverB.download_q(treeB);

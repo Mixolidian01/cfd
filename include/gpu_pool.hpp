@@ -9,16 +9,15 @@
 // GPU layout : flat SoA — v * NCELL + cell_idx(i,j,k)
 // upload/download transparently convert between the two via FieldProxy helpers.
 //
+// P10-A1: device pointers live in GpuPool::ptrs_ (keyed by CellBlock*), not
+// in CellBlock itself.  This removes the Layer 1 → Layer 3 pointer violation.
+// Use d_Q(blk) / has_device(blk) to query the device state of a block.
+//
 // This header compiles under both g++ and nvcc.
 // CUDA API calls live entirely in src/cuda/gpu_pool.cu.
-//
-// Typical NSSolver flow (cfg.use_gpu = true):
-//   init():   for each leaf: pool.alloc(blk); pool.upload(blk);
-//   refine(): on_block_free_(parent) → on_block_alloc_(8 children)
-//   coarsen():on_block_alloc_(parent) → on_block_free_(8 children)
-//   advance():pool.upload(blk) after ghost fill; RHS on GPU; pool.download for diag
 
 #include "cell_block.hpp"
+#include <unordered_map>
 #include <vector>
 #include <cstddef>
 
@@ -28,11 +27,11 @@ struct GpuPool {
     GpuPool& operator=(const GpuPool&) = delete;
     ~GpuPool();
 
-    // Assign a device buffer to blk->d_Q from the pool (cudaMalloc if empty).
+    // Assign a device buffer for blk from the pool (cudaMalloc if empty).
     // Does NOT copy data — call upload() after filling CPU data.
     void alloc(CellBlock* blk);
 
-    // Return blk->d_Q to the pool for reuse.  Sets blk->d_Q = nullptr.
+    // Return the device buffer for blk to the pool for reuse.
     void free(CellBlock* blk);
 
     // AoSoA CPU data → flat SoA device buffer (cudaMemcpy H→D).
@@ -40,6 +39,12 @@ struct GpuPool {
 
     // Flat SoA device buffer → AoSoA CPU data (cudaMemcpy D→H).
     void download(CellBlock* blk) const;
+
+    // Return the device pointer for blk, or nullptr if not allocated.
+    double* d_Q(const CellBlock* blk) const noexcept;
+
+    // True iff blk has a live device buffer in this pool.
+    bool has_device(const CellBlock* blk) const noexcept;
 
     // Bytes per device slot.
     static constexpr size_t slot_bytes() noexcept {
@@ -55,6 +60,7 @@ struct GpuPool {
     }
 
 private:
-    std::vector<double*> free_list_;  // device pointers ready for reuse
-    int                  active_ = 0; // count of live (non-pooled) slots
+    std::unordered_map<const CellBlock*, double*> ptrs_;     // block → device ptr
+    std::vector<double*>                          free_list_; // ready for reuse
+    int                                           active_ = 0;
 };

@@ -106,7 +106,7 @@ static void upload_all_leaves(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
         if (!blk) continue;
-        if (!blk->d_Q) pool.alloc(blk);
+        if (!pool.has_device(blk)) pool.alloc(blk);
         pool.upload(blk);
     }
 }
@@ -114,7 +114,7 @@ static void upload_all_leaves(BlockTree& tree) {
 static void free_all_leaves(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
-        if (blk && blk->d_Q) pool.free(blk);
+        if (blk && pool.has_device(blk)) pool.free(blk);
     }
 }
 
@@ -138,11 +138,11 @@ static void test_r1() {
     // GPU: upload, ghost fill, exec
     upload_all_leaves(tree);
     GpuGhostFillList gfl;
-    gfl.build(tree, /*bc_type=*/0);
+    gfl.build(tree, pool, /*bc_type=*/0);
     gfl.exec(nullptr);
 
     GpuRhsList rhl;
-    rhl.build(tree);
+    rhl.build(tree, pool);
     rhl.exec(nullptr);
     cudaDeviceSynchronize();
 
@@ -181,11 +181,11 @@ static void test_r2() {
 
     upload_all_leaves(tree);
     GpuGhostFillList gfl;
-    gfl.build(tree, 0);
+    gfl.build(tree, pool, 0);
     gfl.exec(nullptr);
 
     GpuRhsList rhl;
-    rhl.build(tree);
+    rhl.build(tree, pool);
     rhl.exec(nullptr);
     cudaDeviceSynchronize();
 
@@ -239,11 +239,11 @@ static void test_r3() {
 
     upload_all_leaves(tree);
     GpuGhostFillList gfl;
-    gfl.build(tree, 0);
+    gfl.build(tree, pool, 0);
     gfl.exec(nullptr);
 
     GpuRhsList rhl;
-    rhl.build(tree);
+    rhl.build(tree, pool);
     rhl.exec(nullptr);
     cudaDeviceSynchronize();
 
@@ -288,11 +288,11 @@ static void test_r4() {
 
     upload_all_leaves(tree);
     GpuGhostFillList gfl;
-    gfl.build(tree, 0);
+    gfl.build(tree, pool, 0);
     gfl.exec(nullptr);
 
     GpuRhsList rhl;
-    rhl.build(tree);
+    rhl.build(tree, pool);
     rhl.exec(nullptr);
     cudaDeviceSynchronize();
 

@@ -8,6 +8,7 @@
 // Edge/corner source: src = (ghost < NG) ? ghost+NB : ghost-NB  (always interior).
 
 #include "../../include/cuda/gpu_ghost_fill.cuh"
+#include "../../include/cuda/gpu_meta_buffer.cuh"
 #include <cassert>
 #include <stdexcept>
 #include <string>
@@ -99,9 +100,48 @@ __device__ double cf_fine_from_coarse(
     return val;
 }
 
+// ── Face ghost fill helpers ───────────────────────────────────────────────────
+
+// Copy NVAR values from d_src at the interior-side cell into d_dst ghost.
+// Used by same-level neighbor fill and periodic self-wrap (pass d_dst as d_src).
+__device__ __forceinline__ static void fill_copy(
+    double* d_dst, const double* d_src,
+    int axis, int side, int gl, int a, int b, int dst_flat)
+{
+    const int src_ax   = (side == 0) ? (NB + NG - 1 - gl) : (NG + gl);
+    const int src_flat = cidx_axis(axis, src_ax, a, b);
+    for (int v = 0; v < NVAR; ++v)
+        d_dst[v * NCELL + dst_flat] = d_src[v * NCELL + src_flat];
+}
+
+// Zero-gradient fill: ghost = nearest interior cell along normal.
+// Used by CF coarse←fine and open domain BC (identical formula).
+__device__ __forceinline__ static void fill_zero_grad(
+    double* d_dst, int axis, int side, int a, int b, int dst_flat)
+{
+    const int int_ax   = (side == 0) ? NG : (NB + NG - 1);
+    const int int_flat = cidx_axis(axis, int_ax, a, b);
+    for (int v = 0; v < NVAR; ++v)
+        d_dst[v * NCELL + dst_flat] = d_dst[v * NCELL + int_flat];
+}
+
+// Wall BC: reflect momenta, copy scalars (no-slip adiabatic).
+__device__ __forceinline__ static void fill_wall(
+    double* d_dst, int axis, int side, int gl, int a, int b, int dst_flat)
+{
+    const int mir_ax   = (side == 0) ? (NG + gl) : (NB + NG - 1 - gl);
+    const int mir_flat = cidx_axis(axis, mir_ax, a, b);
+    for (int v = 0; v < NVAR; ++v) {
+        const double val = d_dst[v * NCELL + mir_flat];
+        d_dst[v * NCELL + dst_flat] = (v >= 1 && v <= 3) ? -val : val;
+    }
+}
+
 // =============================================================================
 // k_fill_faces — face ghost fill kernel
 // Grid: (n_leaves, NFACES)   Block: 256
+// Four dispatch paths: same-level copy, CF fine←coarse (5th-order Lagrange),
+// CF coarse←fine (zero-gradient), domain BC (wall/open/periodic self-wrap).
 // =============================================================================
 __global__ void k_fill_faces(const GpuLeafGhostMeta* metas) {
     const GpuLeafGhostMeta& m = metas[blockIdx.x];
@@ -113,73 +153,42 @@ __global__ void k_fill_faces(const GpuLeafGhostMeta* metas) {
     const double* d_src = m.d_nb[face];
     const int     lrel  = m.level_rel[face];
 
-    // Total cells per face: NB2 × NB2 × NG
-    // For same-level: only a,b ∈ [NG, NG+NB-1] are meaningful (128 cells).
-    // For CF fine←coarse: all a,b ∈ [0, NB2-1] (288 cells, fills edge/corner
-    // ghosts at the CF face too).
-    static constexpr int TOTAL = NB2 * NB2 * NG;  // 288
+    // Total ghost cells per face: NB2 × NB2 × NG = 288.
+    // CF fine←coarse fills all (a,b) including edges; other branches guard to
+    // interior-only (a,b ∈ [NG, NG+NB-1]).
+    static constexpr int TOTAL = NB2 * NB2 * NG;
 
     for (int c = threadIdx.x; c < TOTAL; c += blockDim.x) {
-        const int gl = c / (NB2 * NB2);   // ghost layer [0, NG-1]
+        const int gl = c / (NB2 * NB2);
         const int ab = c % (NB2 * NB2);
-        const int a  = ab / NB2;           // transverse dim-1 in [0, NB2-1]
-        const int b  = ab % NB2;           // transverse dim-2 in [0, NB2-1]
+        const int a  = ab / NB2;
+        const int b  = ab % NB2;
 
-        // Destination ghost index along axis
         const int dst_ax   = (side == 0) ? (NG - 1 - gl) : (NB + NG + gl);
         const int dst_flat = cidx_axis(axis, dst_ax, a, b);
 
-        // ── Same-level neighbor copy ─────────────────────────────────────────
         if (d_src != nullptr && lrel == 0) {
+            // Same-level neighbor copy
             if (a < NG || a >= NG + NB || b < NG || b >= NG + NB) continue;
-            const int src_ax   = (side == 0) ? (NB + NG - 1 - gl) : (NG + gl);
-            const int src_flat = cidx_axis(axis, src_ax, a, b);
-            for (int v = 0; v < NVAR; ++v)
-                d_dst[v * NCELL + dst_flat] = d_src[v * NCELL + src_flat];
+            fill_copy(d_dst, d_src, axis, side, gl, a, b, dst_flat);
 
-        // ── CF fine←coarse: 5th-order Lagrange ──────────────────────────────
         } else if (d_src != nullptr && lrel == -1) {
+            // CF fine←coarse: 5th-order Lagrange (fills all a,b)
             for (int v = 0; v < NVAR; ++v)
                 d_dst[v * NCELL + dst_flat] =
-                    cf_fine_from_coarse(d_src, v, axis, side, gl,
-                                        a, b, m.cf_oct);
+                    cf_fine_from_coarse(d_src, v, axis, side, gl, a, b, m.cf_oct);
 
-        // ── CF coarse←fine: zero-gradient fallback (P8.2; average in P8.4) ──
         } else if (d_src != nullptr && lrel == +1) {
+            // CF coarse←fine: zero-gradient fallback
             if (a < NG || a >= NG + NB || b < NG || b >= NG + NB) continue;
-            const int int_ax   = (side == 0) ? NG : (NB + NG - 1);
-            const int int_flat = cidx_axis(axis, int_ax, a, b);
-            for (int v = 0; v < NVAR; ++v)
-                d_dst[v * NCELL + dst_flat] = d_dst[v * NCELL + int_flat];
+            fill_zero_grad(d_dst, axis, side, a, b, dst_flat);
 
-        // ── Domain boundary ─────────────────────────────────────────────────
         } else if (d_src == nullptr) {
+            // Domain boundary
             if (a < NG || a >= NG + NB || b < NG || b >= NG + NB) continue;
-
-            if (m.bc_type == 1) {
-                // Wall: all momenta negated (no-slip adiabatic)
-                const int mir_ax   = (side == 0) ? (NG + gl) : (NB + NG - 1 - gl);
-                const int mir_flat = cidx_axis(axis, mir_ax, a, b);
-                for (int v = 0; v < NVAR; ++v) {
-                    double val = d_dst[v * NCELL + mir_flat];
-                    // Negate all momentum components (v=1,2,3)
-                    d_dst[v * NCELL + dst_flat] = (v >= 1 && v <= 3) ? -val : val;
-                }
-
-            } else if (m.bc_type == 2) {
-                // Open: zero gradient (ghost = nearest interior cell)
-                const int int_ax   = (side == 0) ? NG : (NB + NG - 1);
-                const int int_flat = cidx_axis(axis, int_ax, a, b);
-                for (int v = 0; v < NVAR; ++v)
-                    d_dst[v * NCELL + dst_flat] = d_dst[v * NCELL + int_flat];
-
-            } else {
-                // Periodic self-wrap (root block in single-block periodic domain)
-                const int src_ax   = (side == 0) ? (NB + NG - 1 - gl) : (NG + gl);
-                const int src_flat = cidx_axis(axis, src_ax, a, b);
-                for (int v = 0; v < NVAR; ++v)
-                    d_dst[v * NCELL + dst_flat] = d_dst[v * NCELL + src_flat];
-            }
+            if      (m.bc_type == 1) fill_wall(d_dst, axis, side, gl, a, b, dst_flat);
+            else if (m.bc_type == 2) fill_zero_grad(d_dst, axis, side, a, b, dst_flat);
+            else                     fill_copy(d_dst, d_dst, axis, side, gl, a, b, dst_flat);
         }
     }
 }
@@ -243,7 +252,7 @@ GpuGhostFillList::~GpuGhostFillList() {
     if (d_metas) { cudaFree(d_metas); d_metas = nullptr; }
 }
 
-void GpuGhostFillList::build(const BlockTree& tree, int bc_type) {
+void GpuGhostFillList::build(const BlockTree& tree, const GpuPool& pool, int bc_type) {
     const auto& leaves = tree.leaf_indices();
     const int n = static_cast<int>(leaves.size());
 
@@ -253,7 +262,7 @@ void GpuGhostFillList::build(const BlockTree& tree, int bc_type) {
         const BlockNode& nd = tree.nodes[li];
         GpuLeafGhostMeta& m = h[ii];
 
-        m.d_Q     = nd.block ? nd.block->d_Q : nullptr;
+        m.d_Q     = nd.block ? pool.d_Q(nd.block.get()) : nullptr;
         m.bc_type = static_cast<int8_t>(bc_type);
         m.cf_oct  = 0;
         if (nd.parent >= 0) {
@@ -264,8 +273,8 @@ void GpuGhostFillList::build(const BlockTree& tree, int bc_type) {
         for (int d = 0; d < NFACES; ++d) {
             const int ni = nd.neighbours[d];
             if (ni >= 0 && tree.nodes[ni].has_block() &&
-                tree.nodes[ni].block->d_Q != nullptr) {
-                m.d_nb[d]    = tree.nodes[ni].block->d_Q;
+                pool.has_device(tree.nodes[ni].block.get())) {
+                m.d_nb[d]    = pool.d_Q(tree.nodes[ni].block.get());
                 m.level_rel[d] =
                     static_cast<int8_t>(tree.nodes[ni].level - nd.level);
             } else {
@@ -276,13 +285,7 @@ void GpuGhostFillList::build(const BlockTree& tree, int bc_type) {
     }
 
     n_leaves = n;
-    if (d_metas) { chk(cudaFree(d_metas), "GpuGhostFillList free old"); d_metas = nullptr; }
-    if (n > 0) {
-        chk(cudaMalloc(&d_metas, n * sizeof(GpuLeafGhostMeta)),
-            "GpuGhostFillList cudaMalloc");
-        chk(cudaMemcpy(d_metas, h.data(), n * sizeof(GpuLeafGhostMeta),
-                       cudaMemcpyHostToDevice), "GpuGhostFillList upload meta");
-    }
+    gpu_upload_meta(d_metas, h);
 }
 
 void GpuGhostFillList::exec(cudaStream_t stream) const {

@@ -21,6 +21,7 @@
 
 #include "../cell_block.hpp"
 #include "../block_tree.hpp"
+#include "../gpu_pool.hpp"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -51,7 +52,7 @@ struct GpuGhostFillList {
     ~GpuGhostFillList();
 
     // Rebuild after regrid.  bc_type: 0=periodic, 1=wall, 2=open.
-    void build(const BlockTree& tree, int bc_type);
+    void build(const BlockTree& tree, const GpuPool& pool, int bc_type);
 
     // Launch kernels for face fill + edge/corner fill on the given stream.
     void exec(cudaStream_t stream = nullptr) const;

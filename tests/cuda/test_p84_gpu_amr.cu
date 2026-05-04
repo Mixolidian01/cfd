@@ -86,8 +86,8 @@ static void test_a1() {
     pool.upload(&gpu_fine);   // upload zeros (ghost layers)
 
     GpuProlongMeta meta;
-    meta.d_coarse_Q = coarse.d_Q;
-    meta.d_fine_Q   = gpu_fine.d_Q;
+    meta.d_coarse_Q = pool.d_Q(&coarse);
+    meta.d_fine_Q   = pool.d_Q(&gpu_fine);
     meta.oct        = 3;
     meta._pad       = 0;
 
@@ -135,8 +135,8 @@ static void test_a2() {
     pool.upload(&gpu_coarse);
 
     GpuRestrictMeta meta;
-    meta.d_coarse_Q = gpu_coarse.d_Q;
-    for (int o = 0; o < 8; ++o) meta.d_children_Q[o] = children_cpu[o].d_Q;
+    meta.d_coarse_Q = pool.d_Q(&gpu_coarse);
+    for (int o = 0; o < 8; ++o) meta.d_children_Q[o] = pool.d_Q(&children_cpu[o]);
 
     GpuAmrList amr;
     amr.build_restrict({meta});
@@ -169,8 +169,8 @@ static void test_a3() {
         zero_interior(children[o]);
         pool.alloc(&children[o]);
         pool.upload(&children[o]);
-        p_ops[o].d_coarse_Q = coarse.d_Q;
-        p_ops[o].d_fine_Q   = children[o].d_Q;
+        p_ops[o].d_coarse_Q = pool.d_Q(&coarse);
+        p_ops[o].d_fine_Q   = pool.d_Q(&children[o]);
         p_ops[o].oct        = o;
         p_ops[o]._pad       = 0;
     }
@@ -185,8 +185,8 @@ static void test_a3() {
     pool.upload(&result);
 
     GpuRestrictMeta r_meta;
-    r_meta.d_coarse_Q = result.d_Q;
-    for (int o = 0; o < 8; ++o) r_meta.d_children_Q[o] = children[o].d_Q;
+    r_meta.d_coarse_Q = pool.d_Q(&result);
+    for (int o = 0; o < 8; ++o) r_meta.d_children_Q[o] = pool.d_Q(&children[o]);
 
     amr.build_restrict({r_meta});
     amr.exec_restrict();
@@ -225,8 +225,8 @@ static void test_a4() {
         zero_interior(children[o]);
         pool.alloc(&children[o]);
         pool.upload(&children[o]);
-        p_ops[o].d_coarse_Q = coarse.d_Q;
-        p_ops[o].d_fine_Q   = children[o].d_Q;
+        p_ops[o].d_coarse_Q = pool.d_Q(&coarse);
+        p_ops[o].d_fine_Q   = pool.d_Q(&children[o]);
         p_ops[o].oct        = o;
         p_ops[o]._pad       = 0;
     }

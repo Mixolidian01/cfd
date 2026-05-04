@@ -30,45 +30,58 @@ GpuPool::~GpuPool() {
 // =============================================================================
 void GpuPool::alloc(CellBlock* blk) {
     assert(blk != nullptr);
-    assert(blk->d_Q == nullptr && "double alloc — call free() first");
+    assert(ptrs_.count(blk) == 0 && "double alloc — call free() first");
 
+    double* ptr = nullptr;
     if (!free_list_.empty()) {
-        blk->d_Q = free_list_.back();
+        ptr = free_list_.back();
         free_list_.pop_back();
     } else {
-        double* ptr = nullptr;
         check(cudaMalloc(reinterpret_cast<void**>(&ptr), slot_bytes()),
               "GpuPool::alloc cudaMalloc");
-        blk->d_Q = ptr;
     }
+    ptrs_[blk] = ptr;
     ++active_;
 }
 
 // =============================================================================
 void GpuPool::free(CellBlock* blk) {
     assert(blk != nullptr);
-    if (blk->d_Q == nullptr) return;
-    free_list_.push_back(blk->d_Q);
-    blk->d_Q = nullptr;
+    auto it = ptrs_.find(blk);
+    if (it == ptrs_.end()) return;
+    free_list_.push_back(it->second);
+    ptrs_.erase(it);
     --active_;
 }
 
 // =============================================================================
+double* GpuPool::d_Q(const CellBlock* blk) const noexcept {
+    auto it = ptrs_.find(blk);
+    return (it != ptrs_.end()) ? it->second : nullptr;
+}
+
+bool GpuPool::has_device(const CellBlock* blk) const noexcept {
+    return ptrs_.count(blk) > 0;
+}
+
+// =============================================================================
 void GpuPool::upload(const CellBlock* blk) {
-    assert(blk != nullptr && blk->d_Q != nullptr);
+    double* dptr = d_Q(blk);
+    assert(blk != nullptr && dptr != nullptr);
     // Staging buffer: flat SoA — d_Q[v * NCELL + flat]
     static thread_local double h_buf[NVAR * NCELL];
     for (int v = 0; v < NVAR; ++v)
         blk->Q[v].copy_to_flat(h_buf + v * NCELL);
-    check(cudaMemcpy(blk->d_Q, h_buf, slot_bytes(),
+    check(cudaMemcpy(dptr, h_buf, slot_bytes(),
                      cudaMemcpyHostToDevice), "GpuPool::upload");
 }
 
 // =============================================================================
 void GpuPool::download(CellBlock* blk) const {
-    assert(blk != nullptr && blk->d_Q != nullptr);
+    double* dptr = d_Q(blk);
+    assert(blk != nullptr && dptr != nullptr);
     static thread_local double h_buf[NVAR * NCELL];
-    check(cudaMemcpy(h_buf, blk->d_Q, slot_bytes(),
+    check(cudaMemcpy(h_buf, dptr, slot_bytes(),
                      cudaMemcpyDeviceToHost), "GpuPool::download");
     for (int v = 0; v < NVAR; ++v)
         blk->Q[v].assign_from_flat(h_buf + v * NCELL);

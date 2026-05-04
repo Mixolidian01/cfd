@@ -11,6 +11,7 @@
 #include "../../include/cuda/gpu_rhs.cuh"
 #include "../../include/cuda/gpu_hllc.cuh"
 #include "../../include/cuda/gpu_check.cuh"
+#include "../../include/cuda/gpu_meta_buffer.cuh"
 #include <cstring>
 #include <vector>
 
@@ -412,6 +413,61 @@ void k_rhs_conv(const GpuLeafRhsMeta* __restrict__ metas) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Viscous face helper — used by k_rhs_visc
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Scratch velocity accessor: comp=0→u,1→v,2→w (scratch offsets 1,2,3).
+__device__ __forceinline__ static double
+sp_vel(const double* __restrict__ sp, int comp, int ii, int jj, int kk) {
+    return sp[(comp + 1) * GPU_NCELL + gpu_cell_idx(ii, jj, kk)];
+}
+
+// Viscous stress + energy flux at face (ax, dn∈{+1,-1}) of cell (i,j,k).
+// t1=(ax+1)%3, t2=(ax+2)%3.
+// dn sign convention: grad_nn = ih*dn*(v_nb - v_c) is positive outward for both faces.
+// tnn: normal-normal stress; tnt1/tnt2: shear on (ax,t1)/(ax,t2) planes.
+// Fe: τ·u + κ∇T at face (energy flux, outward positive).
+__device__ __forceinline__ static void face_visc(
+    const double* __restrict__ sp,
+    int ax, int dn, int i, int j, int k,
+    double mu, double kc, double ih, double ihs,
+    double& tnn, double& tnt1, double& tnt2, double& Fe)
+{
+    const int t1 = (ax + 1) % 3, t2 = (ax + 2) % 3;
+    const int ni = i + (ax == 0 ? dn : 0);
+    const int nj = j + (ax == 1 ? dn : 0);
+    const int nk = k + (ax == 2 ? dn : 0);
+    const int d1i = (t1 == 0), d1j = (t1 == 1), d1k = (t1 == 2);
+    const int d2i = (t2 == 0), d2j = (t2 == 1), d2k = (t2 == 2);
+
+    // Normal velocity gradients at this face (sign absorbed by dn)
+    const double dnn  = ih * dn * (sp_vel(sp, ax, ni, nj, nk) - sp_vel(sp, ax, i, j, k));
+    const double dtn1 = ih * dn * (sp_vel(sp, t1, ni, nj, nk) - sp_vel(sp, t1, i, j, k));
+    const double dtn2 = ih * dn * (sp_vel(sp, t2, ni, nj, nk) - sp_vel(sp, t2, i, j, k));
+
+    // Tangential gradients: face-averaged between neighbor and center cells
+    const double d_ax_dt1 = ihs*(sp_vel(sp,ax,ni+d1i,nj+d1j,nk+d1k)-sp_vel(sp,ax,ni-d1i,nj-d1j,nk-d1k)
+                                +sp_vel(sp,ax,i +d1i,j +d1j,k +d1k)-sp_vel(sp,ax,i -d1i,j -d1j,k -d1k));
+    const double d_ax_dt2 = ihs*(sp_vel(sp,ax,ni+d2i,nj+d2j,nk+d2k)-sp_vel(sp,ax,ni-d2i,nj-d2j,nk-d2k)
+                                +sp_vel(sp,ax,i +d2i,j +d2j,k +d2k)-sp_vel(sp,ax,i -d2i,j -d2j,k -d2k));
+    const double d_t1_dt1 = ihs*(sp_vel(sp,t1,ni+d1i,nj+d1j,nk+d1k)-sp_vel(sp,t1,ni-d1i,nj-d1j,nk-d1k)
+                                +sp_vel(sp,t1,i +d1i,j +d1j,k +d1k)-sp_vel(sp,t1,i -d1i,j -d1j,k -d1k));
+    const double d_t2_dt2 = ihs*(sp_vel(sp,t2,ni+d2i,nj+d2j,nk+d2k)-sp_vel(sp,t2,ni-d2i,nj-d2j,nk-d2k)
+                                +sp_vel(sp,t2,i +d2i,j +d2j,k +d2k)-sp_vel(sp,t2,i -d2i,j -d2j,k -d2k));
+
+    const double divu = dnn + d_t1_dt1 + d_t2_dt2;
+    tnn  = mu * (2.0 * dnn - (2.0 / 3.0) * divu);
+    tnt1 = mu * (d_ax_dt1 + dtn1);
+    tnt2 = mu * (d_ax_dt2 + dtn2);
+
+    Fe = tnn  * 0.5 * (sp_vel(sp, ax, ni, nj, nk) + sp_vel(sp, ax, i, j, k))
+       + tnt1 * 0.5 * (sp_vel(sp, t1, ni, nj, nk) + sp_vel(sp, t1, i, j, k))
+       + tnt2 * 0.5 * (sp_vel(sp, t2, ni, nj, nk) + sp_vel(sp, t2, i, j, k))
+       + kc * ih * dn * (sp[5*GPU_NCELL + gpu_cell_idx(ni,nj,nk)]
+                        - sp[5*GPU_NCELL + gpu_cell_idx(i, j, k)]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // k_rhs_visc: face-averaged µ viscous divergence (B5 conservative form)
 // Grid: (n_leaves)  Block: (GPU_NB, GPU_NB) = 64 threads
 // Each thread (di,dj) handles all k ∈ [ilo,ihi]; direct write (no atomics).
@@ -424,134 +480,50 @@ void k_rhs_visc(const GpuLeafRhsMeta* __restrict__ metas) {
     const int    ilo = GPU_NG;
     const int    ihi = GPU_NG + GPU_NB - 1;
     const double ih  = 1.0 / m.h;
-    const double ihs = 0.5 * ih;   // 1/(2h) for face tangential gradients
+    const double ihs = 0.5 * ih;
 
     const int i = GPU_NG + threadIdx.x;
     const int j = GPU_NG + threadIdx.y;
 
-    auto UF = [&](int ii,int jj,int kk) { return sp[1*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
-    auto VF = [&](int ii,int jj,int kk) { return sp[2*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
-    auto WF = [&](int ii,int jj,int kk) { return sp[3*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
-    auto TF = [&](int ii,int jj,int kk) { return sp[5*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
-    auto MU = [&](int ii,int jj,int kk) { return sp[7*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
+    auto MU = [&](int ii,int jj,int kk){ return sp[7*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
 
     for (int k = ilo; k <= ihi; ++k) {
-        // Face-averaged µ at 6 faces of cell (i,j,k)
-        const double mu_xp = 0.5*(MU(i,j,k)+MU(i+1,j,  k  ));
-        const double mu_xm = 0.5*(MU(i,j,k)+MU(i-1,j,  k  ));
-        const double mu_yp = 0.5*(MU(i,j,k)+MU(i,  j+1,k  ));
-        const double mu_ym = 0.5*(MU(i,j,k)+MU(i,  j-1,k  ));
-        const double mu_zp = 0.5*(MU(i,j,k)+MU(i,  j,  k+1));
-        const double mu_zm = 0.5*(MU(i,j,k)+MU(i,  j,  k-1));
+        const double mu_c = MU(i,j,k);
+        const double mu_p[3] = {
+            0.5*(mu_c + MU(i+1,j,  k  )),
+            0.5*(mu_c + MU(i,  j+1,k  )),
+            0.5*(mu_c + MU(i,  j,  k+1))
+        };
+        const double mu_m[3] = {
+            0.5*(mu_c + MU(i-1,j,  k  )),
+            0.5*(mu_c + MU(i,  j-1,k  )),
+            0.5*(mu_c + MU(i,  j,  k-1))
+        };
 
-        // ── x±½ velocity gradients ───────────────────────────────────────────
-        const double dudx_xp = ih *(UF(i+1,j,k)-UF(i,j,k));
-        const double dvdx_xp = ih *(VF(i+1,j,k)-VF(i,j,k));
-        const double dwdx_xp = ih *(WF(i+1,j,k)-WF(i,j,k));
-        const double dudy_xp = ihs*(UF(i+1,j+1,k)-UF(i+1,j-1,k)+UF(i,j+1,k)-UF(i,j-1,k));
-        const double dudz_xp = ihs*(UF(i+1,j,k+1)-UF(i+1,j,k-1)+UF(i,j,k+1)-UF(i,j,k-1));
-        const double dvdy_xp = ihs*(VF(i+1,j+1,k)-VF(i+1,j-1,k)+VF(i,j+1,k)-VF(i,j-1,k));
-        const double dwdz_xp = ihs*(WF(i+1,j,k+1)-WF(i+1,j,k-1)+WF(i,j,k+1)-WF(i,j,k-1));
-        const double divu_xp = dudx_xp + dvdy_xp + dwdz_xp;
+        double acc[3] = {0.0, 0.0, 0.0};
+        double Fe_acc = 0.0;
 
-        const double dudx_xm = ih *(UF(i,j,k)-UF(i-1,j,k));
-        const double dvdx_xm = ih *(VF(i,j,k)-VF(i-1,j,k));
-        const double dwdx_xm = ih *(WF(i,j,k)-WF(i-1,j,k));
-        const double dudy_xm = ihs*(UF(i-1,j+1,k)-UF(i-1,j-1,k)+UF(i,j+1,k)-UF(i,j-1,k));
-        const double dudz_xm = ihs*(UF(i-1,j,k+1)-UF(i-1,j,k-1)+UF(i,j,k+1)-UF(i,j,k-1));
-        const double dvdy_xm = ihs*(VF(i-1,j+1,k)-VF(i-1,j-1,k)+VF(i,j+1,k)-VF(i,j-1,k));
-        const double dwdz_xm = ihs*(WF(i-1,j,k+1)-WF(i-1,j,k-1)+WF(i,j,k+1)-WF(i,j,k-1));
-        const double divu_xm = dudx_xm + dvdy_xm + dwdz_xm;
-
-        // ── y±½ velocity gradients ───────────────────────────────────────────
-        const double dudy_yp = ih *(UF(i,j+1,k)-UF(i,j,k));
-        const double dvdx_yp = ihs*(VF(i+1,j+1,k)-VF(i-1,j+1,k)+VF(i+1,j,k)-VF(i-1,j,k));
-        const double dvdy_yp = ih *(VF(i,j+1,k)-VF(i,j,k));
-        const double dvdz_yp = ihs*(VF(i,j+1,k+1)-VF(i,j+1,k-1)+VF(i,j,k+1)-VF(i,j,k-1));
-        const double dwdy_yp = ih *(WF(i,j+1,k)-WF(i,j,k));
-        const double dudx_yp = ihs*(UF(i+1,j+1,k)-UF(i-1,j+1,k)+UF(i+1,j,k)-UF(i-1,j,k));
-        const double dwdz_yp = ihs*(WF(i,j+1,k+1)-WF(i,j+1,k-1)+WF(i,j,k+1)-WF(i,j,k-1));
-        const double divu_yp = dudx_yp + dvdy_yp + dwdz_yp;
-
-        const double dudy_ym = ih *(UF(i,j,k)-UF(i,j-1,k));
-        const double dvdx_ym = ihs*(VF(i+1,j-1,k)-VF(i-1,j-1,k)+VF(i+1,j,k)-VF(i-1,j,k));
-        const double dvdy_ym = ih *(VF(i,j,k)-VF(i,j-1,k));
-        const double dvdz_ym = ihs*(VF(i,j-1,k+1)-VF(i,j-1,k-1)+VF(i,j,k+1)-VF(i,j,k-1));
-        const double dwdy_ym = ih *(WF(i,j,k)-WF(i,j-1,k));
-        const double dudx_ym = ihs*(UF(i+1,j-1,k)-UF(i-1,j-1,k)+UF(i+1,j,k)-UF(i-1,j,k));
-        const double dwdz_ym = ihs*(WF(i,j-1,k+1)-WF(i,j-1,k-1)+WF(i,j,k+1)-WF(i,j,k-1));
-        const double divu_ym = dudx_ym + dvdy_ym + dwdz_ym;
-
-        // ── z±½ velocity gradients ───────────────────────────────────────────
-        const double dudz_zp = ih *(UF(i,j,k+1)-UF(i,j,k));
-        const double dvdz_zp = ih *(VF(i,j,k+1)-VF(i,j,k));
-        const double dwdz_zp = ih *(WF(i,j,k+1)-WF(i,j,k));
-        const double dwdx_zp = ihs*(WF(i+1,j,k+1)-WF(i-1,j,k+1)+WF(i+1,j,k)-WF(i-1,j,k));
-        const double dwdy_zp = ihs*(WF(i,j+1,k+1)-WF(i,j-1,k+1)+WF(i,j+1,k)-WF(i,j-1,k));
-        const double dudx_zp = ihs*(UF(i+1,j,k+1)-UF(i-1,j,k+1)+UF(i+1,j,k)-UF(i-1,j,k));
-        const double dvdy_zp = ihs*(VF(i,j+1,k+1)-VF(i,j-1,k+1)+VF(i,j+1,k)-VF(i,j-1,k));
-        const double divu_zp = dudx_zp + dvdy_zp + dwdz_zp;
-
-        const double dudz_zm = ih *(UF(i,j,k)-UF(i,j,k-1));
-        const double dvdz_zm = ih *(VF(i,j,k)-VF(i,j,k-1));
-        const double dwdz_zm = ih *(WF(i,j,k)-WF(i,j,k-1));
-        const double dwdx_zm = ihs*(WF(i+1,j,k-1)-WF(i-1,j,k-1)+WF(i+1,j,k)-WF(i-1,j,k));
-        const double dwdy_zm = ihs*(WF(i,j+1,k-1)-WF(i,j-1,k-1)+WF(i,j+1,k)-WF(i,j-1,k));
-        const double dudx_zm = ihs*(UF(i+1,j,k-1)-UF(i-1,j,k-1)+UF(i+1,j,k)-UF(i-1,j,k));
-        const double dvdy_zm = ihs*(VF(i,j+1,k-1)-VF(i,j-1,k-1)+VF(i,j+1,k)-VF(i,j-1,k));
-        const double divu_zm = dudx_zm + dvdy_zm + dwdz_zm;
-
-        // ── Face stresses ────────────────────────────────────────────────────
-        const double txx_xp = mu_xp*(2.0*dudx_xp-(2.0/3.0)*divu_xp);
-        const double txy_xp = mu_xp*(dudy_xp+dvdx_xp);
-        const double txz_xp = mu_xp*(dudz_xp+dwdx_xp);
-        const double txx_xm = mu_xm*(2.0*dudx_xm-(2.0/3.0)*divu_xm);
-        const double txy_xm = mu_xm*(dudy_xm+dvdx_xm);
-        const double txz_xm = mu_xm*(dudz_xm+dwdx_xm);
-
-        const double tyx_yp = mu_yp*(dudy_yp+dvdx_yp);
-        const double tyy_yp = mu_yp*(2.0*dvdy_yp-(2.0/3.0)*divu_yp);
-        const double tyz_yp = mu_yp*(dvdz_yp+dwdy_yp);
-        const double tyx_ym = mu_ym*(dudy_ym+dvdx_ym);
-        const double tyy_ym = mu_ym*(2.0*dvdy_ym-(2.0/3.0)*divu_ym);
-        const double tyz_ym = mu_ym*(dvdz_ym+dwdy_ym);
-
-        const double tzx_zp = mu_zp*(dudz_zp+dwdx_zp);
-        const double tzy_zp = mu_zp*(dvdz_zp+dwdy_zp);
-        const double tzz_zp = mu_zp*(2.0*dwdz_zp-(2.0/3.0)*divu_zp);
-        const double tzx_zm = mu_zm*(dudz_zm+dwdx_zm);
-        const double tzy_zm = mu_zm*(dvdz_zm+dwdy_zm);
-        const double tzz_zm = mu_zm*(2.0*dwdz_zm-(2.0/3.0)*divu_zm);
-
-        // ── Momentum divergences ─────────────────────────────────────────────
-        const double ax = ih*((txx_xp-txx_xm)+(tyx_yp-tyx_ym)+(tzx_zp-tzx_zm));
-        const double ay = ih*((txy_xp-txy_xm)+(tyy_yp-tyy_ym)+(tzy_zp-tzy_zm));
-        const double az = ih*((txz_xp-txz_xm)+(tyz_yp-tyz_ym)+(tzz_zp-tzz_zm));
-
-        // ── Energy: conservative face-flux form div(τ·u + κ∇T) ─────────────
-        const double Uc = UF(i,j,k), Vc = VF(i,j,k), Wc = WF(i,j,k);
-        const double kxp = mu_xp*GPU_CP/GPU_PR, kxm = mu_xm*GPU_CP/GPU_PR;
-        const double kyp = mu_yp*GPU_CP/GPU_PR, kym = mu_ym*GPU_CP/GPU_PR;
-        const double kzp = mu_zp*GPU_CP/GPU_PR, kzm = mu_zm*GPU_CP/GPU_PR;
-
-        const double Fex_p = txx_xp*0.5*(UF(i+1,j,k)+Uc) + txy_xp*0.5*(VF(i+1,j,k)+Vc)
-                           + txz_xp*0.5*(WF(i+1,j,k)+Wc) + kxp*ih*(TF(i+1,j,k)-TF(i,j,k));
-        const double Fex_m = txx_xm*0.5*(UF(i-1,j,k)+Uc) + txy_xm*0.5*(VF(i-1,j,k)+Vc)
-                           + txz_xm*0.5*(WF(i-1,j,k)+Wc) + kxm*ih*(TF(i,j,k)-TF(i-1,j,k));
-        const double Fey_p = tyx_yp*0.5*(UF(i,j+1,k)+Uc) + tyy_yp*0.5*(VF(i,j+1,k)+Vc)
-                           + tyz_yp*0.5*(WF(i,j+1,k)+Wc) + kyp*ih*(TF(i,j+1,k)-TF(i,j,k));
-        const double Fey_m = tyx_ym*0.5*(UF(i,j-1,k)+Uc) + tyy_ym*0.5*(VF(i,j-1,k)+Vc)
-                           + tyz_ym*0.5*(WF(i,j-1,k)+Wc) + kym*ih*(TF(i,j,k)-TF(i,j-1,k));
-        const double Fez_p = tzx_zp*0.5*(UF(i,j,k+1)+Uc) + tzy_zp*0.5*(VF(i,j,k+1)+Vc)
-                           + tzz_zp*0.5*(WF(i,j,k+1)+Wc) + kzp*ih*(TF(i,j,k+1)-TF(i,j,k));
-        const double Fez_m = tzx_zm*0.5*(UF(i,j,k-1)+Uc) + tzy_zm*0.5*(VF(i,j,k-1)+Vc)
-                           + tzz_zm*0.5*(WF(i,j,k-1)+Wc) + kzm*ih*(TF(i,j,k)-TF(i,j,k-1));
+        for (int ax = 0; ax < 3; ++ax) {
+            const int t1 = (ax + 1) % 3, t2 = (ax + 2) % 3;
+            double tnn_p, tnt1_p, tnt2_p, Fe_p;
+            double tnn_m, tnt1_m, tnt2_m, Fe_m;
+            face_visc(sp, ax, +1, i, j, k,
+                      mu_p[ax], mu_p[ax] * GPU_CP / GPU_PR, ih, ihs,
+                      tnn_p, tnt1_p, tnt2_p, Fe_p);
+            face_visc(sp, ax, -1, i, j, k,
+                      mu_m[ax], mu_m[ax] * GPU_CP / GPU_PR, ih, ihs,
+                      tnn_m, tnt1_m, tnt2_m, Fe_m);
+            acc[ax] += ih * (tnn_p  - tnn_m );
+            acc[t1] += ih * (tnt1_p - tnt1_m);
+            acc[t2] += ih * (tnt2_p - tnt2_m);
+            Fe_acc  += ih * (Fe_p   - Fe_m  );
+        }
 
         const int flat = gpu_cell_idx(i,j,k);
-        rhs[1*GPU_NCELL+flat] += ax;
-        rhs[2*GPU_NCELL+flat] += ay;
-        rhs[3*GPU_NCELL+flat] += az;
-        rhs[4*GPU_NCELL+flat] += ih*(Fex_p-Fex_m) + ih*(Fey_p-Fey_m) + ih*(Fez_p-Fez_m);
+        rhs[1*GPU_NCELL+flat] += acc[0];
+        rhs[2*GPU_NCELL+flat] += acc[1];
+        rhs[3*GPU_NCELL+flat] += acc[2];
+        rhs[4*GPU_NCELL+flat] += Fe_acc;
     }
 }
 
@@ -565,9 +537,8 @@ GpuRhsList::~GpuRhsList() {
     if (d_rhs_pool)     { cudaFree(d_rhs_pool);     d_rhs_pool     = nullptr; }
 }
 
-void GpuRhsList::build(const BlockTree& tree) {
-    // Free previous allocations
-    cudaFree(d_metas);        d_metas        = nullptr;
+void GpuRhsList::build(const BlockTree& tree, const GpuPool& pool) {
+    // Free previous large-pool allocations (d_metas freed inside gpu_upload_meta)
     cudaFree(d_scratch_pool); d_scratch_pool = nullptr;
     cudaFree(d_rhs_pool);     d_rhs_pool     = nullptr;
 
@@ -584,17 +555,14 @@ void GpuRhsList::build(const BlockTree& tree) {
     for (int li = 0; li < n_leaves; ++li) {
         const BlockNode& nd = tree.nodes[leaves[li]];
         GpuLeafRhsMeta& meta = h_metas[li];
-        meta.d_Q      = nd.block->d_Q;
+        meta.d_Q      = pool.d_Q(nd.block.get());
         meta.d_RHS    = d_rhs_pool     + (size_t)li * NVAR           * NCELL;
         meta.d_scratch= d_scratch_pool + (size_t)li * SCRATCH_NCOMP  * NCELL;
         meta.h        = nd.block->h;
         meta._pad[0]  = meta._pad[1] = meta._pad[2] = meta._pad[3] = 0;
     }
 
-    CUDA_CHECK(cudaMalloc(&d_metas, n_leaves * sizeof(GpuLeafRhsMeta)));
-    CUDA_CHECK(cudaMemcpy(d_metas, h_metas.data(),
-                          n_leaves * sizeof(GpuLeafRhsMeta),
-                          cudaMemcpyHostToDevice));
+    gpu_upload_meta(d_metas, h_metas);
 }
 
 // k_zero_rhs: zero d_rhs_pool as a proper kernel node (graph-capture safe).
