@@ -252,7 +252,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | P12.7 | 🔲 | **Live sparkline charts** — rolling history (last 2000 steps) for CFL, KE, mass, leaf count, wall_time; Canvas2D sparkline, no external libraries | ~half day |
 | P12.8 | 🔲 | **AMR grid overlay** — checkbox to draw block outlines colour-coded by AMR level on a separate canvas layer; uses BlockDesc2D origin+cell_size | ~2 hours |
 | P12.9 | ✅ | **Colormap selector** — Viridis/Inferno/Plasma/RdBu polynomial colormaps in JS dispatcher; `<select id="scm">` in viewer bar; `colormap()` replaces `viridis()`; `drawCells` updated. t12 4/4 pass. | `src/live_streamer.cpp` | done |
-| P12.10 | 🔲 | **Keyboard shortcuts** — `j`/`k` slice position, `v` cycle vars, `a` cycle axes, `Space` pause/resume | ~1 hour |
+| P12.10 | ✅ | **Keyboard shortcuts** — `j`/`k` step slice position (0.005/step), `v` cycle vars, `a` cycle axes, `Space` pause/resume; guarded against focus on INPUT/SELECT; `paused` flag skips parseFrame but keeps stream alive. t12 4/4 pass. | `src/live_streamer.cpp` | done |
 
 ---
 

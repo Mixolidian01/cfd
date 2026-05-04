@@ -325,7 +325,7 @@ async function connect(){
       while(buf.length>=4){
         const flen=new DataView(buf.buffer,buf.byteOffset,4).getUint32(0,true);
         if(buf.length<4+flen) break;
-        parseFrame(buf.subarray(4,4+flen));
+        if(!paused) parseFrame(buf.subarray(4,4+flen));
         buf=buf.subarray(4+flen);
       }
     }
@@ -346,6 +346,28 @@ function sendCfg(){
 document.getElementById('sv').addEventListener('change',sendCfg);
 document.getElementById('sa').addEventListener('change',sendCfg);
 document.getElementById('sp').addEventListener('input', sendCfg);
+
+// P12.10: keyboard shortcuts (skip when focus is in an input/select)
+let paused=false;
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  const sp=document.getElementById('sp');
+  const sv=document.getElementById('sv');
+  const sa=document.getElementById('sa');
+  if(e.key==='j'){
+    sp.value=Math.max(0,+sp.value - +sp.step); sendCfg(); e.preventDefault();
+  }else if(e.key==='k'){
+    sp.value=Math.min(1,+sp.value + +sp.step); sendCfg(); e.preventDefault();
+  }else if(e.key==='v'){
+    sv.selectedIndex=(sv.selectedIndex+1)%sv.options.length; sendCfg(); e.preventDefault();
+  }else if(e.key==='a'){
+    sa.selectedIndex=(sa.selectedIndex+1)%sa.options.length; sendCfg(); e.preventDefault();
+  }else if(e.key===' '){
+    paused=!paused;
+    infoEl.textContent=paused?'⏸ paused':'streaming';
+    e.preventDefault();
+  }
+});
 
 connect();
 </script>
