@@ -347,6 +347,21 @@ document.getElementById('sv').addEventListener('change',sendCfg);
 document.getElementById('sa').addEventListener('change',sendCfg);
 document.getElementById('sp').addEventListener('input', sendCfg);
 
+// P12.2: canvas click → POST /probe → show all 8 vars in info bar
+document.getElementById('c').addEventListener('click',e=>{
+  const cv=document.getElementById('c');
+  const rect=cv.getBoundingClientRect();
+  const x=(e.clientX-rect.left)/rect.width;
+  const y=(e.clientY-rect.top)/rect.height;
+  fetch('/probe',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({x,y})}).then(r=>r.json()).then(d=>{
+    if(!d.ok){infoEl.textContent=d.msg||'no cell';return;}
+    infoEl.textContent=
+      `[L${d.level}] ρ=${d.rho.toPrecision(4)} p=${d.press.toPrecision(4)}`+
+      ` T=${d.temp.toPrecision(4)} |u|=${d.umag.toPrecision(4)}`;
+  }).catch(()=>{});
+});
+
 // P12.10: keyboard shortcuts (skip when focus is in an input/select)
 let paused=false;
 document.addEventListener('keydown',e=>{
@@ -634,6 +649,7 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
     fb.domain_L = static_cast<float>(L);
     fb.descs.clear();
     fb.data.clear();
+    fb.probe.clear();
 
     float g_vmin = std::numeric_limits<float>::max();
     float g_vmax = std::numeric_limits<float>::lowest();
@@ -698,6 +714,18 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
             fb.data.push_back(v);
             g_vmin = std::min(g_vmin, v);
             g_vmax = std::max(g_vmax, v);
+            // P12.2: all 8 vars for probe queries
+            Prim q = blk.prim(ci, cj, ck);
+            fb.probe.push_back({
+                static_cast<float>(blk.rho (ci,cj,ck)),
+                static_cast<float>(q.p),
+                static_cast<float>(q.T),
+                static_cast<float>(std::sqrt(q.u*q.u+q.v*q.v+q.w*q.w)),
+                static_cast<float>(blk.rhou(ci,cj,ck)),
+                static_cast<float>(blk.rhov(ci,cj,ck)),
+                static_cast<float>(blk.rhow(ci,cj,ck)),
+                static_cast<float>(blk.E   (ci,cj,ck))
+            });
         }
     }
 
@@ -935,6 +963,7 @@ void LiveStreamer::handle_connection(int cfd) {
                                   (req.rfind("GET /volume\r",      0) == 0);
     const bool is_get_vol_strm  = (req.rfind("GET /volume-stream", 0) == 0);
     const bool is_get_metrics   = (req.rfind("GET /metrics",        0) == 0);
+    const bool is_post_probe    = (req.rfind("POST /probe",          0) == 0);
     const bool is_post_cfg      = (req.rfind("POST /config", 0) == 0);
 
     if (is_get_root) {
@@ -948,7 +977,9 @@ void LiveStreamer::handle_connection(int cfd) {
     } else if (is_get_vol_strm) {
         handle_get_vol_stream(cfd);
     } else if (is_get_metrics) {
-        handle_get_metrics(cfd);  // closes cfd inside
+        handle_get_metrics(cfd);   // closes cfd inside
+    } else if (is_post_probe) {
+        handle_post_probe(cfd, req);  // closes cfd inside
     } else if (is_post_cfg) {
         handle_post_config(cfd, req);
         ::close(cfd);
@@ -1064,6 +1095,68 @@ void LiveStreamer::handle_get_metrics(int cfd) {
         "Connection: close\r\n\r\n", hlen);
     ::send(cfd, hdr, static_cast<size_t>(hlen2), MSG_NOSIGNAL);
     ::send(cfd, buf, static_cast<size_t>(hlen),  MSG_NOSIGNAL);
+    ::close(cfd);
+}
+
+// P12.2 — POST /probe {"x":norm_x,"y":norm_y} → JSON with all 8 vars at nearest cell.
+// Coordinates are normalised canvas coords (0-1): x left→right, y top→bottom.
+void LiveStreamer::handle_post_probe(int cfd, const std::string& req_with_body) {
+    int cl = http_content_length(req_with_body);
+    std::string body;
+    auto pos0 = req_with_body.find("\r\n\r\n");
+    if (pos0 != std::string::npos) body = req_with_body.substr(pos0 + 4);
+    while ((int)body.size() < cl) {
+        char tmp[256]; int want = std::min(cl-(int)body.size(),(int)sizeof(tmp));
+        ssize_t n = ::recv(cfd, tmp, static_cast<size_t>(want), 0);
+        if (n <= 0) break;
+        body.append(tmp, static_cast<size_t>(n));
+    }
+
+    double norm_x = 0.5, norm_y = 0.5;
+    json_double(body, "x", norm_x);
+    json_double(body, "y", norm_y);
+
+    char resp[512];
+    int rlen;
+    {
+        std::lock_guard<std::mutex> lk(swap_mtx_);
+        const float L = front_.domain_L;
+        // y-axis flipped: physical oy2d increases upward, canvas y increases downward
+        const float pa = static_cast<float>(norm_x) * L;
+        const float pb = static_cast<float>(1.0 - norm_y) * L;
+        int block_idx = -1;
+        int cell_flat = -1;
+        for (int b = 0; b < (int)front_.descs.size(); ++b) {
+            const BlockDesc2D& d = front_.descs[b];
+            const float bsize = d.h * NB;
+            if (pa < d.ox2d || pa >= d.ox2d + bsize) continue;
+            if (pb < d.oy2d || pb >= d.oy2d + bsize) continue;
+            const int ia = static_cast<int>((pa - d.ox2d) / d.h);
+            const int ib = static_cast<int>((pb - d.oy2d) / d.h);
+            block_idx = b;
+            cell_flat = b * NB * NB + ib * NB + ia;
+            break;
+        }
+        if (block_idx < 0 || cell_flat >= (int)front_.probe.size()) {
+            rlen = std::snprintf(resp, sizeof(resp),
+                "{\"ok\":false,\"msg\":\"no block at queried position\"}");
+        } else {
+            const auto& v = front_.probe[cell_flat];
+            rlen = std::snprintf(resp, sizeof(resp),
+                "{\"ok\":true,\"block\":%d,\"level\":%d,"
+                "\"rho\":%.5g,\"press\":%.5g,\"temp\":%.5g,\"umag\":%.5g,"
+                "\"rhou\":%.5g,\"rhov\":%.5g,\"rhow\":%.5g,\"E\":%.5g}",
+                block_idx, (int)front_.descs[block_idx].level,
+                v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+        }
+    }
+    char hdr[256];
+    int hlen = std::snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        "Content-Length: %d\r\nAccess-Control-Allow-Origin: *\r\n"
+        "Connection: close\r\n\r\n", rlen);
+    ::send(cfd, hdr,  static_cast<size_t>(hlen), MSG_NOSIGNAL);
+    ::send(cfd, resp, static_cast<size_t>(rlen),  MSG_NOSIGNAL);
     ::close(cfd);
 }
 

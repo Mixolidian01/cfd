@@ -31,6 +31,7 @@
 
 #include "../include/block_tree.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -81,8 +82,9 @@ struct FrameBuffer {
     float   g_vmin    = 0.f;
     float   g_vmax    = 1.f;
     float   domain_L  = 1.f;
-    std::vector<BlockDesc2D> descs;   // n_blocks entries (always sent)
-    std::vector<float>       data;    // n_blocks × NB × NB float32
+    std::vector<BlockDesc2D>           descs;  // n_blocks entries (always sent)
+    std::vector<float>                 data;   // n_blocks × NB × NB float32
+    std::vector<std::array<float, 8>>  probe;  // P12.2: all 8 vars per cell (same layout as data)
 };
 
 // ── 3-D volume frame (P6.6) ──────────────────────────────────────────────────
@@ -184,6 +186,7 @@ private:
     void handle_get_vol_stream  (int cfd);        // P6.6 — 3-D chunked stream
     void handle_post_config     (int cfd, const std::string& req_with_body);
     void handle_get_metrics     (int cfd);
+    void handle_post_probe      (int cfd, const std::string& req_with_body);
 
     void build_frame    (const BlockTree&, int step, double t, FrameBuffer&);
     void serialize_frame(const FrameBuffer&, std::vector<uint8_t>& out);
