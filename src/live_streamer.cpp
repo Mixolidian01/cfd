@@ -149,6 +149,14 @@ select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
     <input type="range" id="sp" min="0" max="1" step="0.005" value="0.5">
     <span id="lp">0.500</span>
   </label>
+  <label>cmap
+    <select id="scm">
+      <option value="0">Viridis</option>
+      <option value="1">Inferno</option>
+      <option value="2">Plasma</option>
+      <option value="3">RdBu</option>
+    </select>
+  </label>
   <label>lock range
     <input type="checkbox" id="lck">
     <input type="number" id="vmn" style="width:70px" step="any" placeholder="min">
@@ -171,15 +179,33 @@ function resize(){
 }
 window.addEventListener('resize',resize); resize();
 
-function viridis(t){
+// P12.9: colormap polynomials (degree-6 fit, Smith & van der Walt approach)
+function colormap(t){
   t=Math.max(0,Math.min(1,t));
-  const f=(c0,c1,c2,c3,c4,c5,c6)=>c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));
-  const r=f(0.2777273,0.1050930,-0.3308618,-4.6342305, 6.2282699, 4.7763850,-5.4354559);
-  const g=f(0.0054073,1.4046135, 0.2148476,-5.7991010,14.1799334,-13.7451454, 4.6458526);
-  const b=f(0.3340998,1.3845902, 0.0950952,-19.332441,56.6905526,-65.3530342,26.3124352);
-  return [Math.round(Math.max(0,Math.min(1,r))*255),
-          Math.round(Math.max(0,Math.min(1,g))*255),
-          Math.round(Math.max(0,Math.min(1,b))*255)];
+  const p=(c0,c1,c2,c3,c4,c5,c6)=>c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));
+  const clamp=v=>Math.round(Math.max(0,Math.min(1,v))*255);
+  const id=+document.getElementById('scm').value;
+  let r,g,b;
+  if(id===1){ // Inferno
+    r=p(0.0002189403,0.1057994,-0.1735988, 3.8347872,-5.1726296, 3.1604407,-0.7104444);
+    g=p(0.0016013369,0.3963866,-3.7247912,18.6295481,-30.4509935,22.8141862,-6.5453640);
+    b=p(0.0139899592,1.3252710, 0.5095668,-8.0153272,12.6095827,-9.0437210, 2.4507063);
+  } else if(id===2){ // Plasma
+    r=p(0.0504608,2.4948896,-7.6432044,18.6310545,-26.2866873,18.9619036,-5.2281024);
+    g=p(0.0298280,0.2199791,-0.5213558, 0.7715085, 0.0208028,-0.6430060, 0.3272484);
+    b=p(0.5288035,-1.2685958, 8.2049498,-25.7985273,38.5484888,-28.4419512, 8.2021673);
+  } else if(id===3){ // RdBu (diverging: blue→white→red)
+    const s=2*t-1; // [-1,1]
+    r=Math.max(0,Math.min(1, 0.5+0.5*s+0.35*s*s*s));
+    g=Math.max(0,Math.min(1, 0.5-0.5*Math.abs(s)));
+    b=Math.max(0,Math.min(1, 0.5-0.5*s+0.35*s*s*s));
+    return [Math.round(r*255),Math.round(g*255),Math.round(b*255)];
+  } else { // Viridis (default)
+    r=p(0.2777273,0.1050930,-0.3308618,-4.6342305, 6.2282699, 4.7763850,-5.4354559);
+    g=p(0.0054073,1.4046135, 0.2148476,-5.7991010,14.1799334,-13.7451454, 4.6458526);
+    b=p(0.3340998,1.3845902, 0.0950952,-19.332441,56.6905526,-65.3530342,26.3124352);
+  }
+  return [clamp(r),clamp(g),clamp(b)];
 }
 
 // Minimal LZ4 raw-block decompressor (no frame header).
@@ -217,7 +243,7 @@ function drawCells(nB,vmin,vmax,getVal){
     for(let row=0;row<NB;row++)
     for(let col=0;col<NB;col++){
       const val=getVal(ci++);
-      const [r,g,bl]=viridis((val-vmin)/range);
+      const [r,g,bl]=colormap((val-vmin)/range);
       const cx=Math.round((ox2d+(col+0.5)*h)/domainL*W);
       const cy=Math.round((1-(oy2d+(row+0.5)*h)/domainL)*H);
       const px0=cx-Math.floor(pw/2),py0=cy-Math.floor(ph/2);
