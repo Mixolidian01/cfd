@@ -162,8 +162,9 @@ linalg  ←  block (block_tree.cpp + amr_operators.cpp)
 
 - git address: `https://github.com/Mixolidian01/cfd.git`
 - Current branch: `to_debug`
-- All Phases 0–10-A3 complete: 28 gate tests pass (t1–t7, t8–t12, tb1–tb9, t13–t18, t19–t26)
+- All Phases 0–10 + P11–P12 complete: 28 gate tests pass (t1–t7, t8–t12, tb1–tb9, t13–t18, t19–t26)
+- Phase 13 in progress: P13.1 ⚠️ (stages 1-3 ✅ — Axis enum, kep_flux_t/weno5_face_t<DIR> fully inlined with constexpr if; viscous face-stress remaining), P13.3 ✅ (characteristic open BC with p∞), P13.4 ✅ (isothermal wall BC)
 - `roadmap.md` is the authoritative Phase 0–4 plan
-- `todo.md` tracks Phases 0–10 status; P10-A3 ✅, P10-A1/A2/B2-B4/C1 🔲; Phase 11-14 🔲
+- `todo.md` tracks all Phase status; P13.2/P13.5/P13.7/P14.x 🔲
 - `answers_register.md` logs session Q&A history
 - `to_avoid_bugs.md` records all derived rules (append on each new misbehaviour)
