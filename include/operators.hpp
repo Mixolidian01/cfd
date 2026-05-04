@@ -40,6 +40,11 @@ void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 // mu from Sutherland, Pr = 0.72, kappa = mu*cp/Pr.
 void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 
+// ── Ducros sensor configuration (P11.6) ──────────────────────────────────────
+// Set before the first tree_rhs() call each step.  Thread-safe (values are
+// only read by compute_rhs, never written during a concurrent step).
+void set_ducros_thresholds(double p_threshold, double blend_width) noexcept;
+
 // ── Full RHS: convective + viscous ───────────────────────────────────────────
 // rhs_blk.Q is zeroed then filled with convective + viscous contributions.
 void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;

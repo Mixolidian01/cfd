@@ -24,6 +24,30 @@
 // Forward declaration — full definition in gpu_pool.hpp (CUDA TU only).
 struct GpuPool;
 
+// P10-A2: TimeIntegrator — common interface for all SSP-RK3 implementations.
+//
+// Three implementations exist:
+//   CpuRk3 (inline in NSSolver::advance)  — TODO: extract to CpuRk3Integrator
+//   LtsRk3 (inline in advance_lts/lts_rk3_level) — TODO: extract to LtsIntegrator
+//   GpuRk3 (GpuGraphSolver, CUDA TU)      — already implements IGpuSolver : TimeIntegrator
+//
+// When all three are extracted, NSSolver::advance() collapses to:
+//   return integrator_->step(tree, cfg.cfl);
+struct TimeIntegrator {
+    virtual double step(const BlockTree& tree, double cfl) = 0;
+    virtual ~TimeIntegrator() = default;
+};
+
+// IGpuSolver extends TimeIntegrator with GPU lifecycle (build, download_q).
+// Implemented by GpuGraphSolver in src/cuda/gpu_graph.cu (CUDA TU only).
+struct IGpuSolver : TimeIntegrator {
+    // Bridge: TimeIntegrator::step() delegates to the GPU-named advance().
+    double step(const BlockTree& tree, double cfl) final { return advance(tree, cfl); }
+    virtual double advance(const BlockTree& tree, double cfl)                      = 0;
+    virtual void   download_q(const BlockTree& tree)                         const = 0;
+    virtual void   build(const BlockTree& tree, const GpuPool& pool, int bc_type) = 0;
+};
+
 // ── Diagnostics written every `diag_interval` steps ───────────────────────────────────
 struct StepDiag {
     int    step;
@@ -69,6 +93,13 @@ struct SolverConfig {
 
     // P8.1: run with GPU memory pool — all leaf blocks reside on device.
     bool use_gpu = false;
+
+    // P11.6: Ducros pressure-ratio sensor thresholds.
+    // ducros_p_threshold: |Δp|/p below this → Ducros pressure term = 0 (no WENO5 switch).
+    // ducros_blend_width: linear ramp width above the threshold (endpoint = threshold + width → 1).
+    // For DNS/LES without shocks, raise threshold (e.g. 0.5) to suppress spurious HLLC-ES.
+    double ducros_p_threshold = 0.1;
+    double ducros_blend_width = 0.1;
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────
@@ -108,6 +139,16 @@ struct NSSolver {
     // set_gpu_pool() before init() to share a pool across solvers.
     GpuPool* gpu_pool_ = nullptr;
     void set_gpu_pool(GpuPool* p) noexcept { gpu_pool_ = p; }
+
+    // P10-A2: optional GPU time integrator (flat-tree runs).
+    // IGpuSolver implements TimeIntegrator::step() via advance() + build() + download_q().
+    // Caller creates a GpuGraphSolver (CUDA TU) and injects it here before advance().
+    // When set, advance() dispatches the SSP-RK3 loop to the GPU via gpu_solver_->step().
+    // NSSolver::regrid() calls build() after every topology change.
+    // TODO P10-A2: also wrap CPU path in CpuRk3Integrator:TimeIntegrator so advance()
+    //   collapses to integrator_->step(tree, cfg.cfl) for both CPU and GPU.
+    IGpuSolver* gpu_solver_ = nullptr;
+    void set_gpu_solver(IGpuSolver* s) noexcept { gpu_solver_ = s; }
 
     int  scratch_leaf_count_ = -1;  ///< FIX P5: tracks last alloc size
     void alloc_scratch();

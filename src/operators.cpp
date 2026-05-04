@@ -306,6 +306,15 @@ static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
 //   Φ_p:   fires near stationary pressure discontinuities (e.g., t=0 Riemann IC),
 //          inactive for smooth flows (TGV: Φ_p ~ 0.07%, threshold 10%).
 //
+// Configurable pressure-sensor thresholds (P11.6) — set via set_ducros_thresholds().
+static double g_ducros_p_thr = 0.1;  // |Δp|/p below this → phi_p = 0
+static double g_ducros_blend = 0.1;  // linear blend width above threshold
+
+void set_ducros_thresholds(double p_threshold, double blend_width) noexcept {
+    g_ducros_p_thr = p_threshold;
+    g_ducros_blend = (blend_width > 1e-30) ? blend_width : 1e-30;
+}
+
 // Computed for cells in [1, NB2-2] per axis.
 // Output range: duc[cell_idx(i,j,k)] ∈ [0,1] for all valid cells.
 static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
@@ -352,8 +361,9 @@ static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
         const double dpz  = std::max(std::abs(pc[cell_idx(i,j,k+1)].p - pC),
                                      std::abs(pc[cell_idx(i,j,k-1)].p - pC));
         const double phi_p = std::max({dpx, dpy, dpz}) / (pC + eps_duc);
-        // Smooth blend: phi_p < 0.1 → 0; phi_p > 0.2 → 1; linear in between
-        const double phi_p_clamped = std::min(1.0, std::max(0.0, (phi_p - 0.1) / 0.1));
+        // Smooth blend: phi_p < thr → 0; phi_p > thr+width → 1; linear in between
+        const double phi_p_clamped = std::min(1.0, std::max(0.0,
+            (phi_p - g_ducros_p_thr) / g_ducros_blend));
 
         duc[cell_idx(i,j,k)] = std::max(phi_vel, phi_p_clamped);
     }

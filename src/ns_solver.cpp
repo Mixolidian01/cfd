@@ -158,6 +158,9 @@ double NSSolver::advance() {
     bool periodic = (cfg.bc == BCType::Periodic);
     bool open_bc   = (cfg.bc == BCType::Open);
 
+    // P11.6: propagate configurable Ducros thresholds before RHS evaluation.
+    set_ducros_thresholds(cfg.ducros_p_threshold, cfg.ducros_blend_width);
+
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
     // topology is immutable during zero_regs → stages → apply_correction.
     // step > 0 guard: skip at step 0 (initial IC, no dynamics yet).
