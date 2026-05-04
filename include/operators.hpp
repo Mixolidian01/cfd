@@ -20,6 +20,12 @@
 #include "block_tree.hpp"
 #include <array>
 
+// ── P13.1: compile-time axis tag ─────────────────────────────────────────────
+// Enables template<Axis DIR> flux specialisations; eliminates 3-way if/else
+// axis dispatch and asymmetric-bug surface. Underlying value matches int axis
+// convention (0=X, 1=Y, 2=Z) for backward compat with existing callers.
+enum class Axis : int { X = 0, Y = 1, Z = 2 };
+
 // ── Single-face HLLC flux (5 conserved variables) ────────────────────────────
 // Returns F_hllc at the interface between state L (left) and R (right).
 // Both states are given as primitive variables (rho,u,v,w,p).
@@ -30,6 +36,18 @@ std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept;
 // Lax-Friedrichs scalar dissipation λ_max/2 * ΔQ.
 // Satisfies the entropy inequality ∂η/∂t + ∂F_η/∂x ≤ 0 pointwise.
 std::array<double,5> hllc_es_flux(const Prim& L, const Prim& R, int axis) noexcept;
+
+// ── P13.1 — compile-time-axis variants (DIR known at compile time) ────────────
+// Delegates to the runtime versions until full axis-template refactor is done.
+// Usage: auto f = hllc_es_flux_t<Axis::X>(L, R);
+template<Axis DIR>
+inline std::array<double,5> hllc_es_flux_t(const Prim& L, const Prim& R) noexcept {
+    return hllc_es_flux(L, R, static_cast<int>(DIR));
+}
+template<Axis DIR>
+inline std::array<double,5> hllc_flux_t(const Prim& L, const Prim& R) noexcept {
+    return hllc_flux(L, R, static_cast<int>(DIR));
+}
 
 // ── Per-block convective RHS  dQ/dt|_conv = -(1/h)(dF/dx + dG/dy + dH/dz) ──
 // Ghost cells must be filled.  rhs is added to (not overwritten).

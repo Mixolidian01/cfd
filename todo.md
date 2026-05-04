@@ -265,7 +265,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | P13.3 | 🔲 | **Entropy-stable inflow/outflow BCs** (Svärd-Gjesteland 2025) — SAT penalty terms at open boundaries; proven discrete entropy inequality $\frac{d}{dt}\int\eta\,dV \le 0$; replaces zero-gradient open BC | arXiv 2506.21065 | 3 days |
 | P13.4 | 🔲 | **Entropy-stable no-slip wall BC** (Sayyari 2021) — viscous penalty enforcement of $\mathbf{u}=0, T=T_w$; configurable isothermal wall temperature in `BCType::Wall`; replaces adiabatic-only wall | arXiv 2110.10507 | 1 week |
 | P13.5 | 🔲 | **SAT penalty at AMR C/F interfaces** — reformulate Berger-Colella reflux as matrix-free SBP-SAT penalty; proven conservative + energy stable; GPU-native (no global matrix) | Del Rey Fernández et al.; SC24 | 3 weeks |
-| P13.6 | 🔲 | **LTS + Berger-Colella quadrature fix** — fine sub-step weights 1/2 (vs coarse 1/6, 1/6, 2/3); conservation error on AMR+LTS currently unaddressed | Berger-Oliger (1984) | 1 week |
+| P13.6 | ❌N/A | **LTS + Berger-Colella quadrature fix** — Verified: `sub_weight=1/r` in `advance_lts()` correctly weights fine-step stages so `reg = F_fine_avg` after r sub-steps; `apply_flux_correction(dt_c)` gives the exact Berger-Colella term `dt_c*F_fine/h_c`. T10a/T10b mass+energy conservation pass. No fix needed. | Berger-Oliger (1984) | N/A |
 | P13.7 | 🔲 | **TMA async halo exchanges** *(Hopper-exclusive: H100/H200 only)* — replace `cudaMemcpyAsync` ghost fill with TMA prefetch; hides latency while interior flux runs; zero-change for non-Hopper hardware | CUDA 12 + H100/H200 | 2 weeks |
 
 ---

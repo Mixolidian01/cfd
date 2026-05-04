@@ -679,11 +679,11 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
             if (!is_bnd && i >= ilo() && i < ihi()) {
                 Prim qL, qR;
                 weno5_face(pc, i, j, k, 0, qL, qR);
-                Fs = hllc_es_flux(qL, qR, 0);
+                Fs = hllc_es_flux_t<Axis::X>(qL, qR);
             } else if (is_wall_face(pL, pR, is_bnd)) {
                 Fs = Fk;  // wall: KEP = {0, p, 0, 0, 0}, no LF tangential drain
             } else {
-                Fs = hllc_es_flux(pL, pR, 0);
+                Fs = hllc_es_flux_t<Axis::X>(pL, pR);
             }
             F = blend(Fk, Fs, is_bnd ? 1.0 : theta);
         }
@@ -711,11 +711,11 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
             if (!is_bnd && j >= ilo() && j < ihi()) {
                 Prim qL, qR;
                 weno5_face(pc, i, j, k, 1, qL, qR);
-                Fs = hllc_es_flux(qL, qR, 1);
+                Fs = hllc_es_flux_t<Axis::Y>(qL, qR);
             } else if (is_wall_face(pL, pR, is_bnd)) {
                 Fs = Fk;  // wall: KEP = {0, 0, p, 0, 0}, no LF tangential drain
             } else {
-                Fs = hllc_es_flux(pL, pR, 1);
+                Fs = hllc_es_flux_t<Axis::Y>(pL, pR);
             }
             F = blend(Fk, Fs, is_bnd ? 1.0 : theta);
         }
@@ -743,11 +743,11 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
             if (!is_bnd && k >= ilo() && k < ihi()) {
                 Prim qL, qR;
                 weno5_face(pc, i, j, k, 2, qL, qR);
-                Fs = hllc_es_flux(qL, qR, 2);
+                Fs = hllc_es_flux_t<Axis::Z>(qL, qR);
             } else if (is_wall_face(pL, pR, is_bnd)) {
                 Fs = Fk;  // wall: KEP = {0, 0, 0, p, 0}, no LF tangential drain
             } else {
-                Fs = hllc_es_flux(pL, pR, 2);
+                Fs = hllc_es_flux_t<Axis::Z>(pL, pR);
             }
             F = blend(Fk, Fs, is_bnd ? 1.0 : theta);
         }
