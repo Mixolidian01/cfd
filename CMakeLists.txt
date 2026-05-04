@@ -493,8 +493,55 @@ if(NVCC)
         COMMENT "P9.1 gate: GPU GpuGraphSolver vs CPU NSSolver"
         USES_TERMINAL
     )
+
+    # ── P10-A3: NSSolver GPU dispatch via set_gpu_solver() (t26) ─────────────
+    set(_T26_BIN ${CMAKE_BINARY_DIR}/t26_gpu_nssolver_dispatch)
+    set(_T26_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p10a3_gpu_nssolver.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_graph.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/ns_solver.cpp
+        ${CMAKE_SOURCE_DIR}/src/flux_register.cpp
+        ${CMAKE_SOURCE_DIR}/src/sgs.cpp
+        ${CMAKE_SOURCE_DIR}/src/checkpoint.cpp
+        ${CMAKE_SOURCE_DIR}/src/vtk_writer.cpp
+        ${CMAKE_SOURCE_DIR}/src/live_streamer.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T26_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T26_SRCS}
+                -o ${_T26_BIN} -lm
+                $<$<BOOL:${LZ4_LIBRARY}>:-llz4>
+        DEPENDS ${_T26_SRCS}
+        COMMENT "nvcc: compiling P10-A3 NSSolver GPU dispatch gate"
+        VERBATIM
+    )
+
+    add_custom_target(t26
+        DEPENDS ${_T26_BIN}
+        COMMAND ${_T26_BIN}
+        COMMENT "P10-A3 gate: NSSolver GPU dispatch via set_gpu_solver()"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26 skipped")
 endif()
 
 # =============================================================================

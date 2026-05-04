@@ -51,6 +51,7 @@ cmake --build build -t t22   # Step 22: test_p85_gpu_cfl (P8.5 GPU CFL warp-shuf
 cmake --build build -t t23   # Step 23: test_p84_gpu_amr (P8.4 GPU AMR prolong/restrict, requires nvcc)
 cmake --build build -t t24   # Step 24: test_p86_gpu_graph (P8.6 CUDA Graph re-capture on regrid, requires nvcc)
 cmake --build build -t t25   # Step 25: test_p91_gpu_nssolver (P9.1 GPU vs CPU NSSolver correctness, requires nvcc)
+cmake --build build -t t26   # Step 26: test_p10a3_gpu_nssolver (P10-A3 NSSolver GPU dispatch via set_gpu_solver(), requires nvcc)
 ```
 
 **Running a simulation:**
@@ -161,8 +162,8 @@ linalg  ←  block (block_tree.cpp + amr_operators.cpp)
 
 - git address: `https://github.com/Mixolidian01/cfd.git`
 - Current branch: `to_debug`
-- All Phases 0–9.2 complete: 27 gate tests pass (t1–t7, t8–t12, tb1–tb9, t13–t18, t19–t25)
+- All Phases 0–10-A3 complete: 28 gate tests pass (t1–t7, t8–t12, tb1–tb9, t13–t18, t19–t26)
 - `roadmap.md` is the authoritative Phase 0–4 plan
-- `todo.md` tracks Phases 0–9.2 status (all ✅)
+- `todo.md` tracks Phases 0–10 status; P10-A3 ✅, P10-A1/A2/B2-B4/C1 🔲; Phase 11-14 🔲
 - `answers_register.md` logs session Q&A history
 - `to_avoid_bugs.md` records all derived rules (append on each new misbehaviour)
