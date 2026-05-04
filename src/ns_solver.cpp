@@ -261,7 +261,7 @@ double NSSolver::advance() {
             cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
     }
 
-    // P12.1/P12.4: compute per-step diagnostics when JSON output or metrics are needed.
+    // P12.1/P12.3/P12.4: compute per-step diagnostics.
     if (cfg.verbose_json || streamer_) {
         MetricsSnapshot ms;
         ms.step = step;
@@ -272,6 +272,7 @@ double NSSolver::advance() {
         ms.rho_min = 1e300;
         ms.rho_max = 0.0;
         ms.gpu_active = (gpu_solver_ != nullptr);
+        double px = 0.0, py = 0.0, pz = 0.0, etot = 0.0;
         for (int li : lvs) {
             auto& blk = *tree.nodes[li].block;
             const double h3 = blk.h * blk.h * blk.h;
@@ -285,9 +286,23 @@ double NSSolver::advance() {
                 ms.ke += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w) * h3;
                 if (q.rho < ms.rho_min) ms.rho_min = q.rho;
                 if (q.rho > ms.rho_max) ms.rho_max = q.rho;
+                px   += blk.rhou(i,j,k) * h3;
+                py   += blk.rhov(i,j,k) * h3;
+                pz   += blk.rhow(i,j,k) * h3;
+                etot += blk.E   (i,j,k) * h3;
             }
         }
         ms.cfl = dt / tree_cfl_dt(tree, 1.0);
+        // P12.3: conservation baselines (set on first call; relative errors thereafter)
+        const double mtm = std::sqrt(px*px + py*py + pz*pz);
+        if (mass0_ < 0.0) {
+            mass0_   = ms.mass;
+            mtm0_    = mtm;
+            energy0_ = etot;
+        }
+        ms.mass_error     = std::abs(ms.mass - mass0_)     / (std::abs(mass0_)   + 1e-300);
+        ms.momentum_error = std::abs(mtm - mtm0_)          / (std::abs(mtm0_)    + 1e-300);
+        ms.energy_error   = std::abs(etot  - energy0_)     / (std::abs(energy0_) + 1e-300);
         if (cfg.verbose_json) {
             std::fprintf(stdout,
                 "{\"step\":%d,\"t\":%.6e,\"dt\":%.6e,\"cfl\":%.4f,"

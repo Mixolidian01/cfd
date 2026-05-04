@@ -121,6 +121,10 @@ struct MetricsSnapshot {
     double wall_time_ms      = 0.0;  // elapsed since LiveStreamer construction
     int    leaves_per_level[8] = {}; // leaf count per AMR level (index 0..7)
     bool   gpu_active        = false;
+    // P12.3: relative conservation errors (|val-val0|/|val0|, 0 on step 0)
+    double mass_error        = 0.0;
+    double momentum_error    = 0.0;
+    double energy_error      = 0.0;
 };
 
 // ── LiveStreamer ─────────────────────────────────────────────────────────────

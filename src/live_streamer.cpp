@@ -1077,10 +1077,12 @@ void LiveStreamer::handle_get_metrics(int cfd) {
         "\"ke\":%.6e,\"mass\":%.6e,\"n_leaves\":%d,"
         "\"rho_min\":%.6e,\"rho_max\":%.6e,"
         "\"wall_time_ms\":%.3f,\"gpu_active\":%s,"
+        "\"mass_error\":%.3e,\"momentum_error\":%.3e,\"energy_error\":%.3e,"
         "\"leaves_per_level\":[%d,%d,%d,%d,%d,%d,%d,%d]}",
         m.step, m.t, m.dt, m.cfl, m.ke, m.mass, m.n_leaves,
         m.rho_min, m.rho_max, m.wall_time_ms,
         m.gpu_active ? "true" : "false",
+        m.mass_error, m.momentum_error, m.energy_error,
         m.leaves_per_level[0], m.leaves_per_level[1],
         m.leaves_per_level[2], m.leaves_per_level[3],
         m.leaves_per_level[4], m.leaves_per_level[5],

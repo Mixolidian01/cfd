@@ -163,6 +163,10 @@ private:
     // reset on init() is explicit. Sentinel -1.0 → first step residual=0.
     double ke_prev_  = -1.0;
     double last_dt_  = 0.0;   // B4: populated by advance(), exposed via compute_diag()
+    // P12.3: step-0 conservation baselines (sentinel -1 = uninitialized)
+    double mass0_    = -1.0;
+    double mtm0_     = -1.0;  // |total momentum| = sqrt(px²+py²+pz²)
+    double energy0_  = -1.0;
 
     void save_Qn();
     void copy_stage_to_tree(const std::vector<CellBlock>& stage);
