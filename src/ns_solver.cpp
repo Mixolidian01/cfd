@@ -261,12 +261,14 @@ double NSSolver::advance() {
             cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
     }
 
-    // JSON diagnostics
+    // P12.4: structured JSON per-step diagnostic line.
     if (cfg.verbose_json) {
-        double ke = 0.0;
-        for (int li : tree.leaf_indices()) {
+        double ke = 0.0, mass = 0.0;
+        const auto& lvs = tree.leaf_indices();
+        for (int li : lvs) {
             auto& blk = *tree.nodes[li].block;
             double h3 = blk.h * blk.h * blk.h;
+            mass += blk.total_mass();
             for (int k = NG; k < NG+NB; ++k)
             for (int j = NG; j < NG+NB; ++j)
             for (int i = NG; i < NG+NB; ++i) {
@@ -274,15 +276,11 @@ double NSSolver::advance() {
                 ke += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w) * h3;
             }
         }
-        double residual = (ke_prev_ >= 0.0 && ke_prev_ > 0.0)
-                          ? std::fabs(ke - ke_prev_) / ke_prev_
-                          : 0.0;
-        ke_prev_ = ke;
         double cfl_actual = dt / tree_cfl_dt(tree, 1.0);
         std::fprintf(stdout,
-            "{\"step\":%d,\"t\":%.6e,\"dt\":%.6e,\"KE\":%.6e,"
-            "\"residual\":%.6e,\"cfl\":%.4f}\n",
-            step, t, dt, ke, residual, cfl_actual);
+            "{\"step\":%d,\"t\":%.6e,\"dt\":%.6e,\"cfl\":%.4f,"
+            "\"ke\":%.6e,\"mass\":%.6e,\"leaves\":%d}\n",
+            step, t, dt, cfl_actual, ke, mass, (int)lvs.size());
         std::fflush(stdout);
     }
 

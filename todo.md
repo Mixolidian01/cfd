@@ -216,7 +216,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 | # | Status | Item | File | Priority |
 |---|--------|------|------|----------|
-| P11.1 | 🔲 | **Viscous energy CPU/GPU inconsistency** — CPU `viscous_rhs_impl` uses cell-centred `τ:S + κΔT`; GPU `k_rhs_visc` uses face-averaged velocity form for energy. $O(h^2)$ discrepancy causes t26 A1 failure (7.6% Q error over 20 steps). Align to one form — prefer CPU convention (cell-centred) for consistency with existing gate tests. | `src/cuda/gpu_rhs.cu:k_rhs_visc` | 🔴 Urgent |
+| P11.1 | ❌ N/A | **Viscous energy CPU/GPU** — validated: both use the same conservative face-flux form. t26 A1 passes (max error 2e-12, tol 1e-8); original 7.6% error was from a flawed `max_rel_err` metric (fixed in A3 gate). No code change needed. | — | — |
 | P11.2 | ✅ | **No viscous CFL** — added $\Delta t_\text{visc} = h^2 / (2 C_\text{visc} \max_i(\mu_i/\rho_i))$ where $C_\text{visc}=\max(4/3,\gamma/\text{Pr})$ to `CellBlock::cfl_dt()` in `block_tree.cpp`; also mirrored in `k_cfl_reduce` in `gpu_cfl.cu`. Moved `PR=0.72` from per-file statics to `cell_block.hpp`. CPU–GPU dt agreement maintained (t26 A2: 4e-16). | `src/block_tree.cpp`, `src/cuda/gpu_cfl.cu`, `include/cell_block.hpp` | done |
 | P11.3 | ✅ | **No positivity limiter** — added `apply_positivity_floor()` static helper in `ns_solver.cpp`; floors ρ ≥ 1e-12 and p ≥ 1e-12 (via E adjustment) on interior cells after each RK3 stage in `advance()`, `advance_imex()`. All 12 t4 sub-tests and t26 3/3 pass unchanged. | `src/ns_solver.cpp` | done |
 | P11.4 | ✅ | **Sutherland temperature floor** — added `if (T < 1.0) T = 1.0;` to `sutherland()` in `cell_block.hpp` and `gpu_sutherland()` in `gpu_constants.cuh`. Prevents `sqrt` of negative T near rarefactions. All gates pass. | `include/cell_block.hpp`, `include/cuda/gpu_constants.cuh` | done |
@@ -241,14 +241,14 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | P12.1 | 🔲 | **`GET /metrics` JSON endpoint** — `MetricsSnapshot` struct updated by `snapshot()`; `handle_get_metrics()` handler; returns step, t, dt, cfl_max, ρ range, KE, mass, n_leaves, per-level leaf counts, wall_time_ms, gpu_active flag | ~80 lines C++ |
 | P12.2 | 🔲 | **`POST /probe` endpoint** — click → `{"x": 0.34, "y": 0.71}` → JSON response with all 8 vars + AMR level + block index at nearest cell; browser sends on canvas mouseclick | ~60 lines C++ |
 | P12.3 | 🔲 | **Conservation norms in MetricsSnapshot** — `mass_error`, `momentum_error`, `energy_error` (relative to step-0 values); `cf_flux_residual` (max Berger-Colella correction); expose in `/metrics` response | ~40 lines C++ |
-| P12.4 | 🔲 | **Structured JSON stdout per step** — `fprintf(stdout, "...")` one JSON line per step: `{"step":N,"t":T,"dt":DT,"cfl":CFL,"ke":KE,"mass":M,"leaves":L}` | ~5 lines C++ |
+| P12.4 | ✅ | **Structured JSON stdout per step** — enhanced `verbose_json` output in `NSSolver::advance()` to include `mass` (via `CellBlock::total_mass()`) and `leaves` count; aligned field names to `{"step":N,"t":T,"dt":DT,"cfl":CFL,"ke":KE,"mass":M,"leaves":L}`. | `src/ns_solver.cpp` | done |
 | P12.5 | 🔲 | **Derived variables: Mach, vorticity, Q-criterion, schlieren** — add to `StreamVar` enum and `build_frame()`; local stencil operations on existing CellBlock fields | ~1 day C++ |
 
 ### 12-B — JS/HTML side (browser viewer)
 
 | # | Status | Item | Notes |
 |---|--------|------|-------|
-| P12.6 | 🔲 | **Manual vmin/vmax lock** — two number inputs + lock checkbox; when locked, frame's global min/max ignored; pure JS, no C++ change needed | ~1 hour |
+| P12.6 | ✅ | **Manual vmin/vmax lock** — added lock checkbox + two number inputs to 2D viewer bar; `parseFrame` reads locked values when checked, auto-fills from frame range when unlocked; LZ4 path dequantizes from frame range correctly; shows 🔒 in info bar when locked. t12 still 4/4 pass. | `src/live_streamer.cpp` | done |
 | P12.7 | 🔲 | **Live sparkline charts** — rolling history (last 2000 steps) for CFL, KE, mass, leaf count, wall_time; Canvas2D sparkline, no external libraries | ~half day |
 | P12.8 | 🔲 | **AMR grid overlay** — checkbox to draw block outlines colour-coded by AMR level on a separate canvas layer; uses BlockDesc2D origin+cell_size | ~2 hours |
 | P12.9 | 🔲 | **Colormap selector** — Viridis/Inferno/Plasma/RdBu polynomial fits; ~40 lines JS | ~1 hour |

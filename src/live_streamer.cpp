@@ -149,6 +149,11 @@ select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
     <input type="range" id="sp" min="0" max="1" step="0.005" value="0.5">
     <span id="lp">0.500</span>
   </label>
+  <label>lock range
+    <input type="checkbox" id="lck">
+    <input type="number" id="vmn" style="width:70px" step="any" placeholder="min">
+    <input type="number" id="vmx" style="width:70px" step="any" placeholder="max">
+  </label>
   <span id="info">connecting&hellip;</span>
 </div>
 <div id="cw"><canvas id="c"></canvas></div>
@@ -239,9 +244,18 @@ function parseFrame(bytes){
   const axis=dv.getUint8(o++);
   const varId=dv.getUint8(o++);
   const compressed=dv.getUint8(o++);  // 0=float32, 1=uint16+LZ4
-  const vmin=dv.getFloat32(o,true); o+=4;
-  const vmax=dv.getFloat32(o,true); o+=4;
+  const vmin_f=dv.getFloat32(o,true); o+=4;
+  const vmax_f=dv.getFloat32(o,true); o+=4;
   domainL=dv.getFloat32(o,true); o+=4;
+
+  // P12.6: use locked range when checkbox is checked
+  const lck=document.getElementById('lck').checked;
+  const vmin=lck ? (+document.getElementById('vmn').value||vmin_f) : vmin_f;
+  const vmax=lck ? (+document.getElementById('vmx').value||vmax_f) : vmax_f;
+  if(!lck){ // auto-fill inputs with latest frame range
+    document.getElementById('vmn').value=vmin_f.toPrecision(4);
+    document.getElementById('vmx').value=vmax_f.toPrecision(4);
+  }
 
   // Block descriptors (always uncompressed)
   blocks=[];
@@ -261,13 +275,13 @@ function parseFrame(bytes){
     let di=0;
     drawCells(nB,vmin,vmax,()=>{
       const q=udv.getUint16(di,true); di+=2;
-      return vmin+(q/65535)*(vmax-vmin);
+      return vmin_f+(q/65535)*(vmax_f-vmin_f);  // dequantize from frame range
     });
   } else {
     // Raw float32 data
     drawCells(nB,vmin,vmax,()=>{ const v=dv.getFloat32(o,true); o+=4; return v; });
   }
-  infoEl.textContent=`step=${step} t=${t.toExponential(3)} [${vmin.toPrecision(3)}, ${vmax.toPrecision(3)}]`;
+  infoEl.textContent=`step=${step} t=${t.toExponential(3)} [${vmin.toPrecision(3)}, ${vmax.toPrecision(3)}]${lck?' 🔒':''}`;
 }
 
 async function connect(){
