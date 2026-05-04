@@ -166,6 +166,7 @@ select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
     <input type="number" id="vmn" style="width:70px" step="any" placeholder="min">
     <input type="number" id="vmx" style="width:70px" step="any" placeholder="max">
   </label>
+  <label>AMR grid <input type="checkbox" id="amr"></label>
   <span id="info">connecting&hellip;</span>
 </div>
 <div id="cw"><canvas id="c"></canvas></div>
@@ -264,6 +265,26 @@ function drawCells(nB,vmin,vmax,getVal){
   ctx.putImageData(imgData,0,0);
 }
 
+// P12.8: draw block outlines colour-coded by AMR level on top of the slice.
+const AMR_LEVEL_COLORS=['#4af','#fa4','#4fa','#f4a','#af4','#fff'];
+function drawAmrOverlay(nB){
+  if(!document.getElementById('amr').checked) return;
+  const W=canvas.width,H=canvas.height;
+  ctx.lineWidth=1;
+  ctx.save();
+  for(let b=0;b<nB;b++){
+    const {ox2d,oy2d,h,lv}=blocks[b];
+    const bs=NB*h;
+    const lx=ox2d/domainL*W;
+    const ty=(1-(oy2d+bs)/domainL)*H;
+    const bw=bs/domainL*W;
+    const bh=bs/domainL*H;
+    ctx.strokeStyle=AMR_LEVEL_COLORS[Math.min(lv,AMR_LEVEL_COLORS.length-1)];
+    ctx.strokeRect(lx,ty,bw,bh);
+  }
+  ctx.restore();
+}
+
 function parseFrame(bytes){
   const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   let o=0;
@@ -307,9 +328,11 @@ function parseFrame(bytes){
       const q=udv.getUint16(di,true); di+=2;
       return vmin_f+(q/65535)*(vmax_f-vmin_f);  // dequantize from frame range
     });
+    drawAmrOverlay(nB);
   } else {
     // Raw float32 data
     drawCells(nB,vmin,vmax,()=>{ const v=dv.getFloat32(o,true); o+=4; return v; });
+    drawAmrOverlay(nB);
   }
   infoEl.textContent=`step=${step} t=${t.toExponential(3)} [${vmin.toPrecision(3)}, ${vmax.toPrecision(3)}]${lck?' 🔒':''}`;
 }
