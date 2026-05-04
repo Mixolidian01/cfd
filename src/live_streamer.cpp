@@ -136,6 +136,10 @@ select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
       <option value="5">&#961;v</option>
       <option value="6">&#961;w</option>
       <option value="7">E total energy</option>
+      <option value="8">Mach</option>
+      <option value="9">|&#969;| vorticity</option>
+      <option value="10">Q-criterion</option>
+      <option value="11">schlieren |&#8711;&#961;|</option>
     </select>
   </label>
   <label>axis
@@ -654,7 +658,17 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
     float g_vmin = std::numeric_limits<float>::max();
     float g_vmax = std::numeric_limits<float>::lowest();
 
-    // Lambda: extract scalar value at interior cell (i,j,k)
+    // Helper: velocity component at (i,j,k) — comp 0=u,1=v,2=w.
+    auto vel_at = [](const CellBlock& blk, int comp, int i, int j, int k) -> double {
+        switch (comp) {
+            case 0: return blk.rhou(i,j,k) / blk.rho(i,j,k);
+            case 1: return blk.rhov(i,j,k) / blk.rho(i,j,k);
+            default: return blk.rhow(i,j,k) / blk.rho(i,j,k);
+        }
+    };
+
+    // Lambda: extract scalar value at interior cell (i,j,k).
+    // Ghost cells (index NG-1, NG+NB) are valid for gradient stencils.
     auto cell_val = [&](const CellBlock& blk, int i, int j, int k) -> float {
         switch (svar) {
             case StreamVar::RHO:   return static_cast<float>(blk.rho (i,j,k));
@@ -670,6 +684,49 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
             case StreamVar::TEMP:  return static_cast<float>(q.T);
             case StreamVar::UMAG:  return static_cast<float>(
                                        std::sqrt(q.u*q.u + q.v*q.v + q.w*q.w));
+            case StreamVar::MACH: {
+                const double c = std::sqrt(GAMMA * q.p / q.rho);
+                return static_cast<float>(std::sqrt(q.u*q.u+q.v*q.v+q.w*q.w) / c);
+            }
+            case StreamVar::VORT: {
+                // ω = ∇×u, |ω|² = ωx²+ωy²+ωz²; central differences, h = blk.h
+                const double ih2 = 1.0 / (2.0 * blk.h);
+                const double wx = (vel_at(blk,2,i,j+1,k)-vel_at(blk,2,i,j-1,k))*ih2
+                                - (vel_at(blk,1,i,j,k+1)-vel_at(blk,1,i,j,k-1))*ih2;
+                const double wy = (vel_at(blk,0,i,j,k+1)-vel_at(blk,0,i,j,k-1))*ih2
+                                - (vel_at(blk,2,i+1,j,k)-vel_at(blk,2,i-1,j,k))*ih2;
+                const double wz = (vel_at(blk,1,i+1,j,k)-vel_at(blk,1,i-1,j,k))*ih2
+                                - (vel_at(blk,0,i,j+1,k)-vel_at(blk,0,i,j-1,k))*ih2;
+                return static_cast<float>(std::sqrt(wx*wx+wy*wy+wz*wz));
+            }
+            case StreamVar::QCRIT: {
+                // Q = -½ Σ_{c,d} A_cd * A_dc,  A_cd = ∂u_c/∂x_d
+                const double ih2 = 1.0 / (2.0 * blk.h);
+                // A[row][col]: row=velocity comp (0=u,1=v,2=w), col=spatial axis (0=x,1=y,2=z)
+                const double A[3][3] = {
+                    {(vel_at(blk,0,i+1,j,k)-vel_at(blk,0,i-1,j,k))*ih2,
+                     (vel_at(blk,0,i,j+1,k)-vel_at(blk,0,i,j-1,k))*ih2,
+                     (vel_at(blk,0,i,j,k+1)-vel_at(blk,0,i,j,k-1))*ih2},
+                    {(vel_at(blk,1,i+1,j,k)-vel_at(blk,1,i-1,j,k))*ih2,
+                     (vel_at(blk,1,i,j+1,k)-vel_at(blk,1,i,j-1,k))*ih2,
+                     (vel_at(blk,1,i,j,k+1)-vel_at(blk,1,i,j,k-1))*ih2},
+                    {(vel_at(blk,2,i+1,j,k)-vel_at(blk,2,i-1,j,k))*ih2,
+                     (vel_at(blk,2,i,j+1,k)-vel_at(blk,2,i,j-1,k))*ih2,
+                     (vel_at(blk,2,i,j,k+1)-vel_at(blk,2,i,j,k-1))*ih2}
+                };
+                double Q = 0.0;
+                for (int c = 0; c < 3; ++c)
+                    for (int d = 0; d < 3; ++d)
+                        Q -= 0.5 * A[c][d] * A[d][c];
+                return static_cast<float>(Q);
+            }
+            case StreamVar::SCHLIEREN: {
+                const double ih2 = 1.0 / (2.0 * blk.h);
+                const double drx = (blk.rho(i+1,j,k)-blk.rho(i-1,j,k))*ih2;
+                const double dry = (blk.rho(i,j+1,k)-blk.rho(i,j-1,k))*ih2;
+                const double drz = (blk.rho(i,j,k+1)-blk.rho(i,j,k-1))*ih2;
+                return static_cast<float>(std::sqrt(drx*drx+dry*dry+drz*drz));
+            }
             default: return 0.f;
         }
     };
@@ -1182,7 +1239,7 @@ void LiveStreamer::handle_post_config(int cfd, const std::string& req_with_body)
     {
         std::lock_guard<std::mutex> lk(cfg_mtx_);
         int ival; double dval;
-        if (json_int(body, "var", ival) && ival >= 0 && ival <= 7)
+        if (json_int(body, "var", ival) && ival >= 0 && ival <= 11)
             cfg_.var = static_cast<StreamVar>(ival);
         if (json_int(body, "axis", ival) && ival >= 0 && ival <= 2)
             cfg_.axis = static_cast<uint8_t>(ival);

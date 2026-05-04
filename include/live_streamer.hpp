@@ -43,14 +43,19 @@
 
 // ── Variable selector ────────────────────────────────────────────────────────
 enum class StreamVar : uint8_t {
-    RHO   = 0,   // density ρ
-    PRESS = 1,   // pressure p  (derived via EOS)
-    TEMP  = 2,   // temperature T (derived via EOS)
-    UMAG  = 3,   // speed |u| = √(u²+v²+w²)
-    RHOU  = 4,   // x-momentum ρu
-    RHOV  = 5,   // y-momentum ρv
-    RHOW  = 6,   // z-momentum ρw
-    ETOT  = 7,   // total energy E
+    RHO      = 0,   // density ρ
+    PRESS    = 1,   // pressure p  (derived via EOS)
+    TEMP     = 2,   // temperature T (derived via EOS)
+    UMAG     = 3,   // speed |u| = √(u²+v²+w²)
+    RHOU     = 4,   // x-momentum ρu
+    RHOV     = 5,   // y-momentum ρv
+    RHOW     = 6,   // z-momentum ρw
+    ETOT     = 7,   // total energy E
+    // P12.5 — derived fields (gradient-based, use ghost cells)
+    MACH     = 8,   // local Mach = |u|/c,  c=√(γp/ρ)
+    VORT     = 9,   // vorticity magnitude |ω| = |∇×u|
+    QCRIT    = 10,  // Q-criterion = -½ tr(A·A^T),  A_ij=∂u_i/∂x_j
+    SCHLIEREN= 11,  // numerical schlieren |∇ρ|
 };
 
 // ── Streamer configuration ───────────────────────────────────────────────────
