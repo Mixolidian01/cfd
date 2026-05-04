@@ -547,7 +547,8 @@ void LiveStreamer::serialize_volume(const FrameBuffer3D& fb,
 // LiveStreamer — construction / destruction
 // =============================================================================
 
-LiveStreamer::LiveStreamer(const StreamConfig& cfg) : cfg_(cfg) {
+LiveStreamer::LiveStreamer(const StreamConfig& cfg)
+    : cfg_(cfg), t_start_(std::chrono::steady_clock::now()) {
     accept_thread_   = std::thread(&LiveStreamer::run_accept,   this);
     stream_thread_   = std::thread(&LiveStreamer::run_stream,   this);
     stream3d_thread_ = std::thread(&LiveStreamer::run_stream3d, this);
@@ -933,6 +934,7 @@ void LiveStreamer::handle_connection(int cfd) {
     const bool is_get_volume    = (req.rfind("GET /volume ",       0) == 0) ||
                                   (req.rfind("GET /volume\r",      0) == 0);
     const bool is_get_vol_strm  = (req.rfind("GET /volume-stream", 0) == 0);
+    const bool is_get_metrics   = (req.rfind("GET /metrics",        0) == 0);
     const bool is_post_cfg      = (req.rfind("POST /config", 0) == 0);
 
     if (is_get_root) {
@@ -945,6 +947,8 @@ void LiveStreamer::handle_connection(int cfd) {
         ::close(cfd);
     } else if (is_get_vol_strm) {
         handle_get_vol_stream(cfd);
+    } else if (is_get_metrics) {
+        handle_get_metrics(cfd);  // closes cfd inside
     } else if (is_post_cfg) {
         handle_post_config(cfd, req);
         ::close(cfd);
@@ -1018,6 +1022,49 @@ void LiveStreamer::handle_get_vol_stream(int cfd) {
     int old = vol_stream_fd_.exchange(cfd, std::memory_order_acq_rel);
     if (old >= 0 && old != cfd) ::close(old);
     // Ownership transferred to stream3d_thread_; do not close here.
+}
+
+// P12.1 — push latest metrics from the solver thread (non-blocking).
+void LiveStreamer::push_metrics(const MetricsSnapshot& m) {
+    std::lock_guard<std::mutex> lk(metrics_mtx_);
+    metrics_ = m;
+}
+
+// P12.1 — GET /metrics → JSON object.
+void LiveStreamer::handle_get_metrics(int cfd) {
+    MetricsSnapshot m;
+    {
+        std::lock_guard<std::mutex> lk(metrics_mtx_);
+        m = metrics_;
+    }
+    m.wall_time_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t_start_).count();
+
+    char buf[1024];
+    int hlen = std::snprintf(buf, sizeof(buf),
+        "{\"step\":%d,\"t\":%.6e,\"dt\":%.6e,\"cfl\":%.6f,"
+        "\"ke\":%.6e,\"mass\":%.6e,\"n_leaves\":%d,"
+        "\"rho_min\":%.6e,\"rho_max\":%.6e,"
+        "\"wall_time_ms\":%.3f,\"gpu_active\":%s,"
+        "\"leaves_per_level\":[%d,%d,%d,%d,%d,%d,%d,%d]}",
+        m.step, m.t, m.dt, m.cfl, m.ke, m.mass, m.n_leaves,
+        m.rho_min, m.rho_max, m.wall_time_ms,
+        m.gpu_active ? "true" : "false",
+        m.leaves_per_level[0], m.leaves_per_level[1],
+        m.leaves_per_level[2], m.leaves_per_level[3],
+        m.leaves_per_level[4], m.leaves_per_level[5],
+        m.leaves_per_level[6], m.leaves_per_level[7]);
+
+    char hdr[256];
+    int hlen2 = std::snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %d\r\n"
+        "Access-Control-Allow-Origin: *\r\n"
+        "Connection: close\r\n\r\n", hlen);
+    ::send(cfd, hdr, static_cast<size_t>(hlen2), MSG_NOSIGNAL);
+    ::send(cfd, buf, static_cast<size_t>(hlen),  MSG_NOSIGNAL);
+    ::close(cfd);
 }
 
 void LiveStreamer::handle_post_config(int cfd, const std::string& req_with_body) {

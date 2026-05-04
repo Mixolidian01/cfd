@@ -238,7 +238,7 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 | # | Status | Item | Notes |
 |---|--------|------|-------|
-| P12.1 | 🔲 | **`GET /metrics` JSON endpoint** — `MetricsSnapshot` struct updated by `snapshot()`; `handle_get_metrics()` handler; returns step, t, dt, cfl_max, ρ range, KE, mass, n_leaves, per-level leaf counts, wall_time_ms, gpu_active flag | ~80 lines C++ |
+| P12.1 | ✅ | **`GET /metrics` JSON endpoint** — `MetricsSnapshot` struct in `live_streamer.hpp` (step, t, dt, cfl, ke, mass, n_leaves, rho_min/max, wall_time_ms, leaves_per_level[8], gpu_active); `push_metrics()` called from `NSSolver::advance()` whenever `streamer_` non-null; `handle_get_metrics()` returns JSON; merged P12.4 metrics loop. t4, t7, t12 pass. | `include/live_streamer.hpp`, `src/live_streamer.cpp`, `src/ns_solver.cpp` | done |
 | P12.2 | 🔲 | **`POST /probe` endpoint** — click → `{"x": 0.34, "y": 0.71}` → JSON response with all 8 vars + AMR level + block index at nearest cell; browser sends on canvas mouseclick | ~60 lines C++ |
 | P12.3 | 🔲 | **Conservation norms in MetricsSnapshot** — `mass_error`, `momentum_error`, `energy_error` (relative to step-0 values); `cf_flux_residual` (max Berger-Colella correction); expose in `/metrics` response | ~40 lines C++ |
 | P12.4 | ✅ | **Structured JSON stdout per step** — enhanced `verbose_json` output in `NSSolver::advance()` to include `mass` (via `CellBlock::total_mass()`) and `leaves` count; aligned field names to `{"step":N,"t":T,"dt":DT,"cfl":CFL,"ke":KE,"mass":M,"leaves":L}`. | `src/ns_solver.cpp` | done |

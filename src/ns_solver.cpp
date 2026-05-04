@@ -261,27 +261,41 @@ double NSSolver::advance() {
             cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
     }
 
-    // P12.4: structured JSON per-step diagnostic line.
-    if (cfg.verbose_json) {
-        double ke = 0.0, mass = 0.0;
+    // P12.1/P12.4: compute per-step diagnostics when JSON output or metrics are needed.
+    if (cfg.verbose_json || streamer_) {
+        MetricsSnapshot ms;
+        ms.step = step;
+        ms.t    = t;
+        ms.dt   = dt;
         const auto& lvs = tree.leaf_indices();
+        ms.n_leaves = static_cast<int>(lvs.size());
+        ms.rho_min = 1e300;
+        ms.rho_max = 0.0;
+        ms.gpu_active = (gpu_solver_ != nullptr);
         for (int li : lvs) {
             auto& blk = *tree.nodes[li].block;
-            double h3 = blk.h * blk.h * blk.h;
-            mass += blk.total_mass();
+            const double h3 = blk.h * blk.h * blk.h;
+            const int lv = tree.nodes[li].level;
+            if (lv < 8) ms.leaves_per_level[lv]++;
+            ms.mass += blk.total_mass();
             for (int k = NG; k < NG+NB; ++k)
             for (int j = NG; j < NG+NB; ++j)
             for (int i = NG; i < NG+NB; ++i) {
                 Prim q = blk.prim(i,j,k);
-                ke += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w) * h3;
+                ms.ke += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w) * h3;
+                if (q.rho < ms.rho_min) ms.rho_min = q.rho;
+                if (q.rho > ms.rho_max) ms.rho_max = q.rho;
             }
         }
-        double cfl_actual = dt / tree_cfl_dt(tree, 1.0);
-        std::fprintf(stdout,
-            "{\"step\":%d,\"t\":%.6e,\"dt\":%.6e,\"cfl\":%.4f,"
-            "\"ke\":%.6e,\"mass\":%.6e,\"leaves\":%d}\n",
-            step, t, dt, cfl_actual, ke, mass, (int)lvs.size());
-        std::fflush(stdout);
+        ms.cfl = dt / tree_cfl_dt(tree, 1.0);
+        if (cfg.verbose_json) {
+            std::fprintf(stdout,
+                "{\"step\":%d,\"t\":%.6e,\"dt\":%.6e,\"cfl\":%.4f,"
+                "\"ke\":%.6e,\"mass\":%.6e,\"leaves\":%d}\n",
+                step, t, dt, ms.cfl, ms.ke, ms.mass, ms.n_leaves);
+            std::fflush(stdout);
+        }
+        if (streamer_) streamer_->push_metrics(ms);
     }
 
     // Phase 6: push completed step to browser live feed (no-op when null).

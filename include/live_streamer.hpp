@@ -32,6 +32,7 @@
 #include "../include/block_tree.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -104,6 +105,22 @@ struct FrameBuffer3D {
     std::vector<float> data;   // nx*ny*nz
 };
 
+// ── P12.1: per-step solver diagnostics (exposed via GET /metrics) ────────────
+struct MetricsSnapshot {
+    int    step              = 0;
+    double t                 = 0.0;
+    double dt                = 0.0;
+    double cfl               = 0.0;
+    double ke                = 0.0;
+    double mass              = 0.0;
+    int    n_leaves          = 0;
+    double rho_min           = 0.0;
+    double rho_max           = 0.0;
+    double wall_time_ms      = 0.0;  // elapsed since LiveStreamer construction
+    int    leaves_per_level[8] = {}; // leaf count per AMR level (index 0..7)
+    bool   gpu_active        = false;
+};
+
 // ── LiveStreamer ─────────────────────────────────────────────────────────────
 class LiveStreamer {
 public:
@@ -116,6 +133,9 @@ public:
     // Called by NSSolver::advance() after apply_flux_correction(). Never blocks.
     void snapshot(const BlockTree& tree, int step, double t);
 
+    // P12.1: push latest solver diagnostics (called from NSSolver::advance()).
+    void push_metrics(const MetricsSnapshot& m);
+
     void set_var (StreamVar v) noexcept;
     void set_axis(uint8_t  a) noexcept;
     void set_pos (double   p) noexcept;
@@ -125,6 +145,11 @@ public:
 private:
     StreamConfig cfg_;
     mutable std::mutex cfg_mtx_;
+
+    // ── P12.1: latest metrics snapshot ──────────────────────────────────────
+    MetricsSnapshot metrics_;
+    std::mutex      metrics_mtx_;
+    std::chrono::steady_clock::time_point t_start_;
 
     // ── 2-D slice double-buffer ──────────────────────────────────────────────
     FrameBuffer back_, front_, work_;
@@ -158,6 +183,7 @@ private:
     void handle_get_volume      (int cfd);        // P6.6 — WebGPU viewer HTML
     void handle_get_vol_stream  (int cfd);        // P6.6 — 3-D chunked stream
     void handle_post_config     (int cfd, const std::string& req_with_body);
+    void handle_get_metrics     (int cfd);
 
     void build_frame    (const BlockTree&, int step, double t, FrameBuffer&);
     void serialize_frame(const FrameBuffer&, std::vector<uint8_t>& out);
