@@ -273,7 +273,6 @@ static void fill_mu_cache(const Prim* pc, double* mu_arr) noexcept {
 static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
                                          int axis) noexcept
 {
-    const double rho_a = 0.5*(L.rho + R.rho);
     const double u_a   = 0.5*(L.u   + R.u  );
     const double v_a   = 0.5*(L.v   + R.v  );
     const double w_a   = 0.5*(L.w   + R.w  );
@@ -283,8 +282,11 @@ static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
     const double H_L   = (E_L + L.p) / L.rho;
     const double H_R   = (E_R + R.p) / R.rho;
     const double H_a   = 0.5*(H_L + H_R);
-    const double un_a  = (axis==0)?u_a:(axis==1)?v_a:w_a;
-    const double mass  = rho_a * un_a;
+    // P13.2: FDKEC mass flux (Subbareddy & Candler 2009):
+    //   mass = ½(ρL·u_nL + ρR·u_nR)  vs  KG: ρ_avg·u_n_avg
+    const double un_L  = (axis==0)?L.u:(axis==1)?L.v:L.w;
+    const double un_R  = (axis==0)?R.u:(axis==1)?R.v:R.w;
+    const double mass  = 0.5*(L.rho*un_L + R.rho*un_R);
 
     std::array<double,NVAR> F;
     F[0] = mass;
@@ -298,7 +300,6 @@ static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
 // P13.1 stage 3 — compile-time axis: dead branches eliminated by constexpr if
 template<Axis DIR>
 static std::array<double,NVAR> kep_flux_t(const Prim& L, const Prim& R) noexcept {
-    const double rho_a = 0.5*(L.rho + R.rho);
     const double u_a   = 0.5*(L.u   + R.u  );
     const double v_a   = 0.5*(L.v   + R.v  );
     const double w_a   = 0.5*(L.w   + R.w  );
@@ -307,8 +308,10 @@ static std::array<double,NVAR> kep_flux_t(const Prim& L, const Prim& R) noexcept
     const double E_R   = R.p/(GAMMA-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
     const double H_a   = 0.5*((E_L+L.p)/L.rho + (E_R+R.p)/R.rho);
 
-    const double un_a = (DIR==Axis::X) ? u_a : (DIR==Axis::Y) ? v_a : w_a;
-    const double mass = rho_a * un_a;
+    // P13.2: FDKEC mass flux (Subbareddy & Candler 2009)
+    const double un_L = (DIR==Axis::X) ? L.u : (DIR==Axis::Y) ? L.v : L.w;
+    const double un_R = (DIR==Axis::X) ? R.u : (DIR==Axis::Y) ? R.v : R.w;
+    const double mass = 0.5*(L.rho*un_L + R.rho*un_R);
 
     std::array<double,NVAR> F;
     F[0] = mass;
