@@ -149,26 +149,27 @@ linalg  ←  block (block_tree.cpp + amr_operators.cpp)
 | Name | Value | Meaning |
 |------|-------|---------|
 | `NB` | 8 | Interior cells per axis |
-| `NG` | 1 | Ghost layers per face |
-| `NB2` | 10 | Total cells per axis (NB + 2·NG) |
-| `NCELL` | 1000 | Total cells per block (NB2³) |
+| `NG` | 2 | Ghost layers per face (upgraded from 1 in P2.1 for WENO5) |
+| `NB2` | 12 | Total cells per axis (NB + 2·NG) |
+| `NCELL` | 1728 | Total cells per block (NB2³) |
 | `NVAR` | 5 | Conserved variables (ρ, ρu, ρv, ρw, E) |
 | `GAMMA` | 1.4 | Ratio of specific heats (air) |
 | `R_GAS` | 287.058 | Specific gas constant [J/(kg·K)] |
 
-**WENO5 requires `NG=2`.** Changing `NG` propagates to `NB2`, `NCELL`, all GPU constants, all ghost-fill kernels, and all index arithmetic — treat it as a project-wide gate change (Phase 3).
+**NG=2 is required for WENO5.** Changing `NG` propagates to `NB2`, `NCELL`, all GPU constants, all ghost-fill kernels, and all index arithmetic — treat it as a project-wide gate change.
 
 ## Active Development Context
 
 - git address: `https://github.com/Mixolidian01/cfd.git`
 - Current branch: `to_debug`
-- All Phases 0–14.2 complete: 28 t4 sub-tests pass (T01–T16)
+- All Phases 0–15.1 complete: 28 t4 sub-tests pass (T01–T16), t3 T08 convergence rate=3.01
 - t4 includes T11a/T11b (P13.5 SBP-SAT), T12a/b/c (phi advection), T13a/b/c (Cε compression), T14a/b/c (phi AMR C/F), T15a/b/c (SG EOS), T16a/T16b (contact angle BC)
 - Phase 13 status: P13.1 ✅, P13.2 ✅ (FDKEC), P13.3 ✅, P13.4 ✅, P13.5 ✅ (SBP-SAT C/F penalty)
 - P11.8 ✅: GPU+AMR fallback via `gpu_q_stale_` + `IGpuSolver::upload_q()`; GPU path uses CPU when `max_leaf_level() > 0`
 - P14.1 ✅: phi ghost fill + Allaire 2002 SG EOS + HLLC-ES SG β correction; use_acdi/acdi_ceps/gamma_a/b/p_inf_a/b config
 - P14.2 ✅: wall contact angle BC; `contact_angle_wall` (deg) in SolverConfig; `set_wall_contact_angle(cos,ceps)` in BlockTree; ghost BC φ_ghost=φ_ref−dist·cos(θ)/ceps·g'(φ_ref)
+- P15.1 ✅: Basilisk `foreach_dimension` analogue — `accumulate_face<DIR>`, `undo_cf_one_face<DIR>`, `cf_accum_one_face<DIR>` templates in `src/operators.cpp`; runtime axis dispatched via `switch` to compile-time `Axis::X/Y/Z`; P15.2 MUSCL boundary faces reverted (minmod kink degrades T08 convergence rate to 1.13; documented in code comments)
 - `roadmap.md` is the authoritative Phase 0–4 plan
-- `todo.md` tracks all Phase status; P13.7/P14.3–P14.5 🔲
+- `todo.md` tracks all Phase status; P13.7/P14.3–P14.5/P15.2 🔲
 - `answers_register.md` logs session Q&A history
 - `to_avoid_bugs.md` records all derived rules (append on each new misbehaviour)

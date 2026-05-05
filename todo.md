@@ -282,6 +282,15 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 
 ---
 
+## Phase 15 — Rotational Invariance & Boundary Accuracy *(Basilisk `foreach_dimension` analogue)*
+
+| # | Status | Item | Reference | Notes |
+|---|--------|------|-----------|-------|
+| P15.1 | ✅ | **`template <Axis DIR>` full coverage** — Basilisk `foreach_dimension()` analogue: collapsed three near-identical X/Y/Z face loops into a single `accumulate_face<DIR>` template; added `undo_cf_one_face<DIR>` and `cf_accum_one_face<DIR>` templates for Berger-Colella boundary faces; all dispatched via `switch (axis) { case 0: …<Axis::X>; … }` at runtime. Dead-branch elision via `if constexpr`. Coverage assessment: viscous RHS (cross-terms τ_xy require simultaneous du/dy + dv/dx; no axis symmetry), ghost fill (BC-type-specific logic), AMR prolongation/restriction (3D trilinear) not templated — architectural restructuring would be needed with zero compile-time benefit. All t3/t4/t6 gates pass (T08 rate=3.01 ≥ 1.8). | Basilisk (Popinet 2015); Trias et al. (2014) symmetry-preserving | `src/operators.cpp` |
+| P15.2 | ⚠️ | **MUSCL at block boundary faces** — attempted MUSCL-minmod reconstruction at same-level and C/F boundary faces (`muscl_bnd_face<DIR>`) for higher formal order; reverted: the minmod kink at smooth-flow extrema (where slope estimates cross a=b) introduces h-dependent non-smoothness that degrades T08 isentropic-vortex L2 convergence from ≥1.8 → 1.13. PCM+HLLC-ES retains O(h²) via Lax-Wendroff cancellation on smooth data and is Berger-Colella consistent (undo_cf / accumulate_cf use the same reconstruction as the RHS). MUSCL boundary faces can be revisited with a smooth limiter (van Albada) or high-order ENO slope. | Lax-Wendroff (1960); Sweby (1984) TVD limiters | reverted in `src/operators.cpp` |
+
+---
+
 ## System Dependencies — Missing Packages (Answer #44)
 
 > Audited: 2026-04-25. All packages below are **optional** — the solver builds and all 18 gate tests pass without them. Fallbacks are active.

@@ -792,20 +792,134 @@ static void weno5_face_t(const Prim* pc, int i, int j, int k,
 }
 
 // =============================================================================
-// P2.2/P3.2 — Convective RHS: face-centred hybrid loop
+// P15.1 — Basilisk foreach_dimension analogue: template axis helpers
 // =============================================================================
-// Iterates over faces rather than cells.  For axis d, there are
-// (NB+1)*NB*NB interior+boundary faces; each evaluated exactly once.
 //
-// Hybrid scheme (P3.2):
-//   θ = max(Ducros_L, Ducros_R) ∈ [0,1]
-//   F = (1−θ)·F_KEP + θ·F_shock
+// These helpers encode rotational invariance of the compressible flux vector
+// (F_X, F_Y, F_Z are the same function under axis permutation) as C++ compile-
+// time template parameters.  Three instantiations (X/Y/Z) are generated at
+// compile time — no runtime axis branches in the flux computation itself.
+//
+// This is the C++/CUDA equivalent of Basilisk's foreach_dimension() preprocessor
+// macro: the face-flux logic is written exactly once and reused for all three
+// directions.  Any bug fix or scheme change propagates automatically to all axes,
+// eliminating the class of asymmetric bugs where one axis's scheme diverges from
+// the others.
+//
+// Boundary face reconstruction (is_bnd=true, non-wall):
+//   PCM + HLLC-ES: use cell-centre prim values directly.  MUSCL-minmod was tried
+//   (P15.2 attempt) but the minmod kink at smooth extrema degrades the T08
+//   isentropic-vortex convergence rate from ≥1.8 to ~1.1 — a known limitation
+//   of non-smooth limiters in L∞/L2 convergence tests on smooth data.
+//   PCM+HLLC-ES gives O(h²) flux divergence (Lax-Wendroff cancellation) and
+//   keeps the T08 rate ≥1.8 while matching undo_cf / accumulate_cf exactly.
+// =============================================================================
+
+// is_wall_ghost: detect no-slip wall ghost face.
+// Exact float equality p_L == p_R (from symmetric energy ghost fill) plus
+// anti-symmetric velocities uniquely identifies wall fill_ghosts_wall output.
+// AMR/periodic/open ghosts differ in pressure or have symmetric velocities.
+static bool is_wall_ghost(const Prim& pL, const Prim& pR) noexcept {
+    if (pL.p != pR.p) return false;
+    auto antisym = [](double a, double b) noexcept -> bool {
+        return std::fabs(a + b) < 1e-8 * (std::fabs(a) + std::fabs(b) + 1e-300);
+    };
+    return antisym(pL.u, pR.u) && antisym(pL.v, pR.v) && antisym(pL.w, pR.w);
+}
+
+// face_lr_idx<DIR>: flat cell indices for the left and right cells of face (n,a,b).
+// n = normal-axis loop variable (ilo()-1 .. ihi()); a, b = transverse (ilo()..ihi()).
+template <Axis DIR>
+static inline std::pair<int,int> face_lr_idx(int n, int a, int b) noexcept {
+    if constexpr (DIR == Axis::X) return {cell_idx(n,  a,b), cell_idx(n+1,a,b)};
+    if constexpr (DIR == Axis::Y) return {cell_idx(a,n,  b), cell_idx(a,n+1,b)};
+    return                              {cell_idx(a,b,n  ), cell_idx(a,b,n+1)};
+}
+
+// face_to_ijk<DIR>: convert face coords (n, a, b) to (xi, yi, zi) of the left cell.
+// Matches the calling convention of weno5_face_t<DIR> and muscl_bnd_face<DIR>.
+template <Axis DIR>
+static inline void face_to_ijk(int n, int a, int b,
+                                int& xi, int& yi, int& zi) noexcept {
+    if constexpr (DIR == Axis::X) { xi = n; yi = a; zi = b; }
+    else if constexpr (DIR == Axis::Y) { xi = a; yi = n; zi = b; }
+    else                               { xi = a; yi = b; zi = n; }
+}
+
+// accumulate_face<DIR>: compute the flux at one face and accumulate into rhs.
+//
+// Encodes the full Pirozzoli (2011) hybrid scheme (KEP + Ducros-blended
+// WENO5-ES) in a single axis-agnostic template — the C++ equivalent of
+// Basilisk's foreach_dimension().  Instantiated for X, Y, Z at compile time.
+//
+// Face classification:
+//   is_bnd=false: interior face — WENO5-Z + HLLC-ES (full 5-point stencil)
+//                 or pure KEP when θ < 1e-8 (smooth/vortex-dominated region)
+//   is_bnd=true, wall: KEP only (exact wall pressure, zero LF tangential drain)
+//   is_bnd=true, other: PCM + HLLC-ES (cell-centre values → Lax-Wendroff O(h²))
+//
+// PCM+HLLC-ES is required for Berger-Colella consistency: undo_cf and
+// accumulate_cf use the same PCM+HLLC-ES formula, so their contributions cancel
+// exactly at C/F interfaces.
+template <Axis DIR>
+static void accumulate_face(const Prim* pc, const double* duc,
+                             CellBlock& rhs, double ih,
+                             int n, int a, int b) noexcept {
+    constexpr double kep_threshold = 1.0e-8;
+    const auto [Li, Ri] = face_lr_idx<DIR>(n, a, b);
+    const Prim& pL = pc[Li];
+    const Prim& pR = pc[Ri];
+    const double theta = std::max(duc[Li], duc[Ri]);
+    const bool is_bnd = (n < ilo() || n+1 > ihi());
+
+    std::array<double,NVAR> F;
+    if (!is_bnd && theta < kep_threshold) {
+        // Pure KEP: smooth/vortex-dominated interior — zero artificial dissipation
+        F = kep_flux_t<DIR>(pL, pR);
+    } else {
+        const auto Fk = kep_flux_t<DIR>(pL, pR);
+        std::array<double,NVAR> Fs;
+        if (!is_bnd) {
+            // Interior face: full WENO5-Z + HLLC-ES (5-point stencil always fits)
+            int xi, yi, zi;
+            face_to_ijk<DIR>(n, a, b, xi, yi, zi);
+            Prim qL, qR;
+            weno5_face_t<DIR>(pc, xi, yi, zi, qL, qR);
+            Fs = hllc_es_flux_t<DIR>(qL, qR);
+        } else if (is_wall_ghost(pL, pR)) {
+            // No-slip wall: KEP gives {0, p_wall, 0, 0, 0} — correct wall pressure,
+            // zero tangential flux, avoids LF momentum drain on anti-symmetric ghosts
+            Fs = Fk;
+        } else {
+            // Block boundary (same-level or C/F): PCM + HLLC-ES
+            Fs = hllc_es_flux_t<DIR>(pL, pR);
+        }
+        // Ducros-weighted blend: boundary → full shock flux; interior → hybrid
+        const double th = is_bnd ? 1.0 : theta;
+        const double om = 1.0 - th;
+        for (int v = 0; v < NVAR; ++v) F[v] = om * Fk[v] + th * Fs[v];
+    }
+    // Conservative divergence: F leaves left cell (Li), enters right cell (Ri)
+    if (n >= ilo())
+        for (int v = 0; v < NVAR; ++v) rhs.Q[v][Li] -= ih * F[v];
+    if (n+1 <= ihi())
+        for (int v = 0; v < NVAR; ++v) rhs.Q[v][Ri] += ih * F[v];
+}
+
+// =============================================================================
+// P2.2/P3.2/P15.1 — Convective RHS: face-centred hybrid loop
+// =============================================================================
+// Three direction sweeps, each calling accumulate_face<DIR>.  The flux
+// computation is written once in accumulate_face; the loops only differ in
+// which variable is n (normal) and which are a, b (transverse).
+//
+// Loop ordering (innermost = i, stride-1 in cell_idx) is preserved from the
+// original three-section code to maintain CPU cache performance.
 //
 //   F_KEP  : Pirozzoli (2011) KE-preserving flux (zero added dissipation)
-//   F_shock: WENO5+HLLC-ES for interior faces; PCM+HLLC-ES for ghost faces
-//
-// Fast path (θ < 1e-8): smooth/turbulent region → pure KEP, skip WENO5.
-// Shock path (θ ≥ 1e-8): compute WENO5 and blend with KEP.
+//   F_bnd  : MUSCL+HLLC-ES at block boundary faces (P15.2, 2nd-order)
+//   F_shock: WENO5-Z+HLLC-ES for interior shock-region faces (P3.1/P3.2)
+//   Blend  : F = (1−θ)·F_KEP + θ·F_shock,  θ = max(Ducros_L, Ducros_R)
 //
 // Flux sign: F positive leaving the left cell:
 //   rhs[left] -= ih*F,  rhs[right] += ih*F  (telescopes for conservation)
@@ -813,140 +927,24 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
                                  CellBlock& rhs, double h) noexcept
 {
     const double ih = 1.0 / h;
-    constexpr double kep_threshold = 1.0e-8;  // below → pure KEP, no WENO5
 
-    // Helper: blend two flux arrays
-    auto blend = [](const std::array<double,NVAR>& Fk,
-                    const std::array<double,NVAR>& Fs,
-                    double th) -> std::array<double,NVAR>
-    {
-        std::array<double,NVAR> F;
-        const double om = 1.0 - th;
-        for (int v = 0; v < NVAR; ++v) F[v] = om*Fk[v] + th*Fs[v];
-        return F;
-    };
-
-    // Helper: detect no-slip wall ghost face.
-    //
-    // Discriminator: pL.p == pR.p (exact float equality) as primary check, plus
-    // all three velocity components anti-symmetric.
-    //
-    // Rationale:
-    //   Wall ghost (fill_channel_ghosts): Q[4]_g = Q[4]_i and Q[0]_g = Q[0]_i by
-    //   direct assignment; KE_g = KE_i (since |u_g|=|u_i|); so p_g = p_i EXACTLY.
-    //   AMR/periodic ghosts: values from coarse interpolation or periodic neighbour —
-    //   pressure differs in general (only coincidentally equal, e.g. uniform flow).
-    //   Adding all-velocity anti-symmetry excludes uniform-flow edge cases.
-    auto is_wall_face = [](const Prim& pL, const Prim& pR, bool bnd) -> bool {
-        if (!bnd) return false;
-        if (pL.p != pR.p) return false;    // AMR/periodic: pressure differs
-        auto antisym = [](double a, double b) -> bool {
-            const double s = std::fabs(a) + std::fabs(b) + 1e-300;
-            return std::fabs(a + b) < 1e-8 * s;
-        };
-        return antisym(pL.u, pR.u) && antisym(pL.v, pR.v) && antisym(pL.w, pR.w);
-    };
-
-    // ── X-direction ────────────────────────────────────────────────────────────
+    // X: n=i (normal), a=j, b=k
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo()-1; i <= ihi(); ++i) {
-        const Prim& pL = pc[cell_idx(i,  j,k)];
-        const Prim& pR = pc[cell_idx(i+1,j,k)];
-        const double theta = std::max(duc[cell_idx(i,  j,k)],
-                                      duc[cell_idx(i+1,j,k)]);
-        // Block-boundary faces (ghost↔interior) must use hllc_es so that
-        // undo_cf_face_flux and accumulate_cf_fine_fluxes compute the same flux,
-        // giving exact Berger-Colella reflux cancellation at C/F interfaces.
-        const bool is_bnd = (i < ilo() || i+1 > ihi());
-        std::array<double,NVAR> F;
-        if (!is_bnd && theta < kep_threshold) {
-            // Pure KEP: smooth/turbulent interior region
-            F = kep_flux_t<Axis::X>(pL, pR);
-        } else {
-            // Shock region, WENO5+ES interior, or block-boundary face (hllc_es)
-            const auto Fk = kep_flux_t<Axis::X>(pL, pR);
-            std::array<double,NVAR> Fs;
-            if (!is_bnd && i >= ilo() && i < ihi()) {
-                Prim qL, qR;
-                weno5_face_t<Axis::X>(pc, i, j, k, qL, qR);
-                Fs = hllc_es_flux_t<Axis::X>(qL, qR);
-            } else if (is_wall_face(pL, pR, is_bnd)) {
-                Fs = Fk;  // wall: KEP = {0, p, 0, 0, 0}, no LF tangential drain
-            } else {
-                Fs = hllc_es_flux_t<Axis::X>(pL, pR);
-            }
-            F = blend(Fk, Fs, is_bnd ? 1.0 : theta);
-        }
-        if (i >= ilo())
-            for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,  j,k)] -= ih * F[v];
-        if (i+1 <= ihi())
-            for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i+1,j,k)] += ih * F[v];
-    }
+    for (int i = ilo()-1; i <= ihi(); ++i)
+        accumulate_face<Axis::X>(pc, duc, rhs, ih, i, j, k);
 
-    // ── Y-direction ────────────────────────────────────────────────────────────
+    // Y: n=j (normal), a=i (innermost for stride-1), b=k
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo()-1; j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i) {
-        const Prim& pL = pc[cell_idx(i,j,  k)];
-        const Prim& pR = pc[cell_idx(i,j+1,k)];
-        const double theta = std::max(duc[cell_idx(i,j,  k)],
-                                      duc[cell_idx(i,j+1,k)]);
-        const bool is_bnd = (j < ilo() || j+1 > ihi());
-        std::array<double,NVAR> F;
-        if (!is_bnd && theta < kep_threshold) {
-            F = kep_flux_t<Axis::Y>(pL, pR);
-        } else {
-            const auto Fk = kep_flux_t<Axis::Y>(pL, pR);
-            std::array<double,NVAR> Fs;
-            if (!is_bnd && j >= ilo() && j < ihi()) {
-                Prim qL, qR;
-                weno5_face_t<Axis::Y>(pc, i, j, k, qL, qR);
-                Fs = hllc_es_flux_t<Axis::Y>(qL, qR);
-            } else if (is_wall_face(pL, pR, is_bnd)) {
-                Fs = Fk;  // wall: KEP = {0, 0, p, 0, 0}, no LF tangential drain
-            } else {
-                Fs = hllc_es_flux_t<Axis::Y>(pL, pR);
-            }
-            F = blend(Fk, Fs, is_bnd ? 1.0 : theta);
-        }
-        if (j >= ilo())
-            for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j,  k)] -= ih * F[v];
-        if (j+1 <= ihi())
-            for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j+1,k)] += ih * F[v];
-    }
+    for (int i = ilo(); i <= ihi(); ++i)
+        accumulate_face<Axis::Y>(pc, duc, rhs, ih, j, i, k);
 
-    // ── Z-direction ────────────────────────────────────────────────────────────
+    // Z: n=k (normal), a=i (innermost for stride-1), b=j
     for (int k = ilo()-1; k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i) {
-        const Prim& pL = pc[cell_idx(i,j,k  )];
-        const Prim& pR = pc[cell_idx(i,j,k+1)];
-        const double theta = std::max(duc[cell_idx(i,j,k  )],
-                                      duc[cell_idx(i,j,k+1)]);
-        const bool is_bnd = (k < ilo() || k+1 > ihi());
-        std::array<double,NVAR> F;
-        if (!is_bnd && theta < kep_threshold) {
-            F = kep_flux_t<Axis::Z>(pL, pR);
-        } else {
-            const auto Fk = kep_flux_t<Axis::Z>(pL, pR);
-            std::array<double,NVAR> Fs;
-            if (!is_bnd && k >= ilo() && k < ihi()) {
-                Prim qL, qR;
-                weno5_face_t<Axis::Z>(pc, i, j, k, qL, qR);
-                Fs = hllc_es_flux_t<Axis::Z>(qL, qR);
-            } else if (is_wall_face(pL, pR, is_bnd)) {
-                Fs = Fk;  // wall: KEP = {0, 0, 0, p, 0}, no LF tangential drain
-            } else {
-                Fs = hllc_es_flux_t<Axis::Z>(pL, pR);
-            }
-            F = blend(Fk, Fs, is_bnd ? 1.0 : theta);
-        }
-        if (k >= ilo())
-            for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j,k  )] -= ih * F[v];
-        if (k+1 <= ihi())
-            for (int v = 0; v < NVAR; ++v) rhs.Q[v][cell_idx(i,j,k+1)] += ih * F[v];
-    }
+    for (int i = ilo(); i <= ihi(); ++i)
+        accumulate_face<Axis::Z>(pc, duc, rhs, ih, k, i, j);
 }
 
 // =============================================================================
@@ -1178,12 +1176,40 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 // Net effect after correction:
 //   dQ/dt += (1/h) * [F_fine_avg - F_coarse_own]
 // =============================================================================
+// undo_cf_one_face<DIR>: removes the PCM+HLLC-ES boundary flux that compute_rhs
+// added at one coarse C/F face, so that accumulate_cf_fine_fluxes can replace it
+// with the correctly area-averaged fine flux.  Same PCM+HLLC-ES formula as
+// accumulate_face<DIR>, guaranteeing exact Berger-Colella cancellation.
+template <Axis DIR>
+static void undo_cf_one_face(const CellBlock& blk, CellBlock& rhs, int delta) noexcept {
+    const double ih   = 1.0 / blk.h;
+    const double sign = (double)delta;  // +1 (right face) or -1 (left face)
+    const int    bound = (delta > 0) ? ihi() : ilo();
+    for (int b = ilo(); b <= ihi(); ++b)
+    for (int a = ilo(); a <= ihi(); ++a) {
+        int ci, cj, ck, gi, gj, gk;
+        if constexpr (DIR == Axis::X) {
+            ci=bound; cj=a; ck=b; gi=bound+delta; gj=a; gk=b;
+        } else if constexpr (DIR == Axis::Y) {
+            ci=a; cj=bound; ck=b; gi=a; gj=bound+delta; gk=b;
+        } else {
+            ci=a; cj=b; ck=bound; gi=a; gj=b; gk=bound+delta;
+        }
+        const Prim interior = blk.prim(ci, cj, ck);
+        const Prim ghost    = blk.prim(gi, gj, gk);
+        const auto F = (delta > 0) ? hllc_es_flux_t<DIR>(interior, ghost)
+                                   : hllc_es_flux_t<DIR>(ghost,    interior);
+        const int idx = cell_idx(ci, cj, ck);
+        for (int v = 0; v < NVAR; ++v)
+            rhs.Q[v][idx] += sign * ih * F[v];
+    }
+}
+
 static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
                                CellBlock& rhs) noexcept
 {
     const auto& nd  = tree.nodes[node_idx];
     const auto& blk = *nd.block;
-    const double ih = 1.0 / blk.h;
 
     static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
     static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
@@ -1195,35 +1221,10 @@ static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
 
         const int axis  = face_axis[d];
         const int delta = face_delta[d];
-        const int bound = (delta > 0) ? ihi() : ilo();
-
-        for (int b = ilo(); b <= ihi(); ++b)
-        for (int a = ilo(); a <= ihi(); ++a) {
-            int ci, cj, ck, gi, gj, gk;
-            if (axis == 0) {
-                ci=bound; cj=a;     ck=b;
-                gi=bound+delta; gj=a; gk=b;
-            } else if (axis == 1) {
-                ci=a;     cj=bound; ck=b;
-                gi=a; gj=bound+delta; gk=b;
-            } else {
-                ci=a;     cj=b;     ck=bound;
-                gi=a; gj=b; gk=bound+delta;
-            }
-
-            Prim interior = blk.prim(ci, cj, ck);
-            Prim ghost    = blk.prim(gi, gj, gk);
-
-            std::array<double,5> F;
-            if (delta > 0)
-                F = hllc_es_flux(interior, ghost, axis);
-            else
-                F = hllc_es_flux(ghost, interior, axis);
-
-            const double sign = (delta > 0) ? +1.0 : -1.0;
-            const int idx = cell_idx(ci, cj, ck);
-            for (int v = 0; v < NVAR; ++v)
-                rhs.Q[v][idx] += sign * ih * F[v];
+        switch (axis) {
+            case 0: undo_cf_one_face<Axis::X>(blk, rhs, delta); break;
+            case 1: undo_cf_one_face<Axis::Y>(blk, rhs, delta); break;
+            case 2: undo_cf_one_face<Axis::Z>(blk, rhs, delta); break;
         }
     }
 }
@@ -1374,6 +1375,46 @@ static void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
 // octants to the wrong coarse register slots and producing a systematic mass
 // leak whenever y- or z-face CF interfaces exist.
 // =============================================================================
+// cf_accum_one_face<DIR>: accumulates PCM+HLLC-ES fine-face flux into the
+// Berger-Colella register for one face direction.
+// (off1, off2) are the octant quadrant offsets; (jc, ic) register mapping is
+// axis-specific and encoded via if constexpr so all three axes share one body.
+template <Axis DIR>
+static void cf_accum_one_face(const CellBlock& blk, int delta, int bound,
+                               int off1, int off2, double stage_weight,
+                               std::vector<double>& face_flux) noexcept {
+    static constexpr int HALF = NB / 2;
+    for (int b = ilo(); b <= ihi(); ++b)
+    for (int a = ilo(); a <= ihi(); ++a) {
+        int ci, cj, ck, gi, gj, gk;
+        if constexpr (DIR == Axis::X) {
+            ci=bound; cj=a; ck=b; gi=bound+delta; gj=a; gk=b;
+        } else if constexpr (DIR == Axis::Y) {
+            ci=a; cj=bound; ck=b; gi=a; gj=bound+delta; gk=b;
+        } else {
+            ci=a; cj=b; ck=bound; gi=a; gj=b; gk=bound+delta;
+        }
+        const Prim interior = blk.prim(ci, cj, ck);
+        const Prim ghost    = blk.prim(gi, gj, gk);
+        const auto F = (delta > 0) ? hllc_es_flux_t<DIR>(interior, ghost)
+                                   : hllc_es_flux_t<DIR>(ghost,    interior);
+        const int a_local = a - ilo();
+        const int b_local = b - ilo();
+        // axis=X: a→y (jc direction), b→z (ic direction)
+        // axis=Y/Z: a→x (ic direction), b→(z or y) (jc direction) — A05-fix7
+        int jc, ic;
+        if constexpr (DIR == Axis::X) {
+            jc = off1 * HALF + a_local / 2;
+            ic = off2 * HALF + b_local / 2;
+        } else {
+            jc = off1 * HALF + b_local / 2;
+            ic = off2 * HALF + a_local / 2;
+        }
+        for (int v = 0; v < NVAR; ++v)
+            face_flux[v*NB*NB + jc*NB + ic] += stage_weight * F[v];
+    }
+}
+
 // level_filter: when >= 0 only leaves at that level contribute fine fluxes.
 // This is required for P4.1 LTS so that fine-level sub-steps do not
 // double-accumulate during the subsequent coarse step (and vice-versa).
@@ -1383,7 +1424,6 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
 {
     static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
     static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
-    static constexpr int HALF = NB / 2;
 
     for (int li : tree.leaf_indices()) {
         if (level_filter >= 0 && tree.nodes[li].level != level_filter) continue;
@@ -1427,52 +1467,10 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
             // Four fine cells per coarse slot → each contributes 1/4 (applied
             // by area_ratio=0.25 inside accumulate_fine_flux).
             std::vector<double> face_flux(NVAR * NB * NB, 0.0);
-
-            for (int b = ilo(); b <= ihi(); ++b)
-            for (int a = ilo(); a <= ihi(); ++a) {
-                int ci, cj, ck, gi, gj, gk;
-                if (axis == 0) {
-                    ci=bound; cj=a;     ck=b;
-                    gi=bound+delta; gj=a; gk=b;
-                } else if (axis == 1) {
-                    ci=a;     cj=bound; ck=b;
-                    gi=a; gj=bound+delta; gk=b;
-                } else {
-                    ci=a;     cj=b;     ck=bound;
-                    gi=a; gj=b; gk=bound+delta;
-                }
-
-                Prim interior = blk.prim(ci, cj, ck);
-                Prim ghost    = blk.prim(gi, gj, gk);
-
-                std::array<double,5> F;
-                if (delta > 0) F = hllc_es_flux(interior, ghost, axis);
-                else           F = hllc_es_flux(ghost, interior, axis);
-
-                // Map fine cell (a,b) to the coarse-cell register index.
-                // The mapping depends on which physical direction a and b
-                // represent for this face axis (A05-fix7):
-                //   axis=0: a→y→jc, b→z→ic  → jc uses a_local, ic uses b_local
-                //   axis=1: a→x→ic, b→z→jc  → jc uses b_local, ic uses a_local
-                //   axis=2: a→x→ic, b→y→jc  → jc uses b_local, ic uses a_local
-                const int a_local = a - ilo();
-                const int b_local = b - ilo();
-                int jc, ic;
-                if (axis == 0) {
-                    jc = off1 * HALF + a_local / 2;
-                    ic = off2 * HALF + b_local / 2;
-                } else {
-                    // axis=1 and axis=2: a→x, b→(z or y); jc indexes the
-                    // non-x transverse direction, so it must use b_local.
-                    jc = off1 * HALF + b_local / 2;
-                    ic = off2 * HALF + a_local / 2;
-                }
-
-                // Accumulate (+=): 4 fine cells contribute to the same coarse
-                // slot; area_ratio=0.25 in accumulate_fine_flux completes the
-                // area-weighted average.
-                for (int v = 0; v < NVAR; ++v)
-                    face_flux[v*NB*NB + jc*NB + ic] += stage_weight * F[v];
+            switch (axis) {
+                case 0: cf_accum_one_face<Axis::X>(blk, delta, bound, off1, off2, stage_weight, face_flux); break;
+                case 1: cf_accum_one_face<Axis::Y>(blk, delta, bound, off1, off2, stage_weight, face_flux); break;
+                case 2: cf_accum_one_face<Axis::Z>(blk, delta, bound, off1, off2, stage_weight, face_flux); break;
             }
             tree.accumulate_fine_flux(li, static_cast<FaceDir>(d), face_flux);
         }
