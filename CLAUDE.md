@@ -162,12 +162,13 @@ linalg  ←  block (block_tree.cpp + amr_operators.cpp)
 
 - git address: `https://github.com/Mixolidian01/cfd.git`
 - Current branch: `to_debug`
-- All Phases 0–14.1 complete: 26 t4 sub-tests pass (T01–T15)
-- t4 includes T11a/T11b (P13.5 SBP-SAT), T12a/b/c (phi advection), T13a/b/c (Cε compression), T14a/b/c (phi AMR C/F), T15a/b/c (SG EOS)
+- All Phases 0–14.2 complete: 28 t4 sub-tests pass (T01–T16)
+- t4 includes T11a/T11b (P13.5 SBP-SAT), T12a/b/c (phi advection), T13a/b/c (Cε compression), T14a/b/c (phi AMR C/F), T15a/b/c (SG EOS), T16a/T16b (contact angle BC)
 - Phase 13 status: P13.1 ✅, P13.2 ✅ (FDKEC), P13.3 ✅, P13.4 ✅, P13.5 ✅ (SBP-SAT C/F penalty)
 - P11.8 ✅: GPU+AMR fallback via `gpu_q_stale_` + `IGpuSolver::upload_q()`; GPU path uses CPU when `max_leaf_level() > 0`
-- P14.1 ✅: phi_data_ in CellBlock; phi ghost fill (periodic/wall/open/AMR C/F 5th-order Lagrange + prolong/restrict); phi_rhs (upwind) + phi_compression_rhs (Cε·h); SSP-RK3 phi_stage; Allaire 2002 mix_eos + eos_cons_to_prim_sg; set_sg_eos propagates to HLLC-ES (SG β=ρ/(2(p+p∞)) fix); use_acdi/acdi_ceps/gamma_a/b/p_inf_a/b config
+- P14.1 ✅: phi ghost fill + Allaire 2002 SG EOS + HLLC-ES SG β correction; use_acdi/acdi_ceps/gamma_a/b/p_inf_a/b config
+- P14.2 ✅: wall contact angle BC; `contact_angle_wall` (deg) in SolverConfig; `set_wall_contact_angle(cos,ceps)` in BlockTree; ghost BC φ_ghost=φ_ref−dist·cos(θ)/ceps·g'(φ_ref)
 - `roadmap.md` is the authoritative Phase 0–4 plan
-- `todo.md` tracks all Phase status; P13.7/P14.2–P14.5 🔲
+- `todo.md` tracks all Phase status; P13.7/P14.3–P14.5 🔲
 - `answers_register.md` logs session Q&A history
 - `to_avoid_bugs.md` records all derived rules (append on each new misbehaviour)

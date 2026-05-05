@@ -165,6 +165,12 @@ double NSSolver::advance() {
     BlockTree::set_wall_T(cfg.wall_T);
     // P13.3: propagate far-field pressure for characteristic open BC (0 = zero-gradient).
     BlockTree::set_open_bc_pressure(cfg.open_bc_p);
+    // P14.2: wall contact angle BC for phase-field (0° cos = neutral/Neumann).
+    {
+        const double ca_cos = (cfg.use_acdi && cfg.bc == BCType::Wall)
+            ? std::cos(cfg.contact_angle_wall * (M_PI / 180.0)) : 0.0;
+        BlockTree::set_wall_contact_angle(ca_cos, cfg.acdi_ceps);
+    }
     // P14.1c: activate stiffened-gas mixture EOS when ACDI is on and fluids differ.
     {
         const bool sg = cfg.use_acdi &&

@@ -683,6 +683,88 @@ static void t15_sg_eos_pressure_equilibrium() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// T16 — P14.2 Wall contact angle BC: ghost phi modified by cos(θ_w)/ceps·g'(φ)
+//
+// Setup: single block, Wall BC, phi uniform φ₀=0.25, u=v=w=0, acdi_ceps=1, use_acdi.
+// G'(φ)=φ(1-φ)(1-2φ)/2.  g'(0.25)=0.25·0.75·0.5/2=0.046875.
+//
+//   T16a: θ_w=90° (neutral, cos=0) → phi ghost = phi_int (Neumann ∂φ/∂n=0).
+//          Verified: phi stays 0.25 after 5 steps (zero ghost gradient + no advection).
+//
+//   T16b: θ_w=0° (wetting, cos=1) → ghost fill drives a gradient at the wall.
+//          phi_compression_rhs sees this gradient and drives wall-adjacent phi away from 0.25.
+//          Check: phi at wall cell (ilo(),j,k) changes measurably from φ₀=0.25.
+// ─────────────────────────────────────────────────────────────────────────────
+static void t16_wall_contact_angle() {
+    // Helper: build a static wall solver with phi=phi0 uniform, no flow
+    auto make_solver = [](double phi0, double theta_deg, double ceps) {
+        NSSolver s;
+        s.cfg.cfl                = 0.3;
+        s.cfg.max_steps          = 5;
+        s.cfg.t_end              = 1e30;
+        s.cfg.bc                 = BCType::Wall;
+        s.cfg.verbose            = false;
+        s.cfg.diag_interval      = 100;
+        s.cfg.use_acdi           = true;
+        s.cfg.acdi_ceps          = ceps;
+        s.cfg.contact_angle_wall = theta_deg;
+
+        const double rho0 = 1.225, p0 = 101325.0;
+        std::function<double(double,double,double)> phi_ic =
+            [phi0](double,double,double) { return phi0; };
+
+        s.init(1.0, [&](double,double,double) {
+            Prim q; q.rho=rho0; q.u=0; q.v=0; q.w=0; q.p=p0;
+            q.T=p0/(rho0*R_GAS); q.c=std::sqrt(GAMMA*p0/rho0);
+            return q;
+        }, &phi_ic);
+        s.run();
+        return s;
+    };
+
+    const double phi0 = 0.25;
+    const double ceps = 1.0;
+
+    // T16a: neutral angle (θ=90°, cos=0) → no contact angle correction.
+    //       phi_compression_rhs sees zero gradient at wall → phi stays 0.25.
+    {
+        NSSolver s = make_solver(phi0, 90.0, ceps);
+        double phi_max_err = 0.0;
+        for (int li : s.tree.leaf_indices()) {
+            if (!s.tree.nodes[li].has_block()) continue;
+            const CellBlock& blk = *s.tree.nodes[li].block;
+            for (int k=ilo();k<=ihi();++k)
+            for (int j=ilo();j<=ihi();++j)
+            for (int i=ilo();i<=ihi();++i) {
+                const double p = blk.phi_data_[cell_idx(i,j,k)];
+                phi_max_err = std::max(phi_max_err, std::abs(p - phi0));
+            }
+        }
+        check("T16a neutral angle (90°): phi stays 0.25 after 5 steps < 1e-10",
+              phi_max_err < 1e-10, phi_max_err, 1e-10);
+    }
+
+    // T16b: wetting angle (θ=0°, cos=1) → ghost phi < phi_int at wall.
+    //       phi_compression_rhs sees the gradient and changes wall-adjacent phi.
+    //       Test: phi at wall interior cell ≠ 0.25 after 5 steps.
+    {
+        NSSolver s = make_solver(phi0, 0.0, ceps);
+        // Check wall-adjacent cell along x (i=ilo()) for any (j,k) interior pair.
+        bool wall_phi_changed = false;
+        for (int li : s.tree.leaf_indices()) {
+            if (!s.tree.nodes[li].has_block()) continue;
+            const CellBlock& blk = *s.tree.nodes[li].block;
+            const int j = (ilo() + ihi()) / 2;
+            const int k = (ilo() + ihi()) / 2;
+            const double p_wall = blk.phi_data_[cell_idx(ilo(), j, k)];
+            if (std::abs(p_wall - phi0) > 1e-10) wall_phi_changed = true;
+        }
+        check("T16b wetting angle (0°): wall-adjacent phi changes from phi0",
+              wall_phi_changed);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 4: Layer 3 — Time Loop ===\n");
     printf("    Gate: mass/momentum/total-energy conserved < 1e-10\n");
@@ -704,6 +786,7 @@ int main() {
     t13_phi_compression();
     t14_phi_amr();
     t15_sg_eos_pressure_equilibrium();
+    t16_wall_contact_angle();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail>0)

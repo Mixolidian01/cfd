@@ -141,6 +141,13 @@ struct SolverConfig {
     double gamma_b = GAMMA;   // γ for fluid B (φ=0), e.g. 1.4  for air
     double p_inf_a = 0.0;     // p∞ [Pa] for fluid A, e.g. 3.43e8 for liquid water
     double p_inf_b = 0.0;     // p∞ [Pa] for fluid B (0 = ideal gas)
+
+    // P14.2: static contact angle for phase-field at wall (BCType::Wall + use_acdi).
+    // θ_w in degrees: 90° (default) → ∂φ/∂n=0 (neutral, same as Neumann);
+    //   0° → fully wetting (fluid A prefers wall); 180° → fully non-wetting.
+    // Ghost BC: φ_ghost = φ_int − dist·cos(θ_w)/(acdi_ceps)·g'(φ_int),
+    //   g'(φ)=φ(1-φ)(1-2φ)/2.  Requires acdi_ceps > 0 and bc == BCType::Wall.
+    double contact_angle_wall = 90.0;   // [degrees]
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────

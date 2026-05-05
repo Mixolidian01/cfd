@@ -147,6 +147,14 @@ struct BlockTree {
     //   Riemann-invariant velocity, making HLLC-ES add entropy dissipation at the face.
     static void set_open_bc_pressure(double p_inf) noexcept;
 
+    // P14.2: wall contact angle BC for phase-field (ACDI only).
+    // cos_theta_w = cos(θ_w): 0 → neutral (90°, Neumann ∂φ/∂n=0, default);
+    //   +1 → fully wetting (0°); -1 → fully non-wetting (180°).
+    // acdi_ceps: compression coefficient from SolverConfig; 0 disables BC.
+    // Ghost fill: φ_ghost = φ_int - dist·cos(θ)/(ε/h)·g'(φ_int)
+    //   where g'(φ)=φ(1-φ)(1-2φ)/2 (double-well derivative), ε=ceps·h.
+    static void set_wall_contact_angle(double cos_theta_w, double acdi_ceps) noexcept;
+
     // ── Flux register management (P1.4) ───────────────────────────────────────
     void zero_flux_registers();
     void accumulate_fine_flux(int fine_leaf, FaceDir d,

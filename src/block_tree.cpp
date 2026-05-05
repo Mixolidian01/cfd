@@ -561,6 +561,14 @@ void BlockTree::set_wall_T(double T_w) noexcept { g_wall_T = T_w; }
 static double g_open_bc_p = 0.0;
 void BlockTree::set_open_bc_pressure(double p_inf) noexcept { g_open_bc_p = p_inf; }
 
+// P14.2: wall contact angle BC for phase-field (0 = neutral/Neumann, default)
+static double g_wall_ca_cos  = 0.0;   // cos(θ_w)
+static double g_wall_ca_ceps = 0.0;   // acdi_ceps (0 → disabled)
+void BlockTree::set_wall_contact_angle(double cos_theta_w, double ceps) noexcept {
+    g_wall_ca_cos  = cos_theta_w;
+    g_wall_ca_ceps = ceps;
+}
+
 // Compute characteristic ghost Prim for one open-boundary cell.
 // axis: 0/1/2 = x/y/z; outward_sign: +1 for + faces, -1 for - faces.
 // Returns zero-gradient state when g_open_bc_p == 0 or supersonic outflow.
@@ -956,7 +964,20 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
             return p.rho * (R_GAS/(GAMMA-1.0)) * T_ghost + KE;
         };
 
+        // P14.2: contact angle ghost phi — phi_ghost = phi_ref - dist*cos(θ)/(ceps)*g'(phi_ref)
+        // g'(phi) = phi*(1-phi)*(1-2*phi)/2  (double-well derivative)
+        // dist: ghost-cell distance from wall in cell spacings (1 for nearest, 2 for outermost).
+        // With gi<ilo(): XMINUS wall, ref = ilo(); gi>ihi(): XPLUS wall, ref = ihi().
+        auto phi_wall_ghost = [](double phi_ref, int dist) noexcept -> double {
+            if (g_wall_ca_ceps <= 0.0) return phi_ref;  // disabled → Neumann
+            const double g_prime = 0.5 * phi_ref * (1.0 - phi_ref) * (1.0 - 2.0 * phi_ref);
+            const double phi_g = phi_ref - dist * g_wall_ca_cos / g_wall_ca_ceps * g_prime;
+            return (phi_g < 0.0) ? 0.0 : (phi_g > 1.0) ? 1.0 : phi_g;
+        };
+
         auto wall_x = [&](int gi, int mi) noexcept {
+            const int ref_i = (gi < ilo()) ? ilo() : ihi();
+            const int dist  = (gi < ilo()) ? (ilo() - gi) : (gi - ihi());
             for (int k=ilo();k<=ihi();++k)
             for (int j=ilo();j<=ihi();++j) {
                 blk.rho (gi,j,k) =  blk.rho (mi,j,k);
@@ -964,10 +985,12 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
                 blk.rhov(gi,j,k) = -blk.rhov(mi,j,k);
                 blk.rhow(gi,j,k) = -blk.rhow(mi,j,k);
                 blk.E   (gi,j,k) =  wall_E(blk, mi,j,k);
-                blk.phi(gi,j,k)  =  blk.phi(mi,j,k);   // P14.1: Neumann ∂φ/∂n=0
+                blk.phi(gi,j,k)  =  phi_wall_ghost(blk.phi(ref_i,j,k), dist);
             }
         };
         auto wall_y = [&](int gj, int mj) noexcept {
+            const int ref_j = (gj < ilo()) ? ilo() : ihi();
+            const int dist  = (gj < ilo()) ? (ilo() - gj) : (gj - ihi());
             for (int k=ilo();k<=ihi();++k)
             for (int i=ilo();i<=ihi();++i) {
                 blk.rho (i,gj,k) =  blk.rho (i,mj,k);
@@ -975,10 +998,12 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
                 blk.rhov(i,gj,k) = -blk.rhov(i,mj,k);
                 blk.rhow(i,gj,k) = -blk.rhow(i,mj,k);
                 blk.E   (i,gj,k) =  wall_E(blk, i,mj,k);
-                blk.phi(i,gj,k)  =  blk.phi(i,mj,k);   // P14.1: Neumann ∂φ/∂n=0
+                blk.phi(i,gj,k)  =  phi_wall_ghost(blk.phi(i,ref_j,k), dist);
             }
         };
         auto wall_z = [&](int gk, int mk) noexcept {
+            const int ref_k = (gk < ilo()) ? ilo() : ihi();
+            const int dist  = (gk < ilo()) ? (ilo() - gk) : (gk - ihi());
             for (int j=ilo();j<=ihi();++j)
             for (int i=ilo();i<=ihi();++i) {
                 blk.rho (i,j,gk) =  blk.rho (i,j,mk);
@@ -986,7 +1011,7 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
                 blk.rhov(i,j,gk) = -blk.rhov(i,j,mk);
                 blk.rhow(i,j,gk) = -blk.rhow(i,j,mk);
                 blk.E   (i,j,gk) =  wall_E(blk, i,j,mk);
-                blk.phi(i,j,gk)  =  blk.phi(i,j,mk);   // P14.1: Neumann ∂φ/∂n=0
+                blk.phi(i,j,gk)  =  phi_wall_ghost(blk.phi(i,j,ref_k), dist);
             }
         };
 
