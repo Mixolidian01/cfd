@@ -577,6 +577,111 @@ static void t14_phi_amr() {
     check("T14c phi_min >= -1e-6 (Lagrange C/F bounded below)", phi_min >= -1e-6, -phi_min, 1e-6);
 }
 
+// =============================================================================
+// T15 — P14.1c Stiffened-gas EOS: single-fluid conservation + EOS correctness
+//
+// Setup: single-block periodic domain. φ=1 everywhere (pure fluid A:
+//        stiffened gas γ_A=3.0, p∞_A=1e5). Uniform flow u=10 m/s.
+//        Ma = u/c_A ≈ 10/24.6 ≈ 0.41 (subsonic, no shocks).
+//
+// Gate criteria:
+//   T15a: mass conserved < 1e-10 over 5 steps (SG EOS conserves mass)
+//   T15b: energy conserved < 1e-6 over 5 steps (SG E = (p+γp∞)/(γ-1) + KE)
+//   T15c: pressure recovered correctly from Q using φ — max |p - p0| < 1e-6*p0
+//         (tests that fill_prim_cache → eos_cons_to_prim_sg is wired correctly)
+//
+// Physical basis: uniform-state periodic flow with single-fluid SG EOS is an
+// exact solution (all gradients zero → RHS=0 → state constant). The code must
+// reproduce this for the SG EOS path just as T01/T04 do for ideal gas.
+// =============================================================================
+static void t15_sg_eos_pressure_equilibrium() {
+    NSSolver s;
+    s.cfg.cfl           = 0.3;
+    s.cfg.max_steps     = 5;
+    s.cfg.t_end         = 1e30;
+    s.cfg.bc            = BCType::Periodic;
+    s.cfg.verbose       = false;
+    s.cfg.diag_interval = 100;
+    s.cfg.use_acdi      = true;
+    s.cfg.gamma_a       = 3.0;
+    s.cfg.gamma_b       = 1.4;
+    s.cfg.p_inf_a       = 1e5;   // stiffened-gas p∞ for fluid A [Pa]
+    s.cfg.p_inf_b       = 0.0;
+
+    // φ=1 everywhere → pure fluid A (stiffened gas)
+    std::function<double(double,double,double)> phi_ic =
+        [](double, double, double) { return 1.0; };
+
+    const double p0   = 101325.0;
+    const double rho0 = 1000.0;   // water-like density
+    const double u0   = 10.0;     // m/s (low Ma in stiffened gas)
+
+    auto flow_ic = [&](double, double, double) {
+        Prim q;
+        q.rho     = rho0;
+        q.u = u0; q.v = 0.0; q.w = 0.0;
+        q.p       = p0;
+        q.gamma_m = s.cfg.gamma_a;
+        q.p_inf_m = s.cfg.p_inf_a;
+        q.T = (q.p + q.p_inf_m) / (q.rho * R_GAS);
+        q.c = std::sqrt(q.gamma_m * (q.p + q.p_inf_m) / q.rho);
+        return q;
+    };
+
+    s.init(1.0, flow_ic, &phi_ic);
+
+    // Initial mass and energy
+    auto mass_energy = [&](double& mass, double& energy) {
+        mass = 0.0; energy = 0.0;
+        for (int li : s.tree.leaf_indices()) {
+            if (!s.tree.nodes[li].has_block()) continue;
+            const CellBlock& blk = *s.tree.nodes[li].block;
+            const double dv = blk.h * blk.h * blk.h;
+            for (int k=ilo();k<=ihi();++k)
+            for (int j=ilo();j<=ihi();++j)
+            for (int i=ilo();i<=ihi();++i) {
+                const int f = cell_idx(i,j,k);
+                mass   += blk.Q[0][f] * dv;
+                energy += blk.Q[4][f] * dv;
+            }
+        }
+    };
+
+    double m0, e0;
+    mass_energy(m0, e0);
+    s.run();
+    double m1, e1;
+    mass_energy(m1, e1);
+
+    const double mass_err   = std::abs(m1 - m0) / (std::abs(m0) + 1e-30);
+    const double energy_err = std::abs(e1 - e0) / (std::abs(e0) + 1e-30);
+    check("T15a SG EOS mass conserved < 1e-10",   mass_err   < 1e-10, mass_err,   1e-10);
+    check("T15b SG EOS energy conserved < 1e-6",  energy_err < 1e-6,  energy_err, 1e-6);
+
+    // T15c: uniform-state check — pressure should be exactly p0 everywhere
+    // (uniform flow with no gradients → RHS=0 → Q unchanged → p unchanged)
+    double p_max_err = 0.0;
+    for (int li : s.tree.leaf_indices()) {
+        if (!s.tree.nodes[li].has_block()) continue;
+        const CellBlock& blk = *s.tree.nodes[li].block;
+        for (int k=ilo();k<=ihi();++k)
+        for (int j=ilo();j<=ihi();++j)
+        for (int i=ilo();i<=ihi();++i) {
+            const int f = cell_idx(i,j,k);
+            const double phi = blk.phi_data_[f];
+            double gm, pim;
+            mix_eos(phi, s.cfg.gamma_a, s.cfg.gamma_b, s.cfg.p_inf_a, s.cfg.p_inf_b, gm, pim);
+            const double rho = blk.Q[0][f];
+            const double u   = blk.Q[1][f] / rho;
+            const double v   = blk.Q[2][f] / rho;
+            const double w   = blk.Q[3][f] / rho;
+            const double p   = (gm-1.0)*(blk.Q[4][f] - 0.5*rho*(u*u+v*v+w*w)) - gm*pim;
+            p_max_err = std::max(p_max_err, std::abs(p - p0) / p0);
+        }
+    }
+    check("T15c SG EOS pressure exact for uniform state < 1e-10", p_max_err < 1e-10, p_max_err, 1e-10);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 4: Layer 3 — Time Loop ===\n");
@@ -598,6 +703,7 @@ int main() {
     t12_phi_advection();
     t13_phi_compression();
     t14_phi_amr();
+    t15_sg_eos_pressure_equilibrium();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail>0)

@@ -91,6 +91,12 @@ void tree_rhs(BlockTree& tree,
               bool   cf_coarse_zero_grad = false,
               bool   open_bc             = false) noexcept;
 
+// ── P14.1: Stiffened-gas mixture EOS activation ──────────────────────────────
+// Call once per advance() before tree_rhs() when use_acdi && gamma_a != gamma_b.
+// active=false resets to ideal-gas EOS (p∞=0, γ=GAMMA).
+// Parameters: ga/gb = γ for fluid A/B, pia/pib = p∞ for A/B.
+void set_sg_eos(bool active, double ga, double gb, double pia, double pib) noexcept;
+
 // ── P14.1: ACDI phase-field advection RHS ────────────────────────────────────
 // Conservative 1st-order upwind: ∂φ/∂t = -∇·(φu).
 // Ghost phi must be filled (via fill_ghosts_periodic or equivalent) before call.

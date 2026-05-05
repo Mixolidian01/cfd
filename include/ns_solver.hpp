@@ -132,6 +132,15 @@ struct SolverConfig {
     // 0.0 (default) → pure advection only (no interface sharpening).
     // >0 → adds ε·∇·(∇φ − φ(1−φ)·n̂) compression source to each RK3 stage.
     double acdi_ceps = 0.0;
+
+    // P14.1c: Stiffened-gas EOS for fluid A (φ=1) and fluid B (φ=0).
+    // Allaire (2002) mixture rule: 1/(γ_m-1) = φ/(γ_A-1) + (1-φ)/(γ_B-1).
+    // Defaults reproduce ideal gas (γ=1.4, p∞=0) when both fluids are identical.
+    // Only active when use_acdi=true AND (gamma_a != gamma_b OR p_inf_a != 0 OR p_inf_b != 0).
+    double gamma_a = GAMMA;   // γ for fluid A (φ=1), e.g. 6.12 for liquid water
+    double gamma_b = GAMMA;   // γ for fluid B (φ=0), e.g. 1.4  for air
+    double p_inf_a = 0.0;     // p∞ [Pa] for fluid A, e.g. 3.43e8 for liquid water
+    double p_inf_b = 0.0;     // p∞ [Pa] for fluid B (0 = ideal gas)
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────

@@ -61,6 +61,24 @@
 #endif
 
 // =============================================================================
+// P14.1: Stiffened-gas EOS global state
+// Set once per advance() from NSSolver when use_acdi && use_sg_eos is true.
+// =============================================================================
+static bool   g_sg_active = false;
+static double g_sg_ga  = GAMMA, g_sg_gb  = GAMMA;
+static double g_sg_pia = 0.0,   g_sg_pib = 0.0;
+
+void set_sg_eos(bool active, double ga, double gb, double pia, double pib) noexcept {
+    g_sg_active = active;
+    g_sg_ga = ga; g_sg_gb = gb;
+    g_sg_pia = pia; g_sg_pib = pib;
+    // P14.1c: propagate to CellBlock statics so prim() and cfl_dt() use the correct EOS
+    CellBlock::sg_active_ = active;
+    CellBlock::sg_ga_     = ga;  CellBlock::sg_gb_  = gb;
+    CellBlock::sg_pia_    = pia; CellBlock::sg_pib_ = pib;
+}
+
+// =============================================================================
 // HLLC Riemann flux
 // =============================================================================
 // Reference: Toro (2009) §10.4, Batten et al. (1997).
@@ -84,13 +102,15 @@ std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept
     const double sqL = std::sqrt(L.rho);
     const double sqR = std::sqrt(R.rho);
     const double isq = 1.0 / (sqL + sqR);
-    const double HL  = L.c*L.c/(GAMMA-1.0) + 0.5*(L.u*L.u + L.v*L.v + L.w*L.w);
-    const double HR  = R.c*R.c/(GAMMA-1.0) + 0.5*(R.u*R.u + R.v*R.v + R.w*R.w);
+    // P14.1: use cell mixture γ for specific total enthalpy H = c²/(γ-1) + ½|u|²
+    const double HL  = L.c*L.c/(L.gamma_m-1.0) + 0.5*(L.u*L.u + L.v*L.v + L.w*L.w);
+    const double HR  = R.c*R.c/(R.gamma_m-1.0) + 0.5*(R.u*R.u + R.v*R.v + R.w*R.w);
     const double uh  = (sqL*L.u + sqR*R.u)*isq;
     const double vh  = (sqL*L.v + sqR*R.v)*isq;
     const double wh  = (sqL*L.w + sqR*R.w)*isq;
     const double Hh  = (sqL*HL  + sqR*HR )*isq;
-    const double c2h = (GAMMA-1.0)*(Hh - 0.5*(uh*uh + vh*vh + wh*wh));
+    const double gm_face = 0.5*(L.gamma_m + R.gamma_m);  // arithmetic face average
+    const double c2h = (gm_face-1.0)*(Hh - 0.5*(uh*uh + vh*vh + wh*wh));
     const double ch  = (c2h > 0.0) ? std::sqrt(c2h) : 0.5*(L.c + R.c);
     const double u_h = (axis==0) ? uh : (axis==1) ? vh : wh;  // normal component
     double sL = std::min(uL - L.c, u_h - ch);
@@ -102,7 +122,9 @@ std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept
 
     auto phys_flux = [&](const Prim& q) -> std::array<double,5> {
         double un = (axis==0)?q.u:(axis==1)?q.v:q.w;
-        double E  = q.p/(GAMMA-1.0) + 0.5*q.rho*(q.u*q.u+q.v*q.v+q.w*q.w);
+        // P14.1: stiffened gas E = (p + γ·p∞)/(γ-1) + KE
+        double E  = (q.p + q.gamma_m*q.p_inf_m)/(q.gamma_m-1.0)
+                    + 0.5*q.rho*(q.u*q.u+q.v*q.v+q.w*q.w);
         return {q.rho*un,
                 q.rho*q.u*un + (axis==0?q.p:0.0),
                 q.rho*q.v*un + (axis==1?q.p:0.0),
@@ -114,7 +136,8 @@ std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept
         -> std::array<double,5>
     {
         double un = (axis==0)?q.u:(axis==1)?q.v:q.w;
-        double E  = q.p/(GAMMA-1.0) + 0.5*q.rho*(q.u*q.u+q.v*q.v+q.w*q.w);
+        double E  = (q.p + q.gamma_m*q.p_inf_m)/(q.gamma_m-1.0)
+                    + 0.5*q.rho*(q.u*q.u+q.v*q.v+q.w*q.w);  // P14.1
         double coeff = q.rho * (sK - un) / (sK - sS);
         double rho_s  = coeff;
         double rhou_s = coeff * (axis==0 ? sS : q.u);
@@ -181,16 +204,21 @@ std::array<double,NVAR> hllc_es_flux(const Prim& L, const Prim& R, int axis) noe
     const double u_a    = 0.5*(L.u   + R.u  );
     const double v_a    = 0.5*(L.v   + R.v  );
     const double w_a    = 0.5*(L.w   + R.w  );
-    const double beta_L = L.rho / (2.0*L.p);
-    const double beta_R = R.rho / (2.0*R.p);
+    // P14.1c SG EOS: use β = ρ/(2(p+p∞)) so that Ĥ = γ(p+p∞)/((γ-1)ρ) + KE.
+    // For ideal gas p∞=0 → β = ρ/(2p), recovering the original Chandrashekar formula.
+    const double beta_L = L.rho / (2.0*(L.p + L.p_inf_m));
+    const double beta_R = R.rho / (2.0*(R.p + R.p_inf_m));
     const double beta_a = 0.5*(beta_L + beta_R);
 
     // Log-mean quantities (entropy-variable averages)
     const double rho_ln  = log_mean(L.rho,  R.rho );
     const double beta_ln = log_mean(beta_L, beta_R);
 
-    // Face pressure (Chandrashekar Eq. 3.10): ρ̄/(2β̄)
-    const double p_hat = rho_a / (2.0 * beta_a);
+    // p_hat = ρ̄/(2β̄) = arithmetic average of (p+p∞) — effective pressure at face.
+    // Momentum flux uses p̂_thermo = p_hat − p̂∞ so the pressure in ∂(ρu)/∂t is p.
+    const double p_hat  = rho_a / (2.0 * beta_a);
+    const double pim_hat = 0.5*(L.p_inf_m + R.p_inf_m);
+    const double p_mom  = p_hat - pim_hat;  // thermodynamic face pressure for momentum
 
     // Normal velocity
     const double un_L = (axis==0)?L.u:(axis==1)?L.v:L.w;
@@ -200,21 +228,24 @@ std::array<double,NVAR> hllc_es_flux(const Prim& L, const Prim& R, int axis) noe
     const double mass = rho_ln * un_a;
 
     // Face total enthalpy: Ĥ = 1/(2(γ-1)β_ln) + KE_hat + p̂/ρ_ln
+    // With β = ρ/(2(p+p∞)) this gives Ĥ = γ(p+p∞)/((γ-1)ρ) + KE for uniform state.
+    const double gm_face_kep = 0.5*(L.gamma_m + R.gamma_m);
     const double KE_hat = 0.5*(u_a*u_a + v_a*v_a + w_a*w_a);
-    const double H_hat  = 1.0/(2.0*(GAMMA-1.0)*beta_ln) + KE_hat + p_hat/rho_ln;
+    const double H_hat  = 1.0/(2.0*(gm_face_kep-1.0)*beta_ln) + KE_hat + p_hat/rho_ln;
 
-    // Entropy-conservative flux (Chandrashekar Eq. 3.10)
+    // Entropy-conservative flux (Chandrashekar Eq. 3.10, extended to SG EOS)
     std::array<double,NVAR> F_EC;
     F_EC[0] = mass;
-    F_EC[1] = mass*u_a + (axis==0 ? p_hat : 0.0);
-    F_EC[2] = mass*v_a + (axis==1 ? p_hat : 0.0);
-    F_EC[3] = mass*w_a + (axis==2 ? p_hat : 0.0);
+    F_EC[1] = mass*u_a + (axis==0 ? p_mom : 0.0);
+    F_EC[2] = mass*v_a + (axis==1 ? p_mom : 0.0);
+    F_EC[3] = mass*w_a + (axis==2 ? p_mom : 0.0);
     F_EC[4] = mass*H_hat;
 
     // Lax-Friedrichs scalar dissipation: F_ES = F_EC − (λ_max/2)·ΔQ
     const double lam = std::max(std::abs(un_L)+L.c, std::abs(un_R)+R.c);
-    const double E_L = L.p/(GAMMA-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
-    const double E_R = R.p/(GAMMA-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
+    // P14.1: stiffened-gas E = (p + γ·p∞)/(γ-1) + KE
+    const double E_L = (L.p + L.gamma_m*L.p_inf_m)/(L.gamma_m-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
+    const double E_R = (R.p + R.gamma_m*R.p_inf_m)/(R.gamma_m-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
 
     std::array<double,NVAR> F_ES;
     F_ES[0] = F_EC[0] - 0.5*lam*(R.rho       - L.rho      );
@@ -231,17 +262,28 @@ std::array<double,NVAR> hllc_es_flux(const Prim& L, const Prim& R, int axis) noe
 // Pre-compute all NCELL primitive states (and Sutherland µ) once per
 // compute_rhs call.  Interior + ghost cells filled → stencil = pure lookup.
 static void fill_prim_cache(const CellBlock& blk, Prim* pc) noexcept {
-    // P4.2: tile loop — 5 aligned 64-byte loads per tile, enables SIMD EOS.
-    for (int t = 0; t < CellBlock::NTILE; ++t) {
-        const double* rho_p  = blk.Q[0].tile_ptr(t);
-        const double* rhou_p = blk.Q[1].tile_ptr(t);
-        const double* rhov_p = blk.Q[2].tile_ptr(t);
-        const double* rhow_p = blk.Q[3].tile_ptr(t);
-        const double* E_p    = blk.Q[4].tile_ptr(t);
-        Prim* pc_t = pc + t * CellBlock::W;
-        for (int lane = 0; lane < CellBlock::W; ++lane)
-            pc_t[lane] = eos_cons_to_prim(rho_p[lane], rhou_p[lane],
-                                           rhov_p[lane], rhow_p[lane], E_p[lane]);
+    if (!g_sg_active) {
+        // P4.2: tile loop — 5 aligned 64-byte loads per tile, enables SIMD EOS.
+        for (int t = 0; t < CellBlock::NTILE; ++t) {
+            const double* rho_p  = blk.Q[0].tile_ptr(t);
+            const double* rhou_p = blk.Q[1].tile_ptr(t);
+            const double* rhov_p = blk.Q[2].tile_ptr(t);
+            const double* rhow_p = blk.Q[3].tile_ptr(t);
+            const double* E_p    = blk.Q[4].tile_ptr(t);
+            Prim* pc_t = pc + t * CellBlock::W;
+            for (int lane = 0; lane < CellBlock::W; ++lane)
+                pc_t[lane] = eos_cons_to_prim(rho_p[lane], rhou_p[lane],
+                                               rhov_p[lane], rhow_p[lane], E_p[lane]);
+        }
+    } else {
+        // P14.1: stiffened-gas per-cell mixture EOS from phi_data_
+        for (int flat = 0; flat < NCELL; ++flat) {
+            double gm, pim;
+            mix_eos(blk.phi_data_[flat], g_sg_ga, g_sg_gb, g_sg_pia, g_sg_pib, gm, pim);
+            pc[flat] = eos_cons_to_prim_sg(blk.Q[0][flat], blk.Q[1][flat],
+                                            blk.Q[2][flat], blk.Q[3][flat],
+                                            blk.Q[4][flat], gm, pim);
+        }
     }
 }
 
@@ -277,8 +319,9 @@ static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
     const double v_a   = 0.5*(L.v   + R.v  );
     const double w_a   = 0.5*(L.w   + R.w  );
     const double p_a   = 0.5*(L.p   + R.p  );
-    const double E_L   = L.p/(GAMMA-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
-    const double E_R   = R.p/(GAMMA-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
+    // P14.1: stiffened-gas E for H computation
+    const double E_L   = (L.p + L.gamma_m*L.p_inf_m)/(L.gamma_m-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
+    const double E_R   = (R.p + R.gamma_m*R.p_inf_m)/(R.gamma_m-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
     const double H_L   = (E_L + L.p) / L.rho;
     const double H_R   = (E_R + R.p) / R.rho;
     const double H_a   = 0.5*(H_L + H_R);
@@ -304,8 +347,9 @@ static std::array<double,NVAR> kep_flux_t(const Prim& L, const Prim& R) noexcept
     const double v_a   = 0.5*(L.v   + R.v  );
     const double w_a   = 0.5*(L.w   + R.w  );
     const double p_a   = 0.5*(L.p   + R.p  );
-    const double E_L   = L.p/(GAMMA-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
-    const double E_R   = R.p/(GAMMA-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
+    // P14.1: stiffened-gas E for H computation
+    const double E_L   = (L.p + L.gamma_m*L.p_inf_m)/(L.gamma_m-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
+    const double E_R   = (R.p + R.gamma_m*R.p_inf_m)/(R.gamma_m-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
     const double H_a   = 0.5*((E_L+L.p)/L.rho + (E_R+R.p)/R.rho);
 
     // P13.2: FDKEC mass flux (Subbareddy & Candler 2009)
@@ -505,7 +549,9 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
         Q[m][1] = p.rho * p.u;
         Q[m][2] = p.rho * p.v;
         Q[m][3] = p.rho * p.w;
-        Q[m][4] = p.p/(GAMMA-1.0) + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
+        // P14.1: stiffened-gas E for H computation
+        Q[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
+                  + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
     }
 
     // ── Roe-averaged state between cells i (m=2) and i+1 (m=3) ──────────────
@@ -521,7 +567,9 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
     const double HR    = (Q[3][4] + pR.p) / pR.rho;
     const double H_roe = (sqL*HL + sqR*HR) / denom;
     const double KE    = 0.5*(u_roe*u_roe + v_roe*v_roe + w_roe*w_roe);
-    const double c2    = std::max((GAMMA-1.0)*(H_roe - KE), 1.0e-300);
+    // P14.1: face-averaged mixture γ for Roe sound speed
+    const double gm_roe = 0.5*(pL.gamma_m + pR.gamma_m);
+    const double c2    = std::max((gm_roe-1.0)*(H_roe - KE), 1.0e-300);
     const double c_roe = std::sqrt(c2);
 
     // Normal and tangential Roe velocities + conservative-array index mapping
@@ -535,7 +583,7 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
     const int    t1_idx = (axis == 0) ? 2 : 1;
     const int    t2_idx = (axis == 2) ? 2 : 3;
 
-    const double b  = (GAMMA-1.0) / c2;   // (γ-1)/c²
+    const double b  = (gm_roe-1.0) / c2;  // (γ-1)/c²  P14.1
     const double b2 = b * KE;             // (γ-1)*KE/c²
     const double ioc = 1.0 / c_roe;       // 1/c
 
@@ -609,18 +657,23 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
     // overshoots at a strong discontinuity. Rather than clamping to 1e-300
     // (which makes log_mean(β_L,β_R) degenerate in hllc_es_flux), fall back
     // to the cell-center primitive at the interface: pL for qL, pR for qR.
+    // P14.1: use fallback's mixture EOS for reconstructed state validation
     auto safe_prim = [](const double Qc[NVAR], const Prim& fallback) -> Prim {
         const double rho = Qc[0];
         if (rho <= 0.0) return fallback;
         const double u   = Qc[1] / rho;
         const double v   = Qc[2] / rho;
         const double w   = Qc[3] / rho;
-        const double p   = (GAMMA-1.0)*(Qc[4]-0.5*rho*(u*u+v*v+w*w));
-        if (p <= 0.0) return fallback;
+        const double gm  = fallback.gamma_m;
+        const double pim = fallback.p_inf_m;
+        const double p   = (gm-1.0)*(Qc[4]-0.5*rho*(u*u+v*v+w*w)) - gm*pim;
+        if (p + pim <= 0.0) return fallback;
         Prim pr;
         pr.rho = rho;  pr.u = u;   pr.v = v;   pr.w = w;
-        pr.p   = p;    pr.T = p/(rho*R_GAS);
-        pr.c   = std::sqrt(GAMMA*p/rho);
+        pr.p      = p;
+        pr.gamma_m = gm;  pr.p_inf_m = pim;
+        pr.T      = (p + pim) / (rho * R_GAS);
+        pr.c      = std::sqrt(gm * (p + pim) / rho);
         return pr;
     };
 
@@ -646,7 +699,9 @@ static void weno5_face_t(const Prim* pc, int i, int j, int k,
         Q[m][1] = p.rho * p.u;
         Q[m][2] = p.rho * p.v;
         Q[m][3] = p.rho * p.w;
-        Q[m][4] = p.p/(GAMMA-1.0) + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
+        // P14.1: stiffened-gas E
+        Q[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
+                  + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
     }
 
     const Prim& pL = pc[idx_at(0)];
@@ -661,7 +716,9 @@ static void weno5_face_t(const Prim* pc, int i, int j, int k,
     const double HR    = (Q[3][4] + pR.p) / pR.rho;
     const double H_roe = (sqL*HL + sqR*HR) / denom;
     const double KE    = 0.5*(u_roe*u_roe + v_roe*v_roe + w_roe*w_roe);
-    const double c2    = std::max((GAMMA-1.0)*(H_roe - KE), 1.0e-300);
+    // P14.1: face-averaged mixture γ for Roe sound speed
+    const double gm_roe_t = 0.5*(pL.gamma_m + pR.gamma_m);
+    const double c2    = std::max((gm_roe_t-1.0)*(H_roe - KE), 1.0e-300);
     const double c_roe = std::sqrt(c2);
 
     // Compile-time normal/tangential velocity and Q-array index selection
@@ -672,7 +729,7 @@ static void weno5_face_t(const Prim* pc, int i, int j, int k,
     const double ut1 = (DIR==Axis::X) ? v_roe : u_roe;
     const double ut2 = (DIR==Axis::Z) ? v_roe : w_roe;
 
-    const double b  = (GAMMA-1.0) / c2;
+    const double b  = (gm_roe_t-1.0) / c2;  // P14.1
     const double b2 = b * KE;
     const double ioc = 1.0 / c_roe;
 
@@ -713,16 +770,20 @@ static void weno5_face_t(const Prim* pc, int i, int j, int k,
     back_project(wL, QL);
     back_project(wR, QRv);
 
+    // P14.1: use fallback's mixture EOS for reconstructed state validation
     auto safe_prim = [](const double Qc[NVAR], const Prim& fallback) -> Prim {
         const double rho = Qc[0];
         if (rho <= 0.0) return fallback;
         const double u   = Qc[1] / rho;
         const double v   = Qc[2] / rho;
         const double w   = Qc[3] / rho;
-        const double p   = (GAMMA-1.0)*(Qc[4] - 0.5*rho*(u*u+v*v+w*w));
-        if (p <= 0.0) return fallback;
+        const double gm  = fallback.gamma_m;
+        const double pim = fallback.p_inf_m;
+        const double p   = (gm-1.0)*(Qc[4] - 0.5*rho*(u*u+v*v+w*w)) - gm*pim;
+        if (p + pim <= 0.0) return fallback;
         Prim q; q.rho=rho; q.u=u; q.v=v; q.w=w; q.p=p;
-        q.T=p/(rho*R_GAS); q.c=std::sqrt(GAMMA*p/rho);
+        q.gamma_m=gm; q.p_inf_m=pim;
+        q.T=(p+pim)/(rho*R_GAS); q.c=std::sqrt(gm*(p+pim)/rho);
         return q;
     };
 

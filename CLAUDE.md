@@ -162,12 +162,12 @@ linalg  ←  block (block_tree.cpp + amr_operators.cpp)
 
 - git address: `https://github.com/Mixolidian01/cfd.git`
 - Current branch: `to_debug`
-- All Phases 0–12 + P11.8 + P13.1–P13.5 complete: 20 t4 sub-tests pass (T01–T13)
-- t4 now includes T11a/T11b (P13.5 SBP-SAT), T12a/b/c (P14.1 phi advection), T13a/b/c (P14.1b compression)
-- Phase 13 status: P13.1 ✅ (Axis enum + kep_flux_t/weno5_face_t<DIR>; viscous N/A), P13.2 ✅ (FDKEC), P13.3 ✅, P13.4 ✅, P13.5 ✅ (SBP-SAT C/F penalty)
+- All Phases 0–14.1 complete: 26 t4 sub-tests pass (T01–T15)
+- t4 includes T11a/T11b (P13.5 SBP-SAT), T12a/b/c (phi advection), T13a/b/c (Cε compression), T14a/b/c (phi AMR C/F), T15a/b/c (SG EOS)
+- Phase 13 status: P13.1 ✅, P13.2 ✅ (FDKEC), P13.3 ✅, P13.4 ✅, P13.5 ✅ (SBP-SAT C/F penalty)
 - P11.8 ✅: GPU+AMR fallback via `gpu_q_stale_` + `IGpuSolver::upload_q()`; GPU path uses CPU when `max_leaf_level() > 0`
-- P14.1 ⚠️: phi_data_ in CellBlock, phi_rhs (upwind), phi_compression_rhs (Cε·h interface sharpening), SSP-RK3 via phi_stage(α), use_acdi+acdi_ceps flags. 20 t4 tests. Deferred: stiffened EOS, wall/open/AMR CF phi ghosts.
+- P14.1 ✅: phi_data_ in CellBlock; phi ghost fill (periodic/wall/open/AMR C/F 5th-order Lagrange + prolong/restrict); phi_rhs (upwind) + phi_compression_rhs (Cε·h); SSP-RK3 phi_stage; Allaire 2002 mix_eos + eos_cons_to_prim_sg; set_sg_eos propagates to HLLC-ES (SG β=ρ/(2(p+p∞)) fix); use_acdi/acdi_ceps/gamma_a/b/p_inf_a/b config
 - `roadmap.md` is the authoritative Phase 0–4 plan
-- `todo.md` tracks all Phase status; P13.7/P14.1(partial)/P14.2–P14.5 🔲
+- `todo.md` tracks all Phase status; P13.7/P14.2–P14.5 🔲
 - `answers_register.md` logs session Q&A history
 - `to_avoid_bugs.md` records all derived rules (append on each new misbehaviour)

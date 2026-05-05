@@ -47,7 +47,22 @@ inline constexpr int ihi() noexcept { return NG + NB - 1; }
 // ── Primitive variable struct (local, not stored) ──────────────────────────────────────────
 struct Prim {
     double rho, u, v, w, p, T, c;
+    double gamma_m = GAMMA;  // mixture γ  (default: ideal gas)
+    double p_inf_m = 0.0;    // stiffened-gas p∞ (default: 0 → ideal gas)
 };
+
+// ── Allaire 2002 mixture EOS (stiffened gas) ─────────────────────────────────
+// Allaire et al., J. Comput. Phys. 181 (2002) 577-616, eqs. (3)-(4).
+//   1/(γ_m-1) = φ/(γ_A-1) + (1-φ)/(γ_B-1)
+//   γ_m·p∞_m/(γ_m-1) = φ·γ_A·p∞_A/(γ_A-1) + (1-φ)·γ_B·p∞_B/(γ_B-1)
+inline void mix_eos(double phi,
+                    double ga, double gb, double pia, double pib,
+                    double& gm, double& pim) noexcept
+{
+    const double gm1_inv = phi / (ga - 1.0) + (1.0 - phi) / (gb - 1.0);
+    gm  = 1.0 + 1.0 / gm1_inv;
+    pim = (gm - 1.0) * (phi * ga * pia / (ga - 1.0) + (1.0 - phi) * gb * pib / (gb - 1.0)) / gm;
+}
 
 // ── Equation of state (inline — called millions of times) ────────────────────
 inline Prim eos_cons_to_prim(double rho, double rhou, double rhov,
@@ -61,6 +76,26 @@ inline Prim eos_cons_to_prim(double rho, double rhou, double rhov,
     q.p   = (GAMMA - 1.0) * (E - 0.5 * rho * (q.u*q.u + q.v*q.v + q.w*q.w));
     q.T   = q.p / (rho * R_GAS);
     q.c   = std::sqrt(GAMMA * q.p / rho);
+    // gamma_m and p_inf_m keep their ideal-gas defaults
+    return q;
+}
+
+// Stiffened-gas variant: uses mixture γ_m and p∞_m derived from φ.
+inline Prim eos_cons_to_prim_sg(double rho, double rhou, double rhov,
+                                 double rhow, double E,
+                                 double gm, double pim) noexcept
+{
+    Prim q;
+    q.rho     = rho;
+    q.u       = rhou / rho;
+    q.v       = rhov / rho;
+    q.w       = rhow / rho;
+    q.gamma_m = gm;
+    q.p_inf_m = pim;
+    q.p   = (gm - 1.0) * (E - 0.5 * rho * (q.u*q.u + q.v*q.v + q.w*q.w)) - gm * pim;
+    if (q.p < -pim + 1e-10) q.p = -pim + 1e-10;  // positivity floor: p+p∞ > 0
+    q.T   = (q.p + pim) / (rho * R_GAS);
+    q.c   = std::sqrt(gm * (q.p + pim) / rho);
     return q;
 }
 
@@ -72,7 +107,10 @@ inline void eos_prim_to_cons(const Prim& q,
     rhou = q.rho * q.u;
     rhov = q.rho * q.v;
     rhow = q.rho * q.w;
-    E    = q.p / (GAMMA - 1.0) + 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w);
+    // Stiffened gas: E = (p + γ·p∞)/(γ-1) + KE = (p+p∞)/(γ-1) + p∞/(γ-1)... simplifies to:
+    //   E = p/(γ-1) + γ·p∞/(γ-1) + KE  →  for ideal gas (p∞=0): E = p/(γ-1) + KE ✓
+    E = (q.p + q.gamma_m * q.p_inf_m) / (q.gamma_m - 1.0)
+        + 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w);
 }
 
 // ── Sutherland viscosity ─────────────────────────────────────────────────────
@@ -219,10 +257,23 @@ struct alignas(64) CellBlock {
     double rhow(int i,int j,int k) const noexcept { return Q[3][cell_idx(i,j,k)]; }
     double E   (int i,int j,int k) const noexcept { return Q[4][cell_idx(i,j,k)]; }
 
+    // P14.1c: stiffened-gas EOS parameters set globally from set_sg_eos().
+    // Used by prim() and cfl_dt() to compute the correct c for any fluid.
+    static inline bool   sg_active_ = false;
+    static inline double sg_ga_     = GAMMA, sg_gb_ = GAMMA;
+    static inline double sg_pia_    = 0.0,   sg_pib_ = 0.0;
+
     // Primitive variables at cell (i,j,k)
     Prim prim(int i, int j, int k) const noexcept {
-        return eos_cons_to_prim(rho(i,j,k), rhou(i,j,k),
-                                rhov(i,j,k), rhow(i,j,k), E(i,j,k));
+        if (!sg_active_) {
+            return eos_cons_to_prim(rho(i,j,k), rhou(i,j,k),
+                                    rhov(i,j,k), rhow(i,j,k), E(i,j,k));
+        }
+        const int flat = cell_idx(i,j,k);
+        double gm, pim;
+        mix_eos(phi_data_[flat], sg_ga_, sg_gb_, sg_pia_, sg_pib_, gm, pim);
+        return eos_cons_to_prim_sg(Q[0][flat], Q[1][flat], Q[2][flat],
+                                   Q[3][flat], Q[4][flat], gm, pim);
     }
 
     double u(int i,int j,int k) const { Prim q=prim(i,j,k); return q.u; }

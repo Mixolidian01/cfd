@@ -71,12 +71,9 @@ void NSSolver::init(double domain_L,
         double z = blk.oz + (k - NG + 0.5) * blk.h;
         Prim p = ic(x, y, z);
         int idx = cell_idx(i,j,k);
-        blk.Q[0][idx] = p.rho;
-        blk.Q[1][idx] = p.rho * p.u;
-        blk.Q[2][idx] = p.rho * p.v;
-        blk.Q[3][idx] = p.rho * p.w;
-        blk.Q[4][idx] = p.rho * 0.5*(p.u*p.u + p.v*p.v + p.w*p.w)
-                       + p.p / (GAMMA - 1.0);
+        // P14.1c: use eos_prim_to_cons so gamma_m/p_inf_m from IC are respected
+        eos_prim_to_cons(p, blk.Q[0][idx], blk.Q[1][idx],
+                            blk.Q[2][idx], blk.Q[3][idx], blk.Q[4][idx]);
         // P14.1: initialise phase field (interior + ghost; ghost overwritten at first fill)
         if (phi_ic && cfg.use_acdi)
             blk.phi_data_[idx] = (*phi_ic)(x, y, z);
@@ -168,6 +165,13 @@ double NSSolver::advance() {
     BlockTree::set_wall_T(cfg.wall_T);
     // P13.3: propagate far-field pressure for characteristic open BC (0 = zero-gradient).
     BlockTree::set_open_bc_pressure(cfg.open_bc_p);
+    // P14.1c: activate stiffened-gas mixture EOS when ACDI is on and fluids differ.
+    {
+        const bool sg = cfg.use_acdi &&
+                        (cfg.gamma_a != cfg.gamma_b ||
+                         cfg.p_inf_a != 0.0 || cfg.p_inf_b != 0.0);
+        set_sg_eos(sg, cfg.gamma_a, cfg.gamma_b, cfg.p_inf_a, cfg.p_inf_b);
+    }
 
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
     // topology is immutable during zero_regs → stages → apply_correction.
