@@ -51,7 +51,8 @@ static double block_kinetic_energy(const CellBlock& b) {
 // NSSolver::init
 // =============================================================================
 void NSSolver::init(double domain_L,
-                    const std::function<Prim(double,double,double)>& ic) {
+                    const std::function<Prim(double,double,double)>& ic,
+                    const std::function<double(double,double,double)>* phi_ic) {
     // P4.1-fix: set periodic flag BEFORE tree.init() so that every subsequent
     // rebuild_neighbours() call (triggered by refine/balance) wraps domain-boundary
     // C/F faces into the periodic neighbour table.
@@ -76,6 +77,9 @@ void NSSolver::init(double domain_L,
         blk.Q[3][idx] = p.rho * p.w;
         blk.Q[4][idx] = p.rho * 0.5*(p.u*p.u + p.v*p.v + p.w*p.w)
                        + p.p / (GAMMA - 1.0);
+        // P14.1: initialise phase field (interior + ghost; ghost overwritten at first fill)
+        if (phi_ic && cfg.use_acdi)
+            blk.phi_data_[idx] = (*phi_ic)(x, y, z);
     }
 
     alloc_scratch();
@@ -210,6 +214,32 @@ double NSSolver::advance() {
     // unchanged since rhs_[ii].Q[v] is zero at ghost-cell flat indices).
     const bool use_sat = (cfg.sat_tau > 0.0) && (tree.max_leaf_level() > 0);
 
+    // P14.1: phi SSP-RK3 helper — fills phi rhs and applies one stage update.
+    // Called after tree_rhs() so phi ghosts are already filled by fill_ghosts_*.
+    // alpha < 0 → stage 1 (ps = pn + dt*L, ignores stale Qs_).
+    // alpha >= 0 → stages 2/3: ps = α*pn + (1-α)*(ps_prev + dt*L).
+    const bool use_acdi = cfg.use_acdi;
+    auto phi_stage = [&](double alpha) {
+        if (!use_acdi) return;
+        for (int ii = 0; ii < NL; ++ii) {
+            if (!tree.nodes[leaves[ii]].has_block()) continue;
+            const CellBlock& blk = *tree.nodes[leaves[ii]].block;
+            std::fill(rhs_[ii].phi_data_, rhs_[ii].phi_data_ + NCELL, 0.0);
+            phi_rhs(blk, rhs_[ii]);
+            const double* pn = Qn_[ii].phi_data_;
+            double*       ps = Qs_[ii].phi_data_;
+            const double* pr = rhs_[ii].phi_data_;
+            if (alpha < 0.0) {
+                for (int f = 0; f < NCELL; ++f)
+                    ps[f] = pn[f] + dt * pr[f];
+            } else {
+                const double beta = 1.0 - alpha;
+                for (int f = 0; f < NCELL; ++f)
+                    ps[f] = alpha * pn[f] + beta * (ps[f] + dt * pr[f]);
+            }
+        }
+    };
+
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
     if (mpi_) mpi_exchange_halos(tree, *mpi_);
     tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
@@ -224,6 +254,7 @@ double NSSolver::advance() {
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = qn[lane] + dt * r[lane];
     }
+    phi_stage(-1.0);  // stage 1: phi^(1) = phi^n + dt*L(phi^n)
     apply_positivity_floor(Qs_);
     copy_stage_to_tree(Qs_);
 
@@ -241,6 +272,7 @@ double NSSolver::advance() {
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
     }
+    phi_stage(3.0/4.0);  // phi^(2) = 3/4*phi^n + 1/4*(phi^(1)+dt*L)
     apply_positivity_floor(Qs_);
     copy_stage_to_tree(Qs_);
 
@@ -258,6 +290,7 @@ double NSSolver::advance() {
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
     }
+    phi_stage(1.0/3.0);  // phi^(n+1) = 1/3*phi^n + 2/3*(phi^(2)+dt*L)
     apply_positivity_floor(Qs_);
     copy_stage_to_tree(Qs_);
 

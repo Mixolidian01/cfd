@@ -362,6 +362,90 @@ static void t11_sat_penalty() {
     check("T11b SAT err <= 10x baseline",          err_sat  <= 10.0*err_base+1e-30, err_sat, 10.0*err_base);
 }
 
+// =============================================================================
+// T12 — P14.1 ACDI phase-field: φ conservation under uniform advection
+//
+// Setup: single-block periodic domain, uniform flow u=(1,0,0).
+//        Initial φ = step function (φ=1 in left half, 0 in right half).
+//        cfg.use_acdi = true.
+//
+// Gate criteria:
+//   T12a: ∫φ dV conserved over 5 steps (error < 1e-8 relative)
+//   T12b: φ_max ≤ 1 + 1e-10 (no overshoot beyond initial max)
+//   T12c: φ_min ≥ -1e-10 (no undershoot below 0)
+//
+// Physical basis: 1st-order upwind conservative scheme satisfies a discrete
+// maximum principle and preserves ∫φ dV by flux telescoping.
+// =============================================================================
+static void t12_phi_advection() {
+    NSSolver s;
+    s.cfg.cfl           = 0.3;
+    s.cfg.max_steps     = 5;
+    s.cfg.t_end         = 1e30;
+    s.cfg.bc            = BCType::Periodic;
+    s.cfg.verbose       = false;
+    s.cfg.diag_interval = 100;
+    s.cfg.use_acdi      = true;
+
+    // Uniform flow IC (Ma ~ 0.15, no waves — isolates advection)
+    auto flow_ic = [](double /*x*/, double /*y*/, double /*z*/) {
+        Prim q;
+        q.rho = 1.225; q.u = 50.0; q.v = 0.0; q.w = 0.0;
+        q.p   = 101325.0;
+        q.T   = q.p / (q.rho * R_GAS);
+        q.c   = std::sqrt(GAMMA * q.p / q.rho);
+        return q;
+    };
+    // Phase-field IC: φ=1 in left half, 0 in right half
+    std::function<double(double,double,double)> phi_ic =
+        [](double x, double /*y*/, double /*z*/) {
+            return (x < 0.5) ? 1.0 : 0.0;
+        };
+
+    s.init(1.0, flow_ic, &phi_ic);
+
+    // Compute initial phi integral (interior cells only)
+    auto phi_integral = [&]() {
+        double sum = 0.0;
+        for (int li : s.tree.leaf_indices()) {
+            if (!s.tree.nodes[li].has_block()) continue;
+            const CellBlock& blk = *s.tree.nodes[li].block;
+            const double dv = blk.h * blk.h * blk.h;
+            for (int k = ilo(); k <= ihi(); ++k)
+            for (int j = ilo(); j <= ihi(); ++j)
+            for (int i = ilo(); i <= ihi(); ++i)
+                sum += blk.phi(i,j,k) * dv;
+        }
+        return sum;
+    };
+    auto phi_bounds = [&](double& phi_min, double& phi_max) {
+        phi_min = 1e300; phi_max = -1e300;
+        for (int li : s.tree.leaf_indices()) {
+            if (!s.tree.nodes[li].has_block()) continue;
+            const CellBlock& blk = *s.tree.nodes[li].block;
+            for (int k = ilo(); k <= ihi(); ++k)
+            for (int j = ilo(); j <= ihi(); ++j)
+            for (int i = ilo(); i <= ihi(); ++i) {
+                double p = blk.phi(i,j,k);
+                phi_min = std::min(phi_min, p);
+                phi_max = std::max(phi_max, p);
+            }
+        }
+    };
+
+    double phi0 = phi_integral();
+    s.run();
+    double phi1 = phi_integral();
+
+    double err = std::abs(phi1 - phi0) / (std::abs(phi0) + 1e-30);
+    check("T12a phi integral conserved over 5 steps < 1e-8", err < 1e-8, err, 1e-8);
+
+    double phi_min, phi_max;
+    phi_bounds(phi_min, phi_max);
+    check("T12b phi_max <= 1 + 1e-10 (no overshoot)", phi_max <= 1.0 + 1e-10, phi_max, 1.0);
+    check("T12c phi_min >= -1e-10 (no undershoot)", phi_min >= -1e-10, -phi_min, 1e-10);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 4: Layer 3 — Time Loop ===\n");
@@ -380,6 +464,7 @@ int main() {
     t09_imex_mass_conservation();
     t10_lts_mass_energy();
     t11_sat_penalty();
+    t12_phi_advection();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail>0)

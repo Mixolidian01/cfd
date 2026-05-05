@@ -773,8 +773,11 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
         auto copy_cell = [&](int gi, int gj, int gk,
                              int si, int sj, int sk,
                              const CellBlock& src) noexcept {
+            const int dst_flat = cell_idx(gi,gj,gk);
+            const int src_flat = cell_idx(si,sj,sk);
             for (int v = 0; v < NVAR; ++v)
-                blk.Q[v][cell_idx(gi,gj,gk)] = src.Q[v][cell_idx(si,sj,sk)];
+                blk.Q[v][dst_flat] = src.Q[v][src_flat];
+            blk.phi_data_[dst_flat] = src.phi_data_[src_flat];  // P14.1
         };
 
         // ── 1. Face ghosts ────────────────────────────────────────────────────

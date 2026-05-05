@@ -91,6 +91,12 @@ void tree_rhs(BlockTree& tree,
               bool   cf_coarse_zero_grad = false,
               bool   open_bc             = false) noexcept;
 
+// ── P14.1: ACDI phase-field advection RHS ────────────────────────────────────
+// Conservative 1st-order upwind: ∂φ/∂t = -∇·(φu).
+// Ghost phi must be filled (via fill_ghosts_periodic or equivalent) before call.
+// Adds (does not zero) the advective flux divergence to rhs_blk.phi_data_.
+void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
+
 // ── CFL time step ─────────────────────────────────────────────────────────────
 // tree_cfl_dt: global minimum over all leaves.
 // level_cfl_dt: minimum over leaves at a specific refinement level (P4.1 LTS).

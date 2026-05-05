@@ -1634,6 +1634,61 @@ void tree_sat_penalty(BlockTree& tree,
 }
 
 // =============================================================================
+// P14.1 — ACDI phase-field advection RHS
+// =============================================================================
+// Conservative 1st-order upwind: ∂φ/∂t = -∇·(φu).
+// Face velocity = arithmetic mean of neighbour cell-centre velocities.
+// Upwind state: φ_face = φ_L if u_face > 0, φ_R if u_face ≤ 0.
+// Requires NG ≥ 1 ghost layers for φ (already guaranteed by NG=2).
+void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
+{
+    const double inv_h = 1.0 / blk.h;
+
+    for (int k = NG; k < NG+NB; ++k)
+    for (int j = NG; j < NG+NB; ++j)
+    for (int i = NG; i < NG+NB; ++i) {
+        const int flat = cell_idx(i,j,k);
+
+        // Pre-fetch primitive velocities at cell and all ±1 neighbours.
+        const Prim pC  = blk.prim(i,  j,  k  );
+        const Prim pXm = blk.prim(i-1,j,  k  );
+        const Prim pXp = blk.prim(i+1,j,  k  );
+        const Prim pYm = blk.prim(i,  j-1,k  );
+        const Prim pYp = blk.prim(i,  j+1,k  );
+        const Prim pZm = blk.prim(i,  j,  k-1);
+        const Prim pZp = blk.prim(i,  j,  k+1);
+
+        const double phi_C  = blk.phi(i,  j,  k  );
+        const double phi_Xm = blk.phi(i-1,j,  k  );
+        const double phi_Xp = blk.phi(i+1,j,  k  );
+        const double phi_Ym = blk.phi(i,  j-1,k  );
+        const double phi_Yp = blk.phi(i,  j+1,k  );
+        const double phi_Zm = blk.phi(i,  j,  k-1);
+        const double phi_Zp = blk.phi(i,  j,  k+1);
+
+        // X: left face (i-1/2) and right face (i+1/2)
+        const double u_lx = 0.5*(pXm.u + pC.u);
+        const double u_rx = 0.5*(pC.u  + pXp.u);
+        const double f_lx = (u_lx >= 0.0) ? u_lx * phi_Xm : u_lx * phi_C;
+        const double f_rx = (u_rx >= 0.0) ? u_rx * phi_C  : u_rx * phi_Xp;
+
+        // Y: bottom face (j-1/2) and top face (j+1/2)
+        const double v_ly = 0.5*(pYm.v + pC.v);
+        const double v_ry = 0.5*(pC.v  + pYp.v);
+        const double f_ly = (v_ly >= 0.0) ? v_ly * phi_Ym : v_ly * phi_C;
+        const double f_ry = (v_ry >= 0.0) ? v_ry * phi_C  : v_ry * phi_Yp;
+
+        // Z: back face (k-1/2) and front face (k+1/2)
+        const double w_lz = 0.5*(pZm.w + pC.w);
+        const double w_rz = 0.5*(pC.w  + pZp.w);
+        const double f_lz = (w_lz >= 0.0) ? w_lz * phi_Zm : w_lz * phi_C;
+        const double f_rz = (w_rz >= 0.0) ? w_rz * phi_C  : w_rz * phi_Zp;
+
+        rhs_blk.phi_data_[flat] += inv_h * ((f_lx - f_rx) + (f_ly - f_ry) + (f_lz - f_rz));
+    }
+}
+
+// =============================================================================
 // CFL time step
 // =============================================================================
 double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept

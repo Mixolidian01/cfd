@@ -120,6 +120,12 @@ struct SolverConfig {
     //        RK3 stage; conservative paired correction applied to coarse neighbor.
     //        Recommended: tau = 0.5 (minimal energy-stable penalty).
     double sat_tau = 0.0;
+
+    // P14.1: ACDI compressible multiphase — Accurate Conservative Diffuse Interface.
+    // false (default) → single-phase mode (phi field inactive, zero overhead).
+    // true  → φ ∈ [0,1] scalar advected alongside Q; set initial φ via
+    //          NSSolver::init() phi_ic argument (or leave null for φ≡0).
+    bool use_acdi = false;
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────
@@ -131,8 +137,11 @@ struct NSSolver {
 
     std::vector<StepDiag> history;
 
+    // P14.1: phi_ic (optional) sets the initial phase-field φ(x,y,z) ∈ [0,1].
+    // Pass nullptr (or omit) for single-phase runs (φ≡0).
     void init(double domain_L,
-              const std::function<Prim(double,double,double)>& ic);
+              const std::function<Prim(double,double,double)>& ic,
+              const std::function<double(double,double,double)>* phi_ic = nullptr);
     void run();
     double advance();
     void regrid();

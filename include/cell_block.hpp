@@ -158,29 +158,44 @@ struct alignas(64) CellBlock {
     double ox = 0, oy = 0, oz = 0;
     double h  = 0;
 
+    // P14.1: phase-field scalar φ ∈ [0,1] (0 = phase 1, 1 = phase 2).
+    // Stored as flat SoA (separate from the NVAR AoSoA) so NVAR/AVX layout
+    // is unchanged.  Ghost layers present (same indexing as Q).
+    // Inactive (single-phase) when use_acdi=false — zero-cost if not used.
+    double phi_data_[NCELL] = {};
+
+    double  phi(int flat)       const noexcept { return phi_data_[flat]; }
+    double& phi(int flat)             noexcept { return phi_data_[flat]; }
+    double  phi(int i,int j,int k) const noexcept { return phi_data_[cell_idx(i,j,k)]; }
+    double& phi(int i,int j,int k)       noexcept { return phi_data_[cell_idx(i,j,k)]; }
+
     // ── Constructors ──────────────────────────────────────────────────────────
     CellBlock() noexcept {
         init_views();
         std::fill(data_, data_ + NTILE*NVAR*W, 0.0);
+        std::fill(phi_data_, phi_data_ + NCELL, 0.0);
     }
     explicit CellBlock(double ox_, double oy_, double oz_, double h_) noexcept
         : ox(ox_), oy(oy_), oz(oz_), h(h_)
     {
         init_views();
         std::fill(data_, data_ + NTILE*NVAR*W, 0.0);
+        std::fill(phi_data_, phi_data_ + NCELL, 0.0);
     }
 
-    // Deep-copy: memcpy entire AoSoA buffer; views point to this->data_.
+    // Deep-copy: memcpy entire AoSoA buffer and phi; views point to this->data_.
     CellBlock(const CellBlock& o) noexcept
         : ox(o.ox), oy(o.oy), oz(o.oz), h(o.h)
     {
         init_views();
-        std::memcpy(data_, o.data_, sizeof(data_));
+        std::memcpy(data_,     o.data_,     sizeof(data_));
+        std::memcpy(phi_data_, o.phi_data_, sizeof(phi_data_));
     }
     CellBlock& operator=(const CellBlock& o) noexcept {
         if (this != &o) {
             ox = o.ox; oy = o.oy; oz = o.oz; h = o.h;
-            std::memcpy(data_, o.data_, sizeof(data_));
+            std::memcpy(data_,     o.data_,     sizeof(data_));
+            std::memcpy(phi_data_, o.phi_data_, sizeof(phi_data_));
             // Q[v].data_ already == this->data_; no pointer update needed.
         }
         return *this;

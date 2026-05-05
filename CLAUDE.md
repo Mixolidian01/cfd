@@ -162,11 +162,12 @@ linalg  ←  block (block_tree.cpp + amr_operators.cpp)
 
 - git address: `https://github.com/Mixolidian01/cfd.git`
 - Current branch: `to_debug`
-- All Phases 0–12 + P11.8 + P13.1–P13.5 complete: 14 t4 sub-tests pass (T01–T11)
-- t4 now includes T11a/T11b (P13.5 SBP-SAT penalty conservation gate)
+- All Phases 0–12 + P11.8 + P13.1–P13.5 complete: 17 t4 sub-tests pass (T01–T12)
+- t4 now includes T11a/T11b (P13.5 SBP-SAT) and T12a/b/c (P14.1 phi advection)
 - Phase 13 status: P13.1 ✅ (Axis enum + kep_flux_t/weno5_face_t<DIR>; viscous N/A), P13.2 ✅ (FDKEC), P13.3 ✅, P13.4 ✅, P13.5 ✅ (SBP-SAT C/F penalty)
 - P11.8 ✅: GPU+AMR fallback via `gpu_q_stale_` + `IGpuSolver::upload_q()`; GPU path uses CPU when `max_leaf_level() > 0`
+- P14.1 ⚠️: phi_data_ in CellBlock, phi_rhs (upwind), SSP-RK3 integration, use_acdi flag. Deferred: stiffened EOS, ACDI compression, wall/open/AMR CF phi ghosts.
 - `roadmap.md` is the authoritative Phase 0–4 plan
-- `todo.md` tracks all Phase status; P13.7/P14.x 🔲
+- `todo.md` tracks all Phase status; P13.7/P14.1(partial)/P14.2–P14.5 🔲
 - `answers_register.md` logs session Q&A history
 - `to_avoid_bugs.md` records all derived rules (append on each new misbehaviour)
