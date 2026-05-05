@@ -169,6 +169,59 @@ void fill_cf_ghosts(CellBlock& fine, const CellBlock& coarse,
 
         fine.Q[v][cell_idx(gf_i, gf_j, gf_k)] = val;
     }
+
+    // P14.1: phi C/F ghost fill — same 5th-order Lagrange stencil
+    for (int a = 0; a < NB2; ++a)
+    for (int b = 0; b < NB2; ++b) {
+        int gf_i, gf_j, gf_k;
+        double val = 0.0;
+
+        if (axis == 0) {
+            gf_i = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
+            gf_j = a; gf_k = b;
+            const int cj = NG + iy*(NB/2) + local(a)/2;
+            const int ck = NG + iz*(NB/2) + local(b)/2;
+            if (side == 0) {
+                const int i0 = NG + NB - 1;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[k] * coarse.phi_data_[cell_idx(i0-4+k, cj, ck)];
+            } else {
+                const int i0 = NG;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[4-k] * coarse.phi_data_[cell_idx(i0+k, cj, ck)];
+            }
+        } else if (axis == 1) {
+            gf_j = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
+            gf_i = a; gf_k = b;
+            const int ci = NG + ix*(NB/2) + local(a)/2;
+            const int ck = NG + iz*(NB/2) + local(b)/2;
+            if (side == 0) {
+                const int j0 = NG + NB - 1;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[k] * coarse.phi_data_[cell_idx(ci, j0-4+k, ck)];
+            } else {
+                const int j0 = NG;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[4-k] * coarse.phi_data_[cell_idx(ci, j0+k, ck)];
+            }
+        } else {
+            gf_k = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
+            gf_i = a; gf_j = b;
+            const int ci = NG + ix*(NB/2) + local(a)/2;
+            const int cj = NG + iy*(NB/2) + local(b)/2;
+            if (side == 0) {
+                const int k0 = NG + NB - 1;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[k] * coarse.phi_data_[cell_idx(ci, cj, k0-4+k)];
+            } else {
+                const int k0 = NG;
+                for (int k = 0; k < 5; ++k)
+                    val += Lc[4-k] * coarse.phi_data_[cell_idx(ci, cj, k0+k)];
+            }
+        }
+
+        fine.phi_data_[cell_idx(gf_i, gf_j, gf_k)] = val;
+    }
     } // gl
 }
 

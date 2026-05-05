@@ -498,6 +498,85 @@ static void t13_phi_compression() {
     check("T13c phi_min >= -0.01 (bounded below, Cε=0.5)", phi_min >= -0.01, -phi_min, 0.01);
 }
 
+// =============================================================================
+// T14 — P14.1 ACDI phi ghost fill at AMR C/F interfaces
+//
+// Setup: 2-level AMR (root refined to 8 leaves), periodic, uniform flow.
+//        Initial φ = step function. use_acdi = true.
+//
+// Gate criteria:
+//   T14a: ∫φ dV conserved over 5 steps with AMR < 1e-6 relative
+//   T14b: φ_max ≤ 1 + 1e-6  (small tolerance: C/F Lagrange may overshoot slightly)
+//   T14c: φ_min ≥ -1e-6
+//
+// Exercises fill_cf_ghosts phi path + prolongate_to_children phi.
+// =============================================================================
+static void t14_phi_amr() {
+    NSSolver s;
+    s.cfg.cfl             = 0.3;
+    s.cfg.max_steps       = 5;
+    s.cfg.t_end           = 1e30;
+    s.cfg.bc              = BCType::Periodic;
+    s.cfg.verbose         = false;
+    s.cfg.diag_interval   = 100;
+    s.cfg.regrid_interval = 0;
+    s.cfg.max_level       = 1;
+    s.cfg.use_acdi        = true;
+
+    auto flow_ic = [](double, double, double) {
+        Prim q; q.rho=1.225; q.u=50.0; q.v=0; q.w=0;
+        q.p=101325.0; q.T=q.p/(q.rho*R_GAS); q.c=std::sqrt(GAMMA*q.p/q.rho);
+        return q;
+    };
+    std::function<double(double,double,double)> phi_ic =
+        [](double x, double, double) { return (x < 0.5) ? 1.0 : 0.0; };
+
+    s.init(1.0, flow_ic, &phi_ic);
+
+    // Refine root into 8 fine leaves — exercises prolongate_to_children phi
+    s.tree.refine(s.tree.root());
+    s.tree.balance();
+    s.tree.rebuild_neighbours();
+    s.tree.fill_ghosts_periodic();
+    s.alloc_scratch();
+
+    auto phi_integral = [&]() {
+        double sum = 0.0;
+        for (int li : s.tree.leaf_indices()) {
+            if (!s.tree.nodes[li].has_block()) continue;
+            const CellBlock& blk = *s.tree.nodes[li].block;
+            const double dv = blk.h * blk.h * blk.h;
+            for (int k=ilo();k<=ihi();++k)
+            for (int j=ilo();j<=ihi();++j)
+            for (int i=ilo();i<=ihi();++i)
+                sum += blk.phi(i,j,k) * dv;
+        }
+        return sum;
+    };
+
+    double phi0 = phi_integral();
+    s.run();
+    double phi1 = phi_integral();
+
+    double err = std::abs(phi1 - phi0) / (std::abs(phi0) + 1e-30);
+    check("T14a phi AMR C/F conserved over 5 steps < 1e-6", err < 1e-6, err, 1e-6);
+
+    double phi_min = 1e300, phi_max = -1e300;
+    for (int li : s.tree.leaf_indices()) {
+        if (!s.tree.nodes[li].has_block()) continue;
+        const CellBlock& blk = *s.tree.nodes[li].block;
+        for (int k=ilo();k<=ihi();++k)
+        for (int j=ilo();j<=ihi();++j)
+        for (int i=ilo();i<=ihi();++i) {
+            double p = blk.phi(i,j,k);
+            phi_min = std::min(phi_min, p);
+            phi_max = std::max(phi_max, p);
+        }
+    }
+    check("T14b phi_max <= 1 + 1e-6 (Lagrange C/F bounded)", phi_max <= 1.0 + 1e-6, phi_max, 1.0);
+    check("T14c phi_min >= -1e-6 (Lagrange C/F bounded below)", phi_min >= -1e-6, -phi_min, 1e-6);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 4: Layer 3 — Time Loop ===\n");
@@ -518,6 +597,7 @@ int main() {
     t11_sat_penalty();
     t12_phi_advection();
     t13_phi_compression();
+    t14_phi_amr();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail>0)

@@ -278,15 +278,17 @@ void BlockTree::prolongate_to_children(int parent_idx) {
         int i0 = oct_ix(oct) ? NB/2 : 0;
         int j0 = oct_iy(oct) ? NB/2 : 0;
         int k0 = oct_iz(oct) ? NB/2 : 0;
-        for (int v = 0; v < NVAR; ++v)
         for (int k = 0; k < NB; ++k)
         for (int j = 0; j < NB; ++j)
         for (int i = 0; i < NB; ++i) {
             int pi = ilo() + i0 + i/2;
             int pj = ilo() + j0 + j/2;
             int pk = ilo() + k0 + k/2;
-            ch_blk.Q[v][cell_idx(ilo()+i, ilo()+j, ilo()+k)] =
-                par.block->Q[v][cell_idx(pi, pj, pk)];
+            const int dst = cell_idx(ilo()+i, ilo()+j, ilo()+k);
+            const int src = cell_idx(pi, pj, pk);
+            for (int v = 0; v < NVAR; ++v)
+                ch_blk.Q[v][dst] = par.block->Q[v][src];
+            ch_blk.phi_data_[dst] = par.block->phi_data_[src];  // P14.1
         }
     }
 }
@@ -294,11 +296,13 @@ void BlockTree::prolongate_to_children(int parent_idx) {
 void BlockTree::restrict_to_parent(int parent_idx) {
     auto& par = nodes[parent_idx];
     if (!par.block) return;
-    for (int v = 0; v < NVAR; ++v)
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i)
-        par.block->Q[v][cell_idx(i,j,k)] = 0.0;
+    for (int i = ilo(); i <= ihi(); ++i) {
+        const int idx = cell_idx(i,j,k);
+        for (int v = 0; v < NVAR; ++v) par.block->Q[v][idx] = 0.0;
+        par.block->phi_data_[idx] = 0.0;  // P14.1
+    }
 
     for (int oct = 0; oct < 8; ++oct) {
         int ci = par.first_child + oct;   // guaranteed contiguous by alloc_node_group
@@ -306,16 +310,22 @@ void BlockTree::restrict_to_parent(int parent_idx) {
         int i0 = oct_ix(oct) ? NB/2 : 0;
         int j0 = oct_iy(oct) ? NB/2 : 0;
         int k0 = oct_iz(oct) ? NB/2 : 0;
-        for (int v = 0; v < NVAR; ++v)
         for (int k = 0; k < NB/2; ++k)
         for (int j = 0; j < NB/2; ++j)
         for (int i = 0; i < NB/2; ++i) {
-            double s = 0.0;
+            double phi_s = 0.0;
+            double qs[NVAR] = {};
             for (int dk = 0; dk < 2; ++dk)
             for (int dj = 0; dj < 2; ++dj)
-            for (int di = 0; di < 2; ++di)
-                s += ch_blk.Q[v][cell_idx(ilo()+2*i+di, ilo()+2*j+dj, ilo()+2*k+dk)];
-            par.block->Q[v][cell_idx(ilo()+i0+i, ilo()+j0+j, ilo()+k0+k)] += s * 0.125;
+            for (int di = 0; di < 2; ++di) {
+                const int src = cell_idx(ilo()+2*i+di, ilo()+2*j+dj, ilo()+2*k+dk);
+                for (int v = 0; v < NVAR; ++v) qs[v] += ch_blk.Q[v][src];
+                phi_s += ch_blk.phi_data_[src];  // P14.1
+            }
+            const int dst = cell_idx(ilo()+i0+i, ilo()+j0+j, ilo()+k0+k);
+            for (int v = 0; v < NVAR; ++v)
+                par.block->Q[v][dst] += qs[v] * 0.125;
+            par.block->phi_data_[dst] += phi_s * 0.125;  // P14.1
         }
     }
 }
@@ -667,6 +677,11 @@ static void fill_coarse_ghost_from_fine(
             int fa_start = NG + 2 * (a_local % half);
             int fb_start = NG + 2 * (b_local % half);
 
+            int gi, gj, gk;
+            if (axis == 0) { gi=g; gj=a; gk=b; }
+            else if (axis==1) { gi=a; gj=g; gk=b; }
+            else              { gi=a; gj=b; gk=g; }
+
             for (int v = 0; v < NVAR; ++v) {
                 double avg = 0.0;
                 for (int da = 0; da < 2; ++da)
@@ -679,13 +694,23 @@ static void fill_coarse_ghost_from_fine(
                     else              { ci=fa; cj=fb; ck=face_i; }
                     avg += fsrc.Q[v][cell_idx(ci, cj, ck)];
                 }
-                avg *= 0.25;
+                coarse_blk.Q[v][cell_idx(gi, gj, gk)] = avg * 0.25;
+            }
 
-                int gi, gj, gk;
-                if (axis == 0) { gi=g; gj=a; gk=b; }
-                else if (axis==1) { gi=a; gj=g; gk=b; }
-                else              { gi=a; gj=b; gk=g; }
-                coarse_blk.Q[v][cell_idx(gi, gj, gk)] = avg;
+            // P14.1: phi — same 2×2 cell average
+            {
+                double phi_avg = 0.0;
+                for (int da = 0; da < 2; ++da)
+                for (int db = 0; db < 2; ++db) {
+                    int fa = fa_start + da;
+                    int fb = fb_start + db;
+                    int ci, cj, ck;
+                    if (axis == 0) { ci=face_i; cj=fa; ck=fb; }
+                    else if (axis==1) { ci=fa; cj=face_i; ck=fb; }
+                    else              { ci=fa; cj=fb; ck=face_i; }
+                    phi_avg += fsrc.phi_data_[cell_idx(ci, cj, ck)];
+                }
+                coarse_blk.phi_data_[cell_idx(gi, gj, gk)] = phi_avg * 0.25;
             }
         }
     }
@@ -714,6 +739,8 @@ static void fill_coarse_ghost_zero_grad(CellBlock& coarse_blk, int d) noexcept
             for (int v = 0; v < NVAR; ++v)
                 coarse_blk.Q[v][cell_idx(gi,gj,gk)] =
                     coarse_blk.Q[v][cell_idx(ii,ij,ik)];
+            coarse_blk.phi_data_[cell_idx(gi,gj,gk)] =   // P14.1: ∂φ/∂n=0
+                coarse_blk.phi_data_[cell_idx(ii,ij,ik)];
         }
     }
 }
