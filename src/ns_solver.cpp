@@ -208,9 +208,12 @@ double NSSolver::advance() {
 
     // P4.2: SSP-RK3 tile loops — NTILE×W covers all cells (ghosts carry through
     // unchanged since rhs_[ii].Q[v] is zero at ghost-cell flat indices).
+    const bool use_sat = (cfg.sat_tau > 0.0) && (tree.max_leaf_level() > 0);
+
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
     if (mpi_) mpi_exchange_halos(tree, *mpi_);
     tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
+    if (use_sat) tree_sat_penalty(tree, rhs_, cfg.sat_tau);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -227,6 +230,7 @@ double NSSolver::advance() {
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
     if (mpi_) mpi_exchange_halos(tree, *mpi_);
     tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
+    if (use_sat) tree_sat_penalty(tree, rhs_, cfg.sat_tau);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -243,6 +247,7 @@ double NSSolver::advance() {
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
     if (mpi_) mpi_exchange_halos(tree, *mpi_);
     tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc);
+    if (use_sat) tree_sat_penalty(tree, rhs_, cfg.sat_tau);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {

@@ -96,3 +96,13 @@ void tree_rhs(BlockTree& tree,
 // level_cfl_dt: minimum over leaves at a specific refinement level (P4.1 LTS).
 double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept;
 double level_cfl_dt(const BlockTree& tree, int level, double cfl) noexcept;
+
+// ── P13.5: SBP-SAT interface penalty at AMR C/F boundaries ───────────────────
+// Adds σ·(Q_coarse_ghost − Q_fine_interior)/h_f to fine boundary cells and
+// −σ·avg_patch/h_c to the corresponding coarse boundary cell (conservative).
+// Ghost cells must be filled BEFORE calling this.
+// tau: penalty coefficient (>= 0.5 for semi-discrete energy stability).
+// Typical usage: after each tree_rhs() stage in the RK3 loop.
+void tree_sat_penalty(BlockTree& tree,
+                      std::vector<CellBlock>& rhs_blocks,
+                      double tau = 0.5) noexcept;

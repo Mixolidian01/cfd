@@ -304,6 +304,64 @@ static void t10_lts_mass_energy() {
     check("T10b LTS energy conserved over 10 steps < 1e-10", energy_err < 1e-10, energy_err, 1e-10);
 }
 
+// =============================================================================
+// T11 — P13.5 SBP-SAT penalty: mass conservation with sat_tau > 0 and AMR
+//
+// Setup: 2-level tree triggered by a step-function IC (rho jump at x=0.5).
+//        sat_tau=0.5 is the energy-stable minimum penalty coefficient.
+//
+// Gate criteria:
+//   T11a: mass error with SAT < 1e-8 (penalty is conservative by construction)
+//   T11b: SAT mass error <= 10x baseline (Berger-Colella only, sat_tau=0.0)
+//
+// Physical basis: tree_sat_penalty() adds sigma*(Q_ghost - Q_interior)/h_f to
+// fine boundary cells and subtracts the matching averaged correction from the
+// coarse cell.  The two contributions cancel to machine precision in exact
+// arithmetic, so mass is conserved to round-off.
+// =============================================================================
+static void t11_sat_penalty() {
+    auto amr_ic = [](double x, double /*y*/, double /*z*/) {
+        Prim q;
+        q.rho = (x < 0.5) ? 1.0 : 2.0;
+        q.u   = 0.0; q.v = 0.0; q.w = 0.0;
+        q.p   = 101325.0;
+        q.T   = q.p / (q.rho * R_GAS);
+        q.c   = std::sqrt(GAMMA * q.p / q.rho);
+        return q;
+    };
+
+    auto run_amr = [&](double sat_tau) -> double {
+        NSSolver s;
+        s.cfg.cfl             = 0.3;
+        s.cfg.max_steps       = 5;
+        s.cfg.t_end           = 1e30;
+        s.cfg.bc              = BCType::Periodic;
+        s.cfg.verbose         = false;
+        s.cfg.diag_interval   = 100;
+        s.cfg.regrid_interval = 0;
+        s.cfg.max_level       = 1;
+        s.cfg.sat_tau         = sat_tau;
+        s.init(1.0, amr_ic);
+
+        s.tree.refine(s.tree.root());
+        s.tree.balance();
+        s.tree.rebuild_neighbours();
+        s.tree.fill_ghosts_periodic();
+        s.alloc_scratch();
+
+        auto d0 = s.compute_diag();
+        s.run();
+        auto d1 = s.compute_diag();
+        return std::abs(d1.mass - d0.mass) / std::abs(d0.mass);
+    };
+
+    double err_base = run_amr(0.0);
+    double err_sat  = run_amr(0.5);
+
+    check("T11a SAT mass error < 1e-8",           err_sat  < 1e-8,         err_sat,  1e-8);
+    check("T11b SAT err <= 10x baseline",          err_sat  <= 10.0*err_base+1e-30, err_sat, 10.0*err_base);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 4: Layer 3 — Time Loop ===\n");
@@ -321,6 +379,7 @@ int main() {
     t08_diagnostics();
     t09_imex_mass_conservation();
     t10_lts_mass_energy();
+    t11_sat_penalty();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail>0)

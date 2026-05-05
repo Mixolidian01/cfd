@@ -113,6 +113,13 @@ struct SolverConfig {
     // > 0 → characteristic BC: ghost pressure = open_bc_p; isentropic density +
     //        Riemann-invariant normal velocity enforce subsonic non-reflecting outflow.
     double open_bc_p = 0.0;
+
+    // P13.5: SBP-SAT penalty coefficient at AMR C/F interfaces.
+    // 0.0 (default) → disabled (pure Berger-Colella correction).
+    // > 0 → add σ=(tau/h_f) * (Q_ghost − Q_interior) penalty to boundary cells at each
+    //        RK3 stage; conservative paired correction applied to coarse neighbor.
+    //        Recommended: tau = 0.5 (minimal energy-stable penalty).
+    double sat_tau = 0.0;
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────

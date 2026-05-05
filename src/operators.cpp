@@ -1491,6 +1491,149 @@ void tree_rhs(BlockTree& tree,
 }
 
 // =============================================================================
+// P13.5 — SBP-SAT interface penalty at AMR C/F boundaries
+// =============================================================================
+// Physical basis (Del Rey Fernández et al. 2020, Lundgren & Nordström 2020):
+//   At a 2:1 AMR interface, the solution is discontinuous by construction.
+//   A Simultaneous Approximation Term (SAT) penalty drives the jump to zero
+//   at rate σ = τ/h_f, giving semi-discrete energy stability.
+//
+// Conservative pairing (matches Berger-Colella volume weighting):
+//   Fine leaf:   RHS[bdry] += σ * (Q_ghost − Q_interior) / h_f
+//   Coarse leaf: RHS[bdry] -= σ * avg_patch(Q_ghost − Q_interior) / h_c
+//
+//   where Q_ghost is the coarse-interpolated value in the fine ghost cell
+//   (already filled by fill_ghosts_*) and avg_patch is the 2×2 average
+//   over the fine cells in the coarse cell's transverse patch.
+//   Volume-weighted sum: Fine contrib = NB² * jump * h_f³ * σ/h_f
+//                        Coarse contrib = NB²/4 * avg * h_c³ * σ_c/h_c
+//   Setting σ_c = σ and h_c = 2*h_f yields equal and opposite totals → conservation.
+//
+// Ghost cells must be filled before calling this (fills fine ghost from coarse).
+// tau >= 0.5 ensures energy stability (mirrors Berger-Colella strength).
+void tree_sat_penalty(BlockTree& tree,
+                      std::vector<CellBlock>& rhs_blocks,
+                      double tau) noexcept
+{
+    const auto& leaves = tree.leaf_indices();
+    const int NL = (int)leaves.size();
+    if (NL == 0) return;
+
+    // Map: node_idx → rhs position (only for leaves with blocks)
+    std::vector<int> node_to_rhs(tree.nodes.size(), -1);
+    for (int ii = 0; ii < NL; ++ii) {
+        if (tree.nodes[leaves[ii]].has_block())
+            node_to_rhs[leaves[ii]] = ii;
+    }
+
+    for (int ii = 0; ii < NL; ++ii) {
+        int li = leaves[ii];
+        const BlockNode& nd = tree.nodes[li];
+        if (!nd.has_block()) continue;
+        const CellBlock& blk = *nd.block;
+
+        for (int d = 0; d < NFACES; ++d) {
+            int ni = nd.neighbours[d];
+            if (ni < 0 || ni >= (int)tree.nodes.size()) continue;
+            const BlockNode& nnd = tree.nodes[ni];
+            if (!nnd.is_leaf() || !nnd.has_block()) continue;
+            // Only process faces where this leaf is FINER than the neighbor
+            if (nnd.block->h <= blk.h) continue;
+
+            const int axis   = d / 2;
+            const int side   = d % 2;  // 0=minus-face, 1=plus-face
+            // Fine interior cell adjacent to the C/F face
+            const int face_i = (side == 0) ? ilo() : ihi();
+            // Fine ghost cell (holds coarse-interpolated value from fill_ghosts)
+            const int ghost_i = (side == 0) ? (ilo()-1) : (ihi()+1);
+
+            // σ = τ/h_f  (penalty per unit volume)
+            const double sigma_f = tau / blk.h;
+            const double sigma_c = sigma_f;  // equal σ; volume weighting cancels
+
+            CellBlock& rhs_f = rhs_blocks[ii];
+
+            // Coarse leaf RHS (may be nullptr if remote rank)
+            int ii_c = node_to_rhs[ni];
+            CellBlock* rhs_c = (ii_c >= 0) ? &rhs_blocks[ii_c] : nullptr;
+
+            // Octant of this fine leaf relative to its parent
+            // Used to determine which quadrant of the coarse face we cover.
+            const int fine_parent = nd.parent;
+            if (fine_parent < 0) continue;
+            const BlockNode& fp = tree.nodes[fine_parent];
+            if (fp.first_child < 0) continue;
+            const int oct = li - fp.first_child;  // 0..7
+            const int oix = oct_ix(oct);
+            const int oiy = oct_iy(oct);
+            const int oiz = oct_iz(oct);
+
+            // Transverse quadrant offset in the coarse face (for conservative correction)
+            // The fine block covers coarse cells [NG+ta_off .. NG+ta_off+NB/2) × similar
+            const int half = NB / 2;
+            int ta_off, tb_off;  // offset in coarse transverse indices
+            if (axis == 0) { ta_off = oiy * half; tb_off = oiz * half; }
+            else if (axis == 1) { ta_off = oix * half; tb_off = oiz * half; }
+            else               { ta_off = oix * half; tb_off = oiy * half; }
+
+            // Coarse interior cell index (1 cell inside the C/F face)
+            // Fine side=1 (plus-face) → neighbor is on the "left" → coarse at ilo()
+            const int c_face_i = (side == 0) ? ihi() : ilo();
+
+            // Accumulate per-coarse-cell penalty sums (NB/2 × NB/2 coarse cells)
+            // coarse_acc[ca][cb][v] = sum of (ghost-interior) over 2×2 fine patch
+            // Stack array — NB/2 ≤ 4 for NB=8; zero-initialised each face pass.
+            std::array<std::array<std::array<double,NVAR>, 5>, 5> coarse_acc{};
+            static_assert(NB/2 <= 4, "coarse_acc sized for NB<=8");
+
+            // Fine boundary loop: add penalty to fine RHS, accumulate for coarse
+            for (int a = ilo(); a <= ihi(); ++a)
+            for (int b = ilo(); b <= ihi(); ++b) {
+                int fi, fj, fk, gi, gj, gk;
+                if (axis == 0) {
+                    fi=face_i; fj=a; fk=b;
+                    gi=ghost_i; gj=a; gk=b;
+                } else if (axis == 1) {
+                    fi=a; fj=face_i; fk=b;
+                    gi=a; gj=ghost_i; gk=b;
+                } else {
+                    fi=a; fj=b; fk=face_i;
+                    gi=a; gj=b; gk=ghost_i;
+                }
+                const int a_local = a - ilo();
+                const int b_local = b - ilo();
+                const int ca = a_local / 2;
+                const int cb = b_local / 2;
+
+                for (int v = 0; v < NVAR; ++v) {
+                    const double jump = blk.Q[v][cell_idx(gi,gj,gk)]
+                                      - blk.Q[v][cell_idx(fi,fj,fk)];
+                    rhs_f.Q[v][cell_idx(fi,fj,fk)] += sigma_f * jump;
+                    coarse_acc[ca][cb][v] += jump;
+                }
+            }
+
+            // Coarse RHS: subtract the 2×2-averaged penalty
+            if (rhs_c) {
+                const double inv4 = 0.25;
+                for (int ca = 0; ca < half; ++ca)
+                for (int cb = 0; cb < half; ++cb) {
+                    // Coarse transverse index (within [NG, NG+NB))
+                    const int ca_c = NG + ta_off + ca;
+                    const int cb_c = NG + tb_off + cb;
+                    int ci, cj, ck;
+                    if (axis == 0) { ci=c_face_i; cj=ca_c; ck=cb_c; }
+                    else if (axis == 1) { ci=ca_c; cj=c_face_i; ck=cb_c; }
+                    else               { ci=ca_c; cj=cb_c; ck=c_face_i; }
+                    for (int v = 0; v < NVAR; ++v)
+                        rhs_c->Q[v][cell_idx(ci,cj,ck)] -= sigma_c * inv4 * coarse_acc[ca][cb][v];
+                }
+            }
+        }
+    }
+}
+
+// =============================================================================
 // CFL time step
 // =============================================================================
 double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept
