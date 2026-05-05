@@ -126,6 +126,12 @@ struct SolverConfig {
     // true  → φ ∈ [0,1] scalar advected alongside Q; set initial φ via
     //          NSSolver::init() phi_ic argument (or leave null for φ≡0).
     bool use_acdi = false;
+
+    // P14.1b: ACDI compression coefficient Cε (dimensionless).
+    // Interface thickness ε = Cε·h.  Recommended: 0.5–1.0.
+    // 0.0 (default) → pure advection only (no interface sharpening).
+    // >0 → adds ε·∇·(∇φ − φ(1−φ)·n̂) compression source to each RK3 stage.
+    double acdi_ceps = 0.0;
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────

@@ -226,6 +226,8 @@ double NSSolver::advance() {
             const CellBlock& blk = *tree.nodes[leaves[ii]].block;
             std::fill(rhs_[ii].phi_data_, rhs_[ii].phi_data_ + NCELL, 0.0);
             phi_rhs(blk, rhs_[ii]);
+            if (cfg.acdi_ceps > 0.0)
+                phi_compression_rhs(blk, rhs_[ii], cfg.acdi_ceps);
             const double* pn = Qn_[ii].phi_data_;
             double*       ps = Qs_[ii].phi_data_;
             const double* pr = rhs_[ii].phi_data_;

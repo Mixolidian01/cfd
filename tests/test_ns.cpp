@@ -446,6 +446,58 @@ static void t12_phi_advection() {
     check("T12c phi_min >= -1e-10 (no undershoot)", phi_min >= -1e-10, -phi_min, 1e-10);
 }
 
+// =============================================================================
+// T13 — P14.1b ACDI compression term: φ conservation + bounded with Cε=0.5
+//
+// Same IC as T12 but with acdi_ceps=0.5. The compression term is conservative
+// for periodic BCs (∮F·dS=0 by symmetry), so T13a re-checks phi conservation.
+// T13b verifies the interface sharpens: |∇φ| at the step grows (compression
+// counteracts 1st-order diffusion), but the check is just that conservation holds.
+// =============================================================================
+static void t13_phi_compression() {
+    NSSolver s;
+    s.cfg.cfl           = 0.3;
+    s.cfg.max_steps     = 5;
+    s.cfg.t_end         = 1e30;
+    s.cfg.bc            = BCType::Periodic;
+    s.cfg.verbose       = false;
+    s.cfg.diag_interval = 100;
+    s.cfg.use_acdi      = true;
+    s.cfg.acdi_ceps     = 0.5;
+
+    auto flow_ic = [](double, double, double) {
+        Prim q; q.rho=1.225; q.u=50.0; q.v=0; q.w=0;
+        q.p=101325.0; q.T=q.p/(q.rho*R_GAS); q.c=std::sqrt(GAMMA*q.p/q.rho);
+        return q;
+    };
+    std::function<double(double,double,double)> phi_ic =
+        [](double x, double, double) { return (x < 0.5) ? 1.0 : 0.0; };
+
+    s.init(1.0, flow_ic, &phi_ic);
+
+    double phi0 = 0.0;
+    {
+        const CellBlock& blk = *s.tree.nodes[0].block;
+        for (int k=ilo();k<=ihi();++k) for(int j=ilo();j<=ihi();++j) for(int i=ilo();i<=ihi();++i)
+            phi0 += blk.phi(i,j,k) * blk.h * blk.h * blk.h;
+    }
+    s.run();
+    double phi1 = 0.0, phi_min = 1e300, phi_max = -1e300;
+    {
+        const CellBlock& blk = *s.tree.nodes[0].block;
+        for (int k=ilo();k<=ihi();++k) for(int j=ilo();j<=ihi();++j) for(int i=ilo();i<=ihi();++i) {
+            double p = blk.phi(i,j,k);
+            phi1 += p * blk.h * blk.h * blk.h;
+            phi_min = std::min(phi_min, p); phi_max = std::max(phi_max, p);
+        }
+    }
+
+    double err = std::abs(phi1 - phi0) / (std::abs(phi0) + 1e-30);
+    check("T13a phi+compression conserved over 5 steps < 1e-6", err < 1e-6, err, 1e-6);
+    check("T13b phi_max <= 1.01 (bounded, Cε=0.5)", phi_max <= 1.01, phi_max, 1.01);
+    check("T13c phi_min >= -0.01 (bounded below, Cε=0.5)", phi_min >= -0.01, -phi_min, 0.01);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 4: Layer 3 — Time Loop ===\n");
@@ -465,6 +517,7 @@ int main() {
     t10_lts_mass_energy();
     t11_sat_penalty();
     t12_phi_advection();
+    t13_phi_compression();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail>0)

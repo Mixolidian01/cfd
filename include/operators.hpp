@@ -97,6 +97,14 @@ void tree_rhs(BlockTree& tree,
 // Adds (does not zero) the advective flux divergence to rhs_blk.phi_data_.
 void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 
+// ── P14.1b: ACDI interface-compression source ─────────────────────────────────
+// Adds ε·∇·(∇φ − φ(1−φ)·n̂) to rhs_blk.phi_data_ where ε = ceps·h.
+// n̂ = ∇φ / |∇φ| is the interface unit normal (regularised by eps_sq=1e-10/h²).
+// Requires NG ≥ 2 (both gradient and divergence use 1-cell stencils from ghost layer).
+// Ghost phi must be filled at least 2 layers deep before call.
+void phi_compression_rhs(const CellBlock& blk, CellBlock& rhs_blk,
+                          double ceps) noexcept;
+
 // ── CFL time step ─────────────────────────────────────────────────────────────
 // tree_cfl_dt: global minimum over all leaves.
 // level_cfl_dt: minimum over leaves at a specific refinement level (P4.1 LTS).

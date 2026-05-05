@@ -1689,6 +1689,61 @@ void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 }
 
 // =============================================================================
+// P14.1b — ACDI interface-compression source
+// =============================================================================
+// Two-pass cell-centred scheme (requires NG >= 2):
+//   Pass 1: compute compressive flux vector F = ε·(∇φ − φ(1−φ)·n̂) at a
+//           (NB+2)³ halo (indices NG-1..NG+NB on each axis).
+//           ∇φ: central differences, n̂ = ∇φ/|∇φ| (regularised).
+//   Pass 2: central-difference divergence of F at interior cells.
+// Net effect: drives interface toward tanh profile of thickness ε=Cε·h.
+// Conservative for periodic and natural wall BCs (net flux through ∂Ω = 0).
+void phi_compression_rhs(const CellBlock& blk, CellBlock& rhs_blk,
+                          double ceps) noexcept
+{
+    const double h       = blk.h;
+    const double inv2h   = 0.5 / h;
+    const double eps     = ceps * h;
+    const double eps_sq  = 1e-10 / (h * h);  // regularise |∇φ|² near zero
+
+    // Pass 1: flux components at cells covering interior + 1-cell halo.
+    // Stack-allocated (3 × 1728 × 8 B ≈ 41 kB; within typical stack budget).
+    alignas(64) double Fx[NCELL] = {};
+    alignas(64) double Fy[NCELL] = {};
+    alignas(64) double Fz[NCELL] = {};
+
+    static_assert(NG >= 2, "phi_compression_rhs needs NG>=2 for halo stencil");
+
+    for (int k = NG-1; k <= NG+NB; ++k)
+    for (int j = NG-1; j <= NG+NB; ++j)
+    for (int i = NG-1; i <= NG+NB; ++i) {
+        const double dpx = (blk.phi(i+1,j,k) - blk.phi(i-1,j,k)) * inv2h;
+        const double dpy = (blk.phi(i,j+1,k) - blk.phi(i,j-1,k)) * inv2h;
+        const double dpz = (blk.phi(i,j,k+1) - blk.phi(i,j,k-1)) * inv2h;
+        const double mag2 = dpx*dpx + dpy*dpy + dpz*dpz + eps_sq;
+        const double inv_mag = 1.0 / std::sqrt(mag2);
+        const double phi_c = blk.phi(i,j,k);
+        const double g = phi_c * (1.0 - phi_c);
+        const int flat = cell_idx(i,j,k);
+        // F = ε · (∇φ − g·n̂)  where n̂ = ∇φ/|∇φ|
+        Fx[flat] = eps * (dpx - g * dpx * inv_mag);
+        Fy[flat] = eps * (dpy - g * dpy * inv_mag);
+        Fz[flat] = eps * (dpz - g * dpz * inv_mag);
+    }
+
+    // Pass 2: central-difference divergence → add to rhs phi.
+    for (int k = NG; k < NG+NB; ++k)
+    for (int j = NG; j < NG+NB; ++j)
+    for (int i = NG; i < NG+NB; ++i) {
+        const double divF =
+            (Fx[cell_idx(i+1,j,k)] - Fx[cell_idx(i-1,j,k)]) * inv2h +
+            (Fy[cell_idx(i,j+1,k)] - Fy[cell_idx(i,j-1,k)]) * inv2h +
+            (Fz[cell_idx(i,j,k+1)] - Fz[cell_idx(i,j,k-1)]) * inv2h;
+        rhs_blk.phi_data_[cell_idx(i,j,k)] += divF;
+    }
+}
+
+// =============================================================================
 // CFL time step
 // =============================================================================
 double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept
