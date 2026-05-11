@@ -1,13 +1,14 @@
 // gpu_graph.cu — P8.6: CUDA Graph re-capture on regrid
 //
-// Three RK3-update kernels (one CUDA block per leaf, 256 threads each):
-//   k_save_qn   : d_Qn ← d_Q
-//   k_rk3s1     : d_Q = d_Qn + (*d_dt) * d_RHS   (stage 1)
-//   k_rk3s23    : d_Q = α*d_Qn + β*(d_Q + (*d_dt)*d_RHS)  (stages 2 & 3)
+// Four RK3-update kernels (one CUDA block per leaf, 256 threads each):
+//   k_save_qn          : d_Qn ← d_Q
+//   k_rk3s1            : d_Q = d_Qn + (*d_dt) * d_RHS   (stage 1)
+//   k_rk3s23           : d_Q = α*d_Qn + β*(d_Q + (*d_dt)*d_RHS)  (stages 2 & 3)
+//   k_positivity_floor : clamp ρ≥EPS and p≥EPS on interior cells (P16.1)
 //
 // Three per-stage CUDA sub-graphs are captured via _capture_graphs(), which
-// records each stage's (ghost fill + prim_duc + rhs_conv + rhs_visc + rk3_update)
-// WITHOUT any d_rhs_pool zeroing inside the graphs.
+// records each stage's (ghost fill + prim_duc + rhs_conv + rhs_visc + rk3_update
+// + positivity_floor) WITHOUT any d_rhs_pool zeroing inside the graphs.
 //
 // In advance() replay mode, cudaMemsetAsync(d_rhs_pool, 0, ...) is issued on
 // stream before each sub-graph launch so the zeroing is a plain stream op —
@@ -64,6 +65,41 @@ void k_rk3s23(const GpuRk3LeafMeta* __restrict__ metas,
     constexpr int total = GPU_NVAR * GPU_NCELL;
     for (int i = threadIdx.x; i < total; i += blockDim.x)
         m.d_Q[i] = alpha * m.d_Qn[i] + beta * (m.d_Q[i] + dt * m.d_RHS[i]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// k_positivity_floor: mirrors CPU apply_positivity_floor (P16.1).
+// Clamps ρ≥EPS_POS and p≥EPS_POS on interior cells after each RK3 stage.
+// gridDim.x = n_leaves,  blockDim.x = 256
+// ─────────────────────────────────────────────────────────────────────────────
+__global__
+void k_positivity_floor(const GpuRk3LeafMeta* __restrict__ metas) {
+    const GpuRk3LeafMeta& m = metas[blockIdx.x];
+    constexpr int NB2   = GPU_NB2;
+    constexpr int NCELL = GPU_NCELL;
+    constexpr double EPS_POS = 1.0e-12;
+
+    const int n_int = GPU_NB * GPU_NB * GPU_NB;  // 512 interior cells
+    for (int idx = threadIdx.x; idx < n_int; idx += blockDim.x) {
+        const int ii = idx % GPU_NB + GPU_NG;
+        const int jj = (idx / GPU_NB) % GPU_NB + GPU_NG;
+        const int kk = idx / (GPU_NB * GPU_NB) + GPU_NG;
+        const int c  = ii + NB2 * (jj + NB2 * kk);
+
+        double rho  = m.d_Q[0 * NCELL + c];
+        double rhou = m.d_Q[1 * NCELL + c];
+        double rhov = m.d_Q[2 * NCELL + c];
+        double rhow = m.d_Q[3 * NCELL + c];
+        double E    = m.d_Q[4 * NCELL + c];
+
+        if (rho < EPS_POS) {
+            m.d_Q[0 * NCELL + c] = rho = EPS_POS;
+        }
+        const double ke = 0.5 * (rhou * rhou + rhov * rhov + rhow * rhow) / rho;
+        if ((GPU_GAMMA - 1.0) * (E - ke) < EPS_POS) {
+            m.d_Q[4 * NCELL + c] = ke + EPS_POS / (GPU_GAMMA - 1.0);
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,18 +173,21 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) const {
     ghost_list.exec(s);
     rhs_list.exec(s, /*zero_rhs=*/false);
     k_rk3s1<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
+    k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
 
     // Stage 2
     CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
     ghost_list.exec(s);
     rhs_list.exec(s, /*zero_rhs=*/false);
     k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, 0.75, 0.25);
+    k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
 
     // Stage 3
     CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
     ghost_list.exec(s);
     rhs_list.exec(s, /*zero_rhs=*/false);
     k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
+    k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
 }
 
 // Capture three per-stage sub-graphs.  Each captures (ghost fill + prim_duc +
@@ -169,26 +208,29 @@ void GpuGraphSolver::_capture_graphs() {
         CUDA_CHECK(cudaGraphDestroy(g));
     };
 
-    // Sub-graph 1: k_save_qn + ghost fill + RHS(no zero) + k_rk3s1
+    // Sub-graph 1: k_save_qn + ghost fill + RHS(no zero) + k_rk3s1 + floor
     capture_one(graph_s1, [&]() {
         k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
         ghost_list.exec(stream);
         rhs_list.exec(stream, /*zero_rhs=*/false);
         k_rk3s1<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt);
+        k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
     });
 
-    // Sub-graph 2: ghost fill + RHS(no zero) + k_rk3s23(0.75, 0.25)
+    // Sub-graph 2: ghost fill + RHS(no zero) + k_rk3s23(0.75, 0.25) + floor
     capture_one(graph_s2, [&]() {
         ghost_list.exec(stream);
         rhs_list.exec(stream, /*zero_rhs=*/false);
         k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 0.75, 0.25);
+        k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
     });
 
-    // Sub-graph 3: ghost fill + RHS(no zero) + k_rk3s23(1/3, 2/3)
+    // Sub-graph 3: ghost fill + RHS(no zero) + k_rk3s23(1/3, 2/3) + floor
     capture_one(graph_s3, [&]() {
         ghost_list.exec(stream);
         rhs_list.exec(stream, /*zero_rhs=*/false);
         k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
+        k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
     });
 
     graph_valid = true;
