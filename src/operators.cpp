@@ -51,6 +51,30 @@
 //         AMR C/F faces are not affected (neighbour states are not anti-symmetric).
 
 #include "operators.hpp"
+#include "concepts.hpp"
+
+// R1: verify existing flux/recon free functions satisfy Layer-C contracts.
+// These local wrapper structs are the stubs; replaced by real functors in R2.
+namespace {
+
+struct _HllcEsCheck {
+    std::array<double,NVAR> operator()(const Prim& L, const Prim& R) const noexcept {
+        return hllc_es_flux(L, R, 0);
+    }
+};
+static_assert(RiemannFlux<_HllcEsCheck>,
+    "hllc_es_flux must satisfy RiemannFlux — check NVAR and return type");
+
+struct _HllcCheck {
+    std::array<double,NVAR> operator()(const Prim& L, const Prim& R) const noexcept {
+        return hllc_flux(L, R, 0);
+    }
+};
+static_assert(RiemannFlux<_HllcCheck>,
+    "hllc_flux must satisfy RiemannFlux");
+
+} // anonymous namespace
+
 #include <cmath>
 #include <algorithm>
 #include <numeric>
@@ -1149,6 +1173,18 @@ void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
     fill_mu_cache(pc.data(), mu_arr.data());
     viscous_rhs_impl(pc.data(), mu_arr.data(), rhs_blk, blk.h);
 }
+
+// R1: verify weno5_face_t satisfies SpatialReconstruction (defined above).
+namespace {
+struct _Weno5Check {
+    void operator()(const Prim* pc, int i, int j, int k,
+                    Prim& qL, Prim& qR) const noexcept {
+        weno5_face_t<Axis::X>(pc, i, j, k, qL, qR);
+    }
+};
+static_assert(SpatialReconstruction<_Weno5Check>,
+    "weno5_face_t must satisfy SpatialReconstruction");
+} // anonymous namespace
 
 // =============================================================================
 // Full RHS — P2.3 + B5 + P3.2: prim, µ, and Ducros caches built once
