@@ -19,7 +19,7 @@
 cmake_minimum_required(VERSION 3.18)
 project(cfd CXX C)   # C required by zfp-config.cmake's find_package(OpenMP COMPONENTS C)
 
-set(CMAKE_CXX_STANDARD          17)
+set(CMAKE_CXX_STANDARD          20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -176,7 +176,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T5_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 --generate-line-info
                 -arch=sm_${_ARCH}
@@ -209,7 +209,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T8_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 -arch=sm_${_ARCH}
                 -I${CMAKE_SOURCE_DIR}/include
@@ -242,7 +242,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T19_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 --generate-line-info
                 -arch=sm_${_ARCH}
@@ -277,7 +277,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T20_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 --generate-line-info
                 -arch=sm_${_ARCH}
@@ -314,7 +314,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T21_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 --extended-lambda
                 --generate-line-info
@@ -350,7 +350,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T22_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 --generate-line-info
                 -arch=sm_${_ARCH}
@@ -386,7 +386,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T23_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 --generate-line-info
                 -arch=sm_${_ARCH}
@@ -426,7 +426,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T24_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 --generate-line-info
                 -arch=sm_${_ARCH}
@@ -472,7 +472,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T25_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 --generate-line-info
                 -arch=sm_${_ARCH}
@@ -519,7 +519,7 @@ if(NVCC)
     add_custom_command(
         OUTPUT  ${_T26_BIN}
         COMMAND ${NVCC}
-                -std=c++17 -O2 -g
+                -std=c++20 -O2 -g
                 --expt-relaxed-constexpr
                 --generate-line-info
                 -arch=sm_${_ARCH}
