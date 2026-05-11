@@ -807,12 +807,16 @@ static void weno5_face_t(const Prim* pc, int i, int j, int k,
 // the others.
 //
 // Boundary face reconstruction (is_bnd=true, non-wall):
-//   PCM + HLLC-ES: use cell-centre prim values directly.  MUSCL-minmod was tried
-//   (P15.2 attempt) but the minmod kink at smooth extrema degrades the T08
-//   isentropic-vortex convergence rate from ≥1.8 to ~1.1 — a known limitation
-//   of non-smooth limiters in L∞/L2 convergence tests on smooth data.
-//   PCM+HLLC-ES gives O(h²) flux divergence (Lax-Wendroff cancellation) and
-//   keeps the T08 rate ≥1.8 while matching undo_cf / accumulate_cf exactly.
+//   PCM + HLLC-ES: use cell-centre prim values directly.  MUSCL limiters
+//   (minmod P15.2 attempt, van Albada P15.2 retry) both degrade T08
+//   isentropic-vortex convergence rate from ≥1.8 to ~1.1.  Root cause: T08
+//   fills ghost cells with the vortex IC extended to x<0/x>1, creating O(1)
+//   slopes at boundary faces that MUSCL cannot reduce below O(h).  PCM avoids
+//   this via Lax-Wendroff cancellation (O(h²) flux divergence on smooth data).
+//   undo_cf_one_face and cf_accum_one_face use the same PCM+HLLC-ES formula
+//   for exact Berger-Colella cancellation.  Future fix: gate MUSCL on whether
+//   the ghost cells contain real physics data vs. BC padding (needs topology
+//   info in accumulate_face — not implemented).
 // =============================================================================
 
 // is_wall_ghost: detect no-slip wall ghost face.
@@ -837,7 +841,7 @@ static inline std::pair<int,int> face_lr_idx(int n, int a, int b) noexcept {
 }
 
 // face_to_ijk<DIR>: convert face coords (n, a, b) to (xi, yi, zi) of the left cell.
-// Matches the calling convention of weno5_face_t<DIR> and muscl_bnd_face<DIR>.
+// Matches the calling convention of weno5_face_t<DIR>.
 template <Axis DIR>
 static inline void face_to_ijk(int n, int a, int b,
                                 int& xi, int& yi, int& zi) noexcept {
@@ -856,11 +860,11 @@ static inline void face_to_ijk(int n, int a, int b,
 //   is_bnd=false: interior face — WENO5-Z + HLLC-ES (full 5-point stencil)
 //                 or pure KEP when θ < 1e-8 (smooth/vortex-dominated region)
 //   is_bnd=true, wall: KEP only (exact wall pressure, zero LF tangential drain)
-//   is_bnd=true, other: PCM + HLLC-ES (cell-centre values → Lax-Wendroff O(h²))
+//   is_bnd=true, other: PCM + HLLC-ES (cell-centre prim → Lax-Wendroff O(h²))
 //
-// PCM+HLLC-ES is required for Berger-Colella consistency: undo_cf and
-// accumulate_cf use the same PCM+HLLC-ES formula, so their contributions cancel
-// exactly at C/F interfaces.
+// PCM+HLLC-ES is required for Berger-Colella consistency: undo_cf_one_face and
+// cf_accum_one_face use the same PCM+HLLC-ES formula, so their contributions
+// cancel exactly at C/F interfaces.
 template <Axis DIR>
 static void accumulate_face(const Prim* pc, const double* duc,
                              CellBlock& rhs, double ih,
@@ -917,7 +921,7 @@ static void accumulate_face(const Prim* pc, const double* duc,
 // original three-section code to maintain CPU cache performance.
 //
 //   F_KEP  : Pirozzoli (2011) KE-preserving flux (zero added dissipation)
-//   F_bnd  : MUSCL+HLLC-ES at block boundary faces (P15.2, 2nd-order)
+//   F_bnd  : PCM+HLLC-ES at block boundary faces (Lax-Wendroff O(h²))
 //   F_shock: WENO5-Z+HLLC-ES for interior shock-region faces (P3.1/P3.2)
 //   Blend  : F = (1−θ)·F_KEP + θ·F_shock,  θ = max(Ducros_L, Ducros_R)
 //
@@ -1376,7 +1380,8 @@ static void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
 // leak whenever y- or z-face CF interfaces exist.
 // =============================================================================
 // cf_accum_one_face<DIR>: accumulates PCM+HLLC-ES fine-face flux into the
-// Berger-Colella register for one face direction.
+// Berger-Colella register for one face direction.  Same reconstruction as
+// accumulate_face<DIR> and undo_cf_one_face<DIR> — exact cancellation at C/F.
 // (off1, off2) are the octant quadrant offsets; (jc, ic) register mapping is
 // axis-specific and encoded via if constexpr so all three axes share one body.
 template <Axis DIR>

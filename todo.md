@@ -287,7 +287,15 @@ Status legend: `✅ done` · `⚠️ partial` · `🔲 not started`
 | # | Status | Item | Reference | Notes |
 |---|--------|------|-----------|-------|
 | P15.1 | ✅ | **`template <Axis DIR>` full coverage** — Basilisk `foreach_dimension()` analogue: collapsed three near-identical X/Y/Z face loops into a single `accumulate_face<DIR>` template; added `undo_cf_one_face<DIR>` and `cf_accum_one_face<DIR>` templates for Berger-Colella boundary faces; all dispatched via `switch (axis) { case 0: …<Axis::X>; … }` at runtime. Dead-branch elision via `if constexpr`. Coverage assessment: viscous RHS (cross-terms τ_xy require simultaneous du/dy + dv/dx; no axis symmetry), ghost fill (BC-type-specific logic), AMR prolongation/restriction (3D trilinear) not templated — architectural restructuring would be needed with zero compile-time benefit. All t3/t4/t6 gates pass (T08 rate=3.01 ≥ 1.8). | Basilisk (Popinet 2015); Trias et al. (2014) symmetry-preserving | `src/operators.cpp` |
-| P15.2 | ⚠️ | **MUSCL at block boundary faces** — attempted MUSCL-minmod reconstruction at same-level and C/F boundary faces (`muscl_bnd_face<DIR>`) for higher formal order; reverted: the minmod kink at smooth-flow extrema (where slope estimates cross a=b) introduces h-dependent non-smoothness that degrades T08 isentropic-vortex L2 convergence from ≥1.8 → 1.13. PCM+HLLC-ES retains O(h²) via Lax-Wendroff cancellation on smooth data and is Berger-Colella consistent (undo_cf / accumulate_cf use the same reconstruction as the RHS). MUSCL boundary faces can be revisited with a smooth limiter (van Albada) or high-order ENO slope. | Lax-Wendroff (1960); Sweby (1984) TVD limiters | reverted in `src/operators.cpp` |
+| P15.2 | ⚠️ | **MUSCL at block boundary faces** — two limiters attempted, both reverted. (1) MUSCL-minmod: kink at smooth extrema degrades T08 rate 3.01→1.13. (2) MUSCL-van Albada (C¹ limiter): same root-cause failure, T08 rate→1.08. Root cause: T08 fills ghost cells with the isentropic vortex IC extended to x<0/x>1, creating O(1) slopes at block boundary faces that no TVD limiter can reduce below O(h). PCM+HLLC-ES avoids this via Lax-Wendroff cancellation and keeps Berger-Colella consistency (undo_cf / accumulate_cf use the same formula). Future fix requires passing topology info (is this a real block–block face or a domain-BC face?) into `accumulate_face` to gate MUSCL only on multi-block boundaries with real physics ghost data. | Sweby (1984) TVD; van Albada (1982) | reverted in `src/operators.cpp` |
+
+---
+
+## Phase 16 — GPU Robustness & Parity
+
+| # | Status | Item | Reference | Notes |
+|---|--------|------|-----------|-------|
+| P16.1 | ✅ | **GPU positivity floor** — added `k_positivity_floor` CUDA kernel to `gpu_graph.cu`. Clamps ρ≥EPS_POS (1e-12) and p≥EPS_POS on all 512 interior cells after each SSP-RK3 stage, mirroring the CPU `apply_positivity_floor()` in `ns_solver.cpp`. Kernel uses flat SoA layout (var·NCELL+c) and is wired into both `_run_rk3_explicit` (first step) and all three `_capture_graphs` sub-graphs (graph_s1/s2/s3). Prevents negative-density blow-up on the GPU path when near-vacuum cells appear in shock or interface problems. | Einfeldt et al. (1991) positivity; Zhang & Shu (2010) | `src/cuda/gpu_graph.cu` |
 
 ---
 
