@@ -21,8 +21,6 @@
 #include "axis.hpp"
 #include "concepts.hpp"
 #include "physics/hllc_flux.hpp"
-#include "physics/weno5_recon.hpp"
-#include "physics/ideal_gas_eos.hpp"
 #include <array>
 
 // ── P13.1: compile-time axis tag ─────────────────────────────────────────────
@@ -46,8 +44,6 @@ std::array<double,5> hllc_es_flux(const Prim& L, const Prim& R, int axis) noexce
 // R2: delegates directly to HllcFlux<DIR> / HllcEsFlux<DIR> physics functors
 // (include/physics/hllc_flux.hpp) — no runtime axis dispatch overhead.
 // Usage: auto f = hllc_es_flux_t<Axis::X>(L, R);
-#include "physics/hllc_flux.hpp"
-
 template<Axis DIR>
 inline std::array<double,5> hllc_es_flux_t(const Prim& L, const Prim& R) noexcept {
     return HllcEsFlux<DIR>{}(L, R);
