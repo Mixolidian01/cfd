@@ -13,6 +13,9 @@
 //   T10  CFL dt: dt decreases when velocity increases
 
 #include "operators.hpp"
+#include "physics/hllc_flux.hpp"
+#include "physics/weno5_recon.hpp"
+#include "physics/ideal_gas_eos.hpp"
 #include <cstdio>
 #include <cmath>
 #include <vector>
@@ -384,6 +387,34 @@ static void t11_t13_aoaoa() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// R5  Scheme-selection: compute_rhs_typed (typed path) == compute_rhs (default)
+//   Uniform block: both paths call the same compute_rhs body,
+//   so the result must be bit-identical (max_diff < 1e-14).
+// ─────────────────────────────────────────────────────────────────────────────
+static void t_scheme_selection() {
+    // Stand-alone block: fill all cells (interior + ghost) with uniform state
+    CellBlock blk(0.0, 0.0, 0.0, 1.0 / NB);
+    Prim q = make_prim(1.0, 0.0, 0.0, 0.0, 1.0 / (GAMMA - 1.0));
+    fill_uniform(blk, q);
+
+    CellBlock rhs_default(0.0, 0.0, 0.0, blk.h);
+    CellBlock rhs_typed  (0.0, 0.0, 0.0, blk.h);
+
+    compute_rhs(blk, rhs_default);
+    compute_rhs_typed(blk, rhs_typed,
+                      HllcEsFlux<Axis::X>{},
+                      Weno5Recon<Axis::X>{},
+                      IdealGasEOS{});
+
+    double max_diff = 0.0;
+    for (int v = 0; v < NVAR; ++v)
+        for (int f = 0; f < NCELL; ++f)
+            max_diff = std::max(max_diff,
+                std::abs(rhs_default.Q[v][f] - rhs_typed.Q[v][f]));
+    check("R5 scheme-selection: typed == default rhs", max_diff < 1e-14, max_diff, 0.0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 3: Layer 2 — Discrete Operators ===\n");
     printf("    Gate: HLLC correct + positive\n");
@@ -401,6 +432,7 @@ int main() {
     t09_tree_rhs_uniform();
     t10_tree_cfl();
     t11_t13_aoaoa();
+    t_scheme_selection();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)

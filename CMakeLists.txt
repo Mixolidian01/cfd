@@ -63,7 +63,10 @@ target_link_libraries(block PUBLIC linalg)
 find_package(OpenMP)
 
 # Layer 2: HLLC Riemann solver, viscous RHS, operators
-add_library(operators STATIC src/operators.cpp)
+add_library(operators STATIC
+    src/operators.cpp
+    src/instantiation_matrix.cpp   # R5: pre-compiled (Flux × Recon × EOS) matrix
+)
 target_link_libraries(operators PUBLIC block)
 if(OpenMP_CXX_FOUND)
     target_link_libraries(operators PUBLIC OpenMP::OpenMP_CXX)

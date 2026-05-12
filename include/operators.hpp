@@ -19,6 +19,10 @@
 
 #include "block_tree.hpp"
 #include "axis.hpp"
+#include "concepts.hpp"
+#include "physics/hllc_flux.hpp"
+#include "physics/weno5_recon.hpp"
+#include "physics/ideal_gas_eos.hpp"
 #include <array>
 
 // ── P13.1: compile-time axis tag ─────────────────────────────────────────────
@@ -94,6 +98,19 @@ void tree_rhs(BlockTree& tree,
               int    level_filter        = -1,
               bool   cf_coarse_zero_grad = false,
               bool   open_bc             = false) noexcept;
+
+// ── R5: typed entry-point (Flux × Recon × EOS resolved at compile time) ──────
+// Concept constraints applied at this call site (Layer C, CLAUDE.md R5).
+// Delegates to compute_rhs for now; R5-extension will parameterise the impl.
+// Template body is defined here so explicit instantiations in
+// instantiation_matrix.cpp can see it (standard C++ ODR requirement).
+template<RiemannFlux Flux, SpatialReconstruction Recon, EquationOfState EOS>
+void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
+                       Flux /*flux*/, Recon /*recon*/, EOS /*eos*/) noexcept {
+    // Delegates to untemplated compute_rhs for now.
+    // R5-extension: parameterise compute_rhs_impl with flux/recon/eos functors.
+    compute_rhs(blk, rhs_blk);
+}
 
 // ── P14.1: Stiffened-gas mixture EOS activation ──────────────────────────────
 // Call once per advance() before tree_rhs() when use_acdi && gamma_a != gamma_b.
