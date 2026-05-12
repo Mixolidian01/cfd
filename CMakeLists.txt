@@ -82,6 +82,7 @@ add_library(ns_solver STATIC
     src/checkpoint.cpp
     src/vtk_writer.cpp
     src/live_streamer.cpp
+    src/solver_factory.cpp
 )
 target_link_libraries(ns_solver PUBLIC operators)
 # live_streamer.cpp uses POSIX threads (accept/stream threads)

@@ -64,12 +64,18 @@ struct StepDiag {
 
 // ── Solver configuration ─────────────────────────────────────────────────────────────────────────────
 struct SolverConfig {
+    // R4: Backend dispatch and flux scheme selection
+    enum class ExecutionBackend { CPU, GPU };
+    enum class FluxScheme       { HLLC, HLLC_ES };
+
     double cfl           = 0.8;
     double t_end         = 1.0;
     int    max_steps     = 1000000;
     int    diag_interval = 10;
     BCVariant bc_variant = PeriodicBC{};
     bool   verbose       = true;
+    ExecutionBackend backend     = ExecutionBackend::CPU;
+    FluxScheme       flux_scheme = FluxScheme::HLLC_ES;
     int    regrid_interval = 0;
     int    max_level       = 2;
     std::shared_ptr<SGSModel> sgs = nullptr;
