@@ -157,6 +157,7 @@ struct HllcEsFlux {
 };
 
 // ── Property flags ────────────────────────────────────────────────────────────
+template<Axis DIR> struct is_conservative<HllcFlux<DIR>>     : std::true_type {};
 template<Axis DIR> struct is_entropy_stable<HllcEsFlux<DIR>> : std::true_type {};
 template<Axis DIR> struct is_conservative<HllcEsFlux<DIR>>   : std::true_type {};
 
