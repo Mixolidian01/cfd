@@ -52,37 +52,8 @@
 
 #include "operators.hpp"
 #include "concepts.hpp"
-
-// R1: verify existing flux/recon free functions satisfy Layer-C contracts.
-// These local wrapper structs are the stubs; replaced by real functors in R2.
-namespace {
-
-struct _HllcEsCheck {
-    std::array<double,NVAR> operator()(const Prim& L, const Prim& R) const noexcept {
-        return hllc_es_flux(L, R, 0);
-    }
-};
-static_assert(RiemannFlux<_HllcEsCheck>,
-    "hllc_es_flux must satisfy RiemannFlux — check NVAR and return type");
-
-struct _HllcCheck {
-    std::array<double,NVAR> operator()(const Prim& L, const Prim& R) const noexcept {
-        return hllc_flux(L, R, 0);
-    }
-};
-
-struct _EosCheck {
-    Prim cons_to_prim(double rho, double rhou, double rhov,
-                      double rhow, double en) const noexcept {
-        return eos_cons_to_prim(rho, rhou, rhov, rhow, en);
-    }
-};
-static_assert(RiemannFlux<_HllcCheck>,
-    "hllc_flux must satisfy RiemannFlux");
-static_assert(EquationOfState<_EosCheck>,
-    "eos_cons_to_prim must satisfy EquationOfState");
-
-} // anonymous namespace
+#include "physics/hllc_flux.hpp"
+#include "physics/weno5_recon.hpp"
 
 #include <cmath>
 #include <algorithm>
@@ -127,166 +98,28 @@ void set_sg_eos(bool active, double ga, double gb, double pia, double pib) noexc
 
 std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept
 {
-    double uL = (axis==0)?L.u:(axis==1)?L.v:L.w;
-    double uR = (axis==0)?R.u:(axis==1)?R.v:R.w;
-
-    // Roe-average wave speeds (Einfeldt-Roe): entropy-consistent near sonic points.
-    // H = c²/(γ-1) + ½|u|²  is the specific total enthalpy.
-    const double sqL = std::sqrt(L.rho);
-    const double sqR = std::sqrt(R.rho);
-    const double isq = 1.0 / (sqL + sqR);
-    // P14.1: use cell mixture γ for specific total enthalpy H = c²/(γ-1) + ½|u|²
-    const double HL  = L.c*L.c/(L.gamma_m-1.0) + 0.5*(L.u*L.u + L.v*L.v + L.w*L.w);
-    const double HR  = R.c*R.c/(R.gamma_m-1.0) + 0.5*(R.u*R.u + R.v*R.v + R.w*R.w);
-    const double uh  = (sqL*L.u + sqR*R.u)*isq;
-    const double vh  = (sqL*L.v + sqR*R.v)*isq;
-    const double wh  = (sqL*L.w + sqR*R.w)*isq;
-    const double Hh  = (sqL*HL  + sqR*HR )*isq;
-    const double gm_face = 0.5*(L.gamma_m + R.gamma_m);  // arithmetic face average
-    const double c2h = (gm_face-1.0)*(Hh - 0.5*(uh*uh + vh*vh + wh*wh));
-    const double ch  = (c2h > 0.0) ? std::sqrt(c2h) : 0.5*(L.c + R.c);
-    const double u_h = (axis==0) ? uh : (axis==1) ? vh : wh;  // normal component
-    double sL = std::min(uL - L.c, u_h - ch);
-    double sR = std::max(uR + R.c, u_h + ch);
-
-    double numer = R.p - L.p + L.rho*uL*(sL - uL) - R.rho*uR*(sR - uR);
-    double denom = L.rho*(sL - uL) - R.rho*(sR - uR);
-    double sStar = (std::abs(denom) > 1e-300) ? numer / denom : 0.5*(uL + uR);
-
-    auto phys_flux = [&](const Prim& q) -> std::array<double,5> {
-        double un = (axis==0)?q.u:(axis==1)?q.v:q.w;
-        // P14.1: stiffened gas E = (p + γ·p∞)/(γ-1) + KE
-        double E  = (q.p + q.gamma_m*q.p_inf_m)/(q.gamma_m-1.0)
-                    + 0.5*q.rho*(q.u*q.u+q.v*q.v+q.w*q.w);
-        return {q.rho*un,
-                q.rho*q.u*un + (axis==0?q.p:0.0),
-                q.rho*q.v*un + (axis==1?q.p:0.0),
-                q.rho*q.w*un + (axis==2?q.p:0.0),
-                (E+q.p)*un};
-    };
-
-    auto star_flux = [&](const Prim& q, double sK, double sS)
-        -> std::array<double,5>
-    {
-        double un = (axis==0)?q.u:(axis==1)?q.v:q.w;
-        double E  = (q.p + q.gamma_m*q.p_inf_m)/(q.gamma_m-1.0)
-                    + 0.5*q.rho*(q.u*q.u+q.v*q.v+q.w*q.w);  // P14.1
-        double coeff = q.rho * (sK - un) / (sK - sS);
-        double rho_s  = coeff;
-        double rhou_s = coeff * (axis==0 ? sS : q.u);
-        double rhov_s = coeff * (axis==1 ? sS : q.v);
-        double rhow_s = coeff * (axis==2 ? sS : q.w);
-        double E_s    = coeff * (E/q.rho + (sS - un)*(sS + q.p/(q.rho*(sK-un))));
-
-        auto F = phys_flux(q);
-        double rho  = q.rho;
-        double rhou = rho*q.u, rhov = rho*q.v, rhow = rho*q.w;
-        return {F[0] + sK*(rho_s  - rho ),
-                F[1] + sK*(rhou_s - rhou),
-                F[2] + sK*(rhov_s - rhov),
-                F[3] + sK*(rhow_s - rhow),
-                F[4] + sK*(E_s    - E   )};
-    };
-
-    if      (sL >= 0.0) return phys_flux(L);
-    else if (sR <= 0.0) return phys_flux(R);
-    else if (sStar >= 0.0) return star_flux(L, sL, sStar);
-    else                   return star_flux(R, sR, sStar);
+    // R2: delegate to HllcFlux<DIR> physics functor (include/physics/hllc_flux.hpp)
+    switch (axis) {
+        case 0:  return HllcFlux<Axis::X>{}(L, R);
+        case 1:  return HllcFlux<Axis::Y>{}(L, R);
+        default: return HllcFlux<Axis::Z>{}(L, R);
+    }
 }
 
 // =============================================================================
 // P3.3 — Entropy-stable HLLC-ES flux (Chandrashekar 2013)
 // =============================================================================
-// Reference: Chandrashekar, "Kinetic Energy Preserving and Entropy Stable
-//            Finite Volume Schemes", Comm. Comput. Phys. 14(5), 2013.
-//
-// Physical basis:
-//   Entropy variable: η = -ρ·s/(γ-1) where s = ln(p·ρ^{-γ}).
-//   The entropy-CONSERVATIVE flux F_EC satisfies (w_R-w_L)·F_EC = ψ_R-ψ_L
-//   exactly, where w = ∂η/∂Q are the entropy variables.
-//   Adding the non-negative LF dissipation −(λ_max/2)·ΔQ converts this
-//   to an entropy-STABLE flux: the discrete entropy inequality holds
-//   cell-by-cell without any additional limiting.
-//
-// Key quantities:
-//   β      = ρ/(2p)  (proportional to inverse temperature: β=1/(2RT))
-//   ρ_ln   = log-mean(ρ_L, ρ_R)
-//   β_ln   = log-mean(β_L, β_R)
-//   p̂      = ρ̄/(2β̄)  with ρ̄, β̄ = arithmetic means  (Eq. 3.10)
-//   Ĥ      = 1/(2(γ-1)β_ln) + ½(ū²+v̄²+w̄²) + p̂/ρ_ln
-
-static inline double sq(double x) noexcept { return x * x; }
-
-// Numerically stable log-mean using Ismail-Roe series near a≈b.
-// For |u|² < 1e-4 the Taylor series  F = 1 + u²/3 + u⁴/5 + u⁶/7 + ...
-// (where u=(a-b)/(a+b)) is used; otherwise the exact log formula.
-static inline double log_mean(double a, double b) noexcept {
-    const double xi = a / b;
-    const double f  = (xi - 1.0) / (xi + 1.0);
-    const double u2 = f * f;
-    const double F  = (u2 < 1.0e-4)
-                    ? 1.0 + u2 * (1.0/3.0 + u2 * (1.0/5.0 + u2 / 7.0))
-                    : std::log(xi) / (2.0 * f);
-    return (a + b) / (2.0 * F);
-}
+// R2: implementation lives in HllcEsFlux<DIR> functor (include/physics/hllc_flux.hpp).
+// This wrapper maintains the runtime-axis API used by kep_flux fallback paths.
 
 std::array<double,NVAR> hllc_es_flux(const Prim& L, const Prim& R, int axis) noexcept
 {
-    // Arithmetic means of primitive quantities
-    const double rho_a  = 0.5*(L.rho + R.rho);
-    const double u_a    = 0.5*(L.u   + R.u  );
-    const double v_a    = 0.5*(L.v   + R.v  );
-    const double w_a    = 0.5*(L.w   + R.w  );
-    // P14.1c SG EOS: use β = ρ/(2(p+p∞)) so that Ĥ = γ(p+p∞)/((γ-1)ρ) + KE.
-    // For ideal gas p∞=0 → β = ρ/(2p), recovering the original Chandrashekar formula.
-    const double beta_L = L.rho / (2.0*(L.p + L.p_inf_m));
-    const double beta_R = R.rho / (2.0*(R.p + R.p_inf_m));
-    const double beta_a = 0.5*(beta_L + beta_R);
-
-    // Log-mean quantities (entropy-variable averages)
-    const double rho_ln  = log_mean(L.rho,  R.rho );
-    const double beta_ln = log_mean(beta_L, beta_R);
-
-    // p_hat = ρ̄/(2β̄) = arithmetic average of (p+p∞) — effective pressure at face.
-    // Momentum flux uses p̂_thermo = p_hat − p̂∞ so the pressure in ∂(ρu)/∂t is p.
-    const double p_hat  = rho_a / (2.0 * beta_a);
-    const double pim_hat = 0.5*(L.p_inf_m + R.p_inf_m);
-    const double p_mom  = p_hat - pim_hat;  // thermodynamic face pressure for momentum
-
-    // Normal velocity
-    const double un_L = (axis==0)?L.u:(axis==1)?L.v:L.w;
-    const double un_R = (axis==0)?R.u:(axis==1)?R.v:R.w;
-    const double un_a = 0.5*(un_L + un_R);
-
-    const double mass = rho_ln * un_a;
-
-    // Face total enthalpy: Ĥ = 1/(2(γ-1)β_ln) + KE_hat + p̂/ρ_ln
-    // With β = ρ/(2(p+p∞)) this gives Ĥ = γ(p+p∞)/((γ-1)ρ) + KE for uniform state.
-    const double gm_face_kep = 0.5*(L.gamma_m + R.gamma_m);
-    const double KE_hat = 0.5*(u_a*u_a + v_a*v_a + w_a*w_a);
-    const double H_hat  = 1.0/(2.0*(gm_face_kep-1.0)*beta_ln) + KE_hat + p_hat/rho_ln;
-
-    // Entropy-conservative flux (Chandrashekar Eq. 3.10, extended to SG EOS)
-    std::array<double,NVAR> F_EC;
-    F_EC[0] = mass;
-    F_EC[1] = mass*u_a + (axis==0 ? p_mom : 0.0);
-    F_EC[2] = mass*v_a + (axis==1 ? p_mom : 0.0);
-    F_EC[3] = mass*w_a + (axis==2 ? p_mom : 0.0);
-    F_EC[4] = mass*H_hat;
-
-    // Lax-Friedrichs scalar dissipation: F_ES = F_EC − (λ_max/2)·ΔQ
-    const double lam = std::max(std::abs(un_L)+L.c, std::abs(un_R)+R.c);
-    // P14.1: stiffened-gas E = (p + γ·p∞)/(γ-1) + KE
-    const double E_L = (L.p + L.gamma_m*L.p_inf_m)/(L.gamma_m-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
-    const double E_R = (R.p + R.gamma_m*R.p_inf_m)/(R.gamma_m-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
-
-    std::array<double,NVAR> F_ES;
-    F_ES[0] = F_EC[0] - 0.5*lam*(R.rho       - L.rho      );
-    F_ES[1] = F_EC[1] - 0.5*lam*(R.rho*R.u   - L.rho*L.u  );
-    F_ES[2] = F_EC[2] - 0.5*lam*(R.rho*R.v   - L.rho*L.v  );
-    F_ES[3] = F_EC[3] - 0.5*lam*(R.rho*R.w   - L.rho*L.w  );
-    F_ES[4] = F_EC[4] - 0.5*lam*(E_R         - E_L         );
-    return F_ES;
+    // R2: delegate to HllcEsFlux<DIR> physics functor
+    switch (axis) {
+        case 0:  return HllcEsFlux<Axis::X>{}(L, R);
+        case 1:  return HllcEsFlux<Axis::Y>{}(L, R);
+        default: return HllcEsFlux<Axis::Z>{}(L, R);
+    }
 }
 
 // =============================================================================
@@ -477,64 +310,8 @@ static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
 // =============================================================================
 // P3.1 — WENO5-Z scalar reconstruction (Borges et al. 2008)
 // =============================================================================
-// Reconstructs left (vL) and right (vR) states at the face between v0 and vp1
-// from the 6-cell stencil {vm2, vm1, v0, vp1, vp2, vp3}.
-//
-// Mathematical basis:
-//   Three 3rd-order candidate polynomials per side, combined with non-linear
-//   WENO-Z weights α_k = d_k·(1 + (τ₅/(β_k+ε))²), ε=1e-36.
-//   τ₅ = |β₀−β₂| (Borges global smoothness indicator).  At smooth extrema
-//   WENO-Z reduces the artificial dissipation of WENO-JS (Jiang-Shu 1996),
-//   recovering close to the 5th-order optimal stencil weight.
-//
-// Optimal weights (Shu 2009 lecture notes):
-//   Left:  d₀=1/10, d₁=3/5, d₂=3/10   (bias toward right-of-face)
-//   Right: same values (bias toward left-of-face, mirrored stencil)
-static void weno5z_scalar(double vm2, double vm1, double v0,
-                           double vp1, double vp2, double vp3,
-                           double& vL, double& vR) noexcept
-{
-    constexpr double eps = 1.0e-36;
-    constexpr double d0 = 0.1, d1 = 0.6, d2 = 0.3;
-
-    // ── Left state (reconstructed from the left side of face v0|vp1) ─────────
-    // Candidate 3rd-order polynomials (Shu 2009 Eq. 2.16–2.18)
-    const double L0 = ( 2.0*vm2 -  7.0*vm1 + 11.0*v0 ) * (1.0/6.0);
-    const double L1 = (     -vm1 +  5.0*v0  +  2.0*vp1) * (1.0/6.0);
-    const double L2 = ( 2.0*v0  +  5.0*vp1  -      vp2) * (1.0/6.0);
-
-    // Jiang-Shu smoothness indicators (Eq. 2.61–2.63)
-    const double b0L = (13.0/12.0)*sq(vm2 - 2.0*vm1 + v0 )
-                     +  (1.0/ 4.0)*sq(vm2 - 4.0*vm1 + 3.0*v0);
-    const double b1L = (13.0/12.0)*sq(vm1 - 2.0*v0  + vp1)
-                     +  (1.0/ 4.0)*sq(vm1 - vp1);
-    const double b2L = (13.0/12.0)*sq(v0  - 2.0*vp1 + vp2)
-                     +  (1.0/ 4.0)*sq(3.0*v0 - 4.0*vp1 + vp2);
-
-    const double tau5L = std::abs(b0L - b2L);
-    const double a0L = d0 * (1.0 + sq(tau5L / (b0L + eps)));
-    const double a1L = d1 * (1.0 + sq(tau5L / (b1L + eps)));
-    const double a2L = d2 * (1.0 + sq(tau5L / (b2L + eps)));
-    vL = (a0L*L0 + a1L*L1 + a2L*L2) / (a0L + a1L + a2L);
-
-    // ── Right state (reconstructed from the right side, mirrored stencil) ────
-    const double R0 = ( 2.0*vp3 -  7.0*vp2 + 11.0*vp1) * (1.0/6.0);
-    const double R1 = (     -vp2 +  5.0*vp1 +  2.0*v0 ) * (1.0/6.0);
-    const double R2 = ( 2.0*vp1 +  5.0*v0   -      vm1) * (1.0/6.0);
-
-    const double b0R = (13.0/12.0)*sq(vp1  - 2.0*vp2 + vp3)
-                     +  (1.0/ 4.0)*sq(3.0*vp1 - 4.0*vp2 + vp3);
-    const double b1R = (13.0/12.0)*sq(v0   - 2.0*vp1 + vp2)
-                     +  (1.0/ 4.0)*sq(v0 - vp2);
-    const double b2R = (13.0/12.0)*sq(vm1  - 2.0*v0  + vp1)
-                     +  (1.0/ 4.0)*sq(vm1 - 4.0*v0 + 3.0*vp1);
-
-    const double tau5R = std::abs(b0R - b2R);
-    const double a0R = d0 * (1.0 + sq(tau5R / (b0R + eps)));
-    const double a1R = d1 * (1.0 + sq(tau5R / (b1R + eps)));
-    const double a2R = d2 * (1.0 + sq(tau5R / (b2R + eps)));
-    vR = (a0R*R0 + a1R*R1 + a2R*R2) / (a0R + a1R + a2R);
-}
+// R2: implementation lives in physics_weno5z_scalar (include/physics/weno5z_scalar.hpp).
+// The static wrapper below maintains the local call sites in weno5_face.
 
 // =============================================================================
 // P3.1 — WENO5 face reconstruction with Roe characteristic decomposition
@@ -658,9 +435,9 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
     // ── Apply WENO5-Z to each characteristic variable independently ───────────
     double wL[5], wR[5];
     for (int kk = 0; kk < 5; ++kk)
-        weno5z_scalar(W[kk][0], W[kk][1], W[kk][2],
-                      W[kk][3], W[kk][4], W[kk][5],
-                      wL[kk], wR[kk]);
+        physics_weno5z_scalar(W[kk][0], W[kk][1], W[kk][2],
+                              W[kk][3], W[kk][4], W[kk][5],
+                              wL[kk], wR[kk]);
 
     // ── Back-project with right eigenvectors to conservative space ────────────
     // Q = Σ_k w_k · r_k  where columns r_k are listed above.
@@ -714,114 +491,11 @@ static void weno5_face(const Prim* pc, int i, int j, int k, int axis,
     qR_out = safe_prim(QRv, pR);
 }
 
-// P13.1 stage 3 — compile-time axis: idx_at + Roe-velocity selection via if constexpr
+// P13.1 stage 3 — compile-time axis; R2: delegates to Weno5Recon<DIR> functor.
 template<Axis DIR>
 static void weno5_face_t(const Prim* pc, int i, int j, int k,
                          Prim& qL_out, Prim& qR_out) noexcept {
-    // Stencil index: offset d along the compile-time axis
-    auto idx_at = [&](int d) -> int {
-        if constexpr (DIR == Axis::X) return cell_idx(i+d, j, k);
-        if constexpr (DIR == Axis::Y) return cell_idx(i, j+d, k);
-        return                              cell_idx(i, j, k+d);
-    };
-
-    double Q[6][NVAR];
-    for (int m = 0; m < 6; ++m) {
-        const Prim& p = pc[idx_at(m - 2)];
-        Q[m][0] = p.rho;
-        Q[m][1] = p.rho * p.u;
-        Q[m][2] = p.rho * p.v;
-        Q[m][3] = p.rho * p.w;
-        // P14.1: stiffened-gas E
-        Q[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
-                  + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
-    }
-
-    const Prim& pL = pc[idx_at(0)];
-    const Prim& pR = pc[idx_at(1)];
-    const double sqL   = std::sqrt(pL.rho);
-    const double sqR   = std::sqrt(pR.rho);
-    const double denom = sqL + sqR;
-    const double u_roe = (sqL*pL.u + sqR*pR.u) / denom;
-    const double v_roe = (sqL*pL.v + sqR*pR.v) / denom;
-    const double w_roe = (sqL*pL.w + sqR*pR.w) / denom;
-    const double HL    = (Q[2][4] + pL.p) / pL.rho;
-    const double HR    = (Q[3][4] + pR.p) / pR.rho;
-    const double H_roe = (sqL*HL + sqR*HR) / denom;
-    const double KE    = 0.5*(u_roe*u_roe + v_roe*v_roe + w_roe*w_roe);
-    // P14.1: face-averaged mixture γ for Roe sound speed
-    const double gm_roe_t = 0.5*(pL.gamma_m + pR.gamma_m);
-    const double c2    = std::max((gm_roe_t-1.0)*(H_roe - KE), 1.0e-300);
-    const double c_roe = std::sqrt(c2);
-
-    // Compile-time normal/tangential velocity and Q-array index selection
-    constexpr int n_idx  = (DIR==Axis::X) ? 1 : (DIR==Axis::Y) ? 2 : 3;
-    constexpr int t1_idx = (DIR==Axis::X) ? 2 : 1;
-    constexpr int t2_idx = (DIR==Axis::Z) ? 2 : 3;
-    const double un  = (DIR==Axis::X) ? u_roe : (DIR==Axis::Y) ? v_roe : w_roe;
-    const double ut1 = (DIR==Axis::X) ? v_roe : u_roe;
-    const double ut2 = (DIR==Axis::Z) ? v_roe : w_roe;
-
-    const double b  = (gm_roe_t-1.0) / c2;  // P14.1
-    const double b2 = b * KE;
-    const double ioc = 1.0 / c_roe;
-
-    double W[5][6];
-    for (int m = 0; m < 6; ++m) {
-        const double rho = Q[m][0];
-        const double qn  = Q[m][n_idx ];
-        const double qt1 = Q[m][t1_idx];
-        const double qt2 = Q[m][t2_idx];
-        const double E   = Q[m][4];
-        const double inner   = b2*rho - b*(un*qn + ut1*qt1 + ut2*qt2) + b*E;
-        const double delta_n = ioc*(un*rho - qn);
-        W[0][m] = 0.5*(inner + delta_n);
-        W[1][m] = (1.0 - b2)*rho + b*(un*qn + ut1*qt1 + ut2*qt2) - b*E;
-        W[2][m] = -ut1*rho + qt1;
-        W[3][m] = -ut2*rho + qt2;
-        W[4][m] = 0.5*(inner - delta_n);
-    }
-
-    double wL[5], wR[5];
-    for (int kk = 0; kk < 5; ++kk)
-        weno5z_scalar(W[kk][0], W[kk][1], W[kk][2],
-                      W[kk][3], W[kk][4], W[kk][5],
-                      wL[kk], wR[kk]);
-
-    auto back_project = [&](const double w[5], double Qrec[NVAR]) {
-        const double w014 = w[0] + w[1] + w[4];
-        const double dw04 = w[4] - w[0];
-        Qrec[0]      = w014;
-        Qrec[n_idx]  = w014*un  + dw04*c_roe;
-        Qrec[t1_idx] = w014*ut1 + w[2];
-        Qrec[t2_idx] = w014*ut2 + w[3];
-        Qrec[4]      = (w[0]+w[4])*H_roe + dw04*un*c_roe
-                     + w[1]*KE + w[2]*ut1 + w[3]*ut2;
-    };
-
-    double QL[NVAR], QRv[NVAR];
-    back_project(wL, QL);
-    back_project(wR, QRv);
-
-    // P14.1: use fallback's mixture EOS for reconstructed state validation
-    auto safe_prim = [](const double Qc[NVAR], const Prim& fallback) -> Prim {
-        const double rho = Qc[0];
-        if (rho <= 0.0) return fallback;
-        const double u   = Qc[1] / rho;
-        const double v   = Qc[2] / rho;
-        const double w   = Qc[3] / rho;
-        const double gm  = fallback.gamma_m;
-        const double pim = fallback.p_inf_m;
-        const double p   = (gm-1.0)*(Qc[4] - 0.5*rho*(u*u+v*v+w*w)) - gm*pim;
-        if (p + pim <= 0.0) return fallback;
-        Prim q; q.rho=rho; q.u=u; q.v=v; q.w=w; q.p=p;
-        q.gamma_m=gm; q.p_inf_m=pim;
-        q.T=(p+pim)/(rho*R_GAS); q.c=std::sqrt(gm*(p+pim)/rho);
-        return q;
-    };
-
-    qL_out = safe_prim(QL,  pL);
-    qR_out = safe_prim(QRv, pR);
+    Weno5Recon<DIR>{}(pc, i, j, k, qL_out, qR_out);
 }
 
 // =============================================================================
@@ -1183,17 +857,8 @@ void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
     viscous_rhs_impl(pc.data(), mu_arr.data(), rhs_blk, blk.h);
 }
 
-// R1: verify weno5_face_t satisfies SpatialReconstruction (defined above).
-namespace {
-struct _Weno5Check {
-    void operator()(const Prim* pc, int i, int j, int k,
-                    Prim& qL, Prim& qR) const noexcept {
-        weno5_face_t<Axis::X>(pc, i, j, k, qL, qR);
-    }
-};
-static_assert(SpatialReconstruction<_Weno5Check>,
-    "weno5_face_t must satisfy SpatialReconstruction");
-} // anonymous namespace
+// R2: SpatialReconstruction for weno5_face_t now verified directly on Weno5Recon<DIR>
+// in include/physics/weno5_recon.hpp. No wrapper stub needed here.
 
 // =============================================================================
 // Full RHS — P2.3 + B5 + P3.2: prim, µ, and Ducros caches built once

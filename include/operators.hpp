@@ -18,13 +18,14 @@
 // Primitive variables are computed on-the-fly inside each function (no storage).
 
 #include "block_tree.hpp"
+#include "axis.hpp"
 #include <array>
 
 // ── P13.1: compile-time axis tag ─────────────────────────────────────────────
 // Enables template<Axis DIR> flux specialisations; eliminates 3-way if/else
 // axis dispatch and asymmetric-bug surface. Underlying value matches int axis
 // convention (0=X, 1=Y, 2=Z) for backward compat with existing callers.
-enum class Axis : int { X = 0, Y = 1, Z = 2 };
+// NOTE: Axis is now defined in axis.hpp; included above.
 
 // ── Single-face HLLC flux (5 conserved variables) ────────────────────────────
 // Returns F_hllc at the interface between state L (left) and R (right).
@@ -37,16 +38,19 @@ std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept;
 // Satisfies the entropy inequality ∂η/∂t + ∂F_η/∂x ≤ 0 pointwise.
 std::array<double,5> hllc_es_flux(const Prim& L, const Prim& R, int axis) noexcept;
 
-// ── P13.1 — compile-time-axis variants (DIR known at compile time) ────────────
-// Delegates to the runtime versions until full axis-template refactor is done.
+// ── P13.1/R2 — compile-time-axis variants (DIR known at compile time) ─────────
+// R2: delegates directly to HllcFlux<DIR> / HllcEsFlux<DIR> physics functors
+// (include/physics/hllc_flux.hpp) — no runtime axis dispatch overhead.
 // Usage: auto f = hllc_es_flux_t<Axis::X>(L, R);
+#include "physics/hllc_flux.hpp"
+
 template<Axis DIR>
 inline std::array<double,5> hllc_es_flux_t(const Prim& L, const Prim& R) noexcept {
-    return hllc_es_flux(L, R, static_cast<int>(DIR));
+    return HllcEsFlux<DIR>{}(L, R);
 }
 template<Axis DIR>
 inline std::array<double,5> hllc_flux_t(const Prim& L, const Prim& R) noexcept {
-    return hllc_flux(L, R, static_cast<int>(DIR));
+    return HllcFlux<DIR>{}(L, R);
 }
 
 // ── Per-block convective RHS  dQ/dt|_conv = -(1/h)(dF/dx + dG/dy + dH/dz) ──
