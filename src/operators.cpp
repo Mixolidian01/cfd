@@ -70,8 +70,17 @@ struct _HllcCheck {
         return hllc_flux(L, R, 0);
     }
 };
+
+struct _EosCheck {
+    Prim cons_to_prim(double rho, double rhou, double rhov,
+                      double rhow, double en) const noexcept {
+        return eos_cons_to_prim(rho, rhou, rhov, rhow, en);
+    }
+};
 static_assert(RiemannFlux<_HllcCheck>,
     "hllc_flux must satisfy RiemannFlux");
+static_assert(EquationOfState<_EosCheck>,
+    "eos_cons_to_prim must satisfy EquationOfState");
 
 } // anonymous namespace
 
