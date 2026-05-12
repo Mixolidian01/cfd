@@ -125,7 +125,7 @@ static void b2_shu_osher()
     };
 
     NSSolver s;
-    s.cfg.bc              = BCType::Open;   // transmissive: no wall reflections
+    s.cfg.bc_variant = OpenBC{};   // transmissive: no wall reflections
     s.cfg.cfl             = 0.4;
     s.cfg.regrid_interval = 0;
     s.cfg.max_level       = 0;

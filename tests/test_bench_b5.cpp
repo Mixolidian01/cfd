@@ -110,7 +110,7 @@ static void b5_woodward_colella()
     };
 
     NSSolver s;
-    s.cfg.bc              = BCType::Wall;
+    s.cfg.bc_variant = WallBC{};
     s.cfg.cfl             = 0.4;
     s.cfg.regrid_interval = 0;
     s.cfg.max_level       = 0;

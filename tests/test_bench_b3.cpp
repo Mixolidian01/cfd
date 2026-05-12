@@ -95,7 +95,7 @@ static void b3_tgv()
     };
 
     NSSolver s;
-    s.cfg.bc              = BCType::Periodic;
+    s.cfg.bc_variant = PeriodicBC{};
     s.cfg.cfl             = 0.4;
     s.cfg.regrid_interval = 0;
     s.cfg.max_level       = 0;

@@ -13,6 +13,7 @@
 // Each stage: fill ghosts → compute rhs → update Q.
 // dt is recomputed from CFL at the start of each step.
 
+#include "bc_types.hpp"
 #include <memory>
 #include "sgs.hpp"
 #include "operators.hpp"
@@ -61,20 +62,13 @@ struct StepDiag {
     double total_energy;
 };
 
-// ── Boundary condition selector ───────────────────────────────────────────────────────────────
-enum class BCType {
-    Periodic,   // wrap-around in all directions
-    Wall,       // reflecting slip wall (velocity reflected, p/ρ copied)
-    Open        // zero-gradient transmissive (extrapolate from interior — no reflection)
-};
-
 // ── Solver configuration ─────────────────────────────────────────────────────────────────────────────
 struct SolverConfig {
     double cfl           = 0.8;
     double t_end         = 1.0;
     int    max_steps     = 1000000;
     int    diag_interval = 10;
-    BCType bc            = BCType::Periodic;
+    BCVariant bc_variant = PeriodicBC{};
     bool   verbose       = true;
     int    regrid_interval = 0;
     int    max_level       = 2;
@@ -103,16 +97,10 @@ struct SolverConfig {
     double ducros_p_threshold = 0.1;
     double ducros_blend_width = 0.1;
 
-    // P13.4: wall temperature for isothermal no-slip walls (BCType::Wall only).
+    // P13.4: wall temperature for isothermal no-slip walls (WallBC/ContactAngleBC only).
     // 0.0 (default) → adiabatic wall (∂T/∂n = 0, current behaviour).
     // > 0 → isothermal: ghost E is set to enforce T_ghost = 2*wall_T - T_interior.
     double wall_T = 0.0;
-
-    // P13.3: far-field pressure for entropy-stable open BCs (BCType::Open only).
-    // 0.0 (default) → zero-gradient transmissive (current behaviour).
-    // > 0 → characteristic BC: ghost pressure = open_bc_p; isentropic density +
-    //        Riemann-invariant normal velocity enforce subsonic non-reflecting outflow.
-    double open_bc_p = 0.0;
 
     // P13.5: SBP-SAT penalty coefficient at AMR C/F interfaces.
     // 0.0 (default) → disabled (pure Berger-Colella correction).
@@ -142,12 +130,12 @@ struct SolverConfig {
     double p_inf_a = 0.0;     // p∞ [Pa] for fluid A, e.g. 3.43e8 for liquid water
     double p_inf_b = 0.0;     // p∞ [Pa] for fluid B (0 = ideal gas)
 
-    // P14.2: static contact angle for phase-field at wall (BCType::Wall + use_acdi).
+    // P14.2: static contact angle for phase-field at wall (ContactAngleBC + use_acdi).
+    // Set bc_variant = ContactAngleBC{theta_deg} to activate.
     // θ_w in degrees: 90° (default) → ∂φ/∂n=0 (neutral, same as Neumann);
     //   0° → fully wetting (fluid A prefers wall); 180° → fully non-wetting.
     // Ghost BC: φ_ghost = φ_int − dist·cos(θ_w)/(acdi_ceps)·g'(φ_int),
-    //   g'(φ)=φ(1-φ)(1-2φ)/2.  Requires acdi_ceps > 0 and bc == BCType::Wall.
-    double contact_angle_wall = 90.0;   // [degrees]
+    //   g'(φ)=φ(1-φ)(1-2φ)/2.  Requires acdi_ceps > 0 and bc_variant=ContactAngleBC.
 };
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────

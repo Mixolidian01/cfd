@@ -86,7 +86,7 @@ static double total_mass(const BlockTree& tree) {
 static SolverConfig make_cfg(double cfl) {
     SolverConfig cfg;
     cfg.cfl             = cfl;
-    cfg.bc              = BCType::Periodic;
+    cfg.bc_variant = PeriodicBC{};
     cfg.regrid_interval = 0;
     cfg.verbose         = false;
     return cfg;

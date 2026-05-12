@@ -59,7 +59,7 @@ int main(int argc, char** argv) {
     cfg.cfl            = 0.4;
     cfg.t_end          = 1e30;   // we control step count manually
     cfg.max_steps      = 20;
-    cfg.bc             = BCType::Periodic;
+    cfg.bc_variant = PeriodicBC{};
     cfg.verbose        = false;
     cfg.regrid_interval = 0;
     cfg.max_level      = 1;

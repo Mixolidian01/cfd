@@ -123,13 +123,13 @@ static void s01_sgs_is_plugin() {
 // S02: NullSGS leaves KE unchanged
 static void s02_null_sgs_no_effect() {
     NSSolver s;
-    s.cfg.cfl = 0.5; s.cfg.bc = BCType::Periodic; s.cfg.verbose = false;
+    s.cfg.cfl = 0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose = false;
     s.cfg.sgs = std::make_shared<NullSGS>();
     s.init(2*acos(-1.0), tgv_ic);
     (void)global_ke(s);  // suppress unused warning
 
     NSSolver s2;
-    s2.cfg.cfl = 0.5; s2.cfg.bc = BCType::Periodic; s2.cfg.verbose = false;
+    s2.cfg.cfl = 0.5; s2.cfg.bc_variant = PeriodicBC{}; s2.cfg.verbose = false;
     s2.cfg.sgs = nullptr;  // no SGS
     s2.init(2*acos(-1.0), tgv_ic);
 
@@ -145,7 +145,7 @@ static void s02_null_sgs_no_effect() {
 static void s03_smag_dissipates() {
     NSSolver s_sgs, s_null;
     for (auto* s : {&s_sgs, &s_null}) {
-        s->cfg.cfl = 0.5; s->cfg.bc = BCType::Periodic; s->cfg.verbose = false;
+        s->cfg.cfl = 0.5; s->cfg.bc_variant = PeriodicBC{}; s->cfg.verbose = false;
         s->init(2*acos(-1.0), tgv_ic);
     }
     s_sgs.cfg.sgs  = std::make_shared<SmagorinskyModel>(0.16, 0.9);
@@ -163,7 +163,7 @@ static void s03_smag_dissipates() {
 // S04: checkpoint round-trip L∞(Q) < 1e-14
 static void s04_checkpoint_roundtrip() {
     NSSolver s;
-    s.cfg.cfl = 0.5; s.cfg.bc = BCType::Periodic; s.cfg.verbose = false;
+    s.cfg.cfl = 0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose = false;
     s.init(1.0, [](double x,double y,double z)->Prim{
         (void)z;
         double pi=acos(-1.0);
@@ -208,7 +208,7 @@ static void s04_checkpoint_roundtrip() {
 // S05: checkpoint preserves step and t
 static void s05_checkpoint_metadata() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.cfl=0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose=false;
     s.init(1.0,[](double x,double y,double z)->Prim{
         (void)x; (void)y; (void)z;
         Prim q;q.rho=1.225;q.u=0;q.v=0;q.w=0;q.p=101325;
@@ -234,7 +234,7 @@ static void s05_checkpoint_metadata() {
 // S06: VTK write creates non-empty files
 static void s06_vtk_nonempty() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.cfl=0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose=false;
     s.init(1.0,[](double x,double y,double z)->Prim{
         (void)x; (void)y; (void)z;
         Prim q;q.rho=1.225;q.u=0;q.v=0;q.w=0;q.p=101325;
@@ -253,7 +253,7 @@ static void s06_vtk_nonempty() {
 // S07: Smagorinsky is mass-conservative
 static void s07_smag_mass_conserved() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.cfl=0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose=false;
     s.cfg.sgs = std::make_shared<SmagorinskyModel>(0.16, 0.9);
     s.init(2*acos(-1.0), tgv_ic);
     double m0 = global_mass(s);
@@ -271,7 +271,7 @@ static void s07_smag_mass_conserved() {
 // threshold becomes ~7e-5, which is achievable for a conservative operator.
 static void s08_smag_momentum_conserved() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.cfl=0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose=false;
     s.cfg.sgs = std::make_shared<SmagorinskyModel>(0.16, 0.9);
     s.init(2*acos(-1.0), tgv_ic);
     double p0      = global_momx(s);
@@ -286,7 +286,7 @@ static void s08_smag_momentum_conserved() {
 // S09: DynamicSmagorinsky is mass-conservative
 static void s09_dynsmag_mass_conserved() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.cfl=0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose=false;
     s.cfg.sgs = std::make_shared<DynamicSmagorinskyModel>(0.9);
     s.init(2*acos(-1.0), tgv_ic);
     double m0 = global_mass(s);
@@ -299,7 +299,7 @@ static void s09_dynsmag_mass_conserved() {
 // S10: DynamicSmagorinsky is momentum-conservative (periodic domain)
 static void s10_dynsmag_momentum_conserved() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.cfl=0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose=false;
     s.cfg.sgs = std::make_shared<DynamicSmagorinskyModel>(0.9);
     s.init(2*acos(-1.0), tgv_ic);
     double p0      = global_momx(s);

@@ -107,7 +107,7 @@ static void p75_dns_tgv()
     const double ek_exact = M_PI*M_PI*M_PI / V;
 
     NSSolver s;
-    s.cfg.bc              = BCType::Periodic;
+    s.cfg.bc_variant = PeriodicBC{};
     s.cfg.cfl             = 0.50;
     s.cfg.regrid_interval = 0;
     s.cfg.max_level       = 0;

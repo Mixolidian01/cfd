@@ -34,7 +34,7 @@ static void check(const char* name, bool cond, double got=-1, double thr=-1) {
 static void t01_mass_conservation() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.max_steps=100; s.cfg.t_end=1e30;
-    s.cfg.bc=BCType::Periodic; s.cfg.verbose=false; s.cfg.diag_interval=100;
+    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=100;
     double pi = std::acos(-1.0);
     s.init(1.0, [&](double x, double y, double z) {
         (void)z;
@@ -56,7 +56,7 @@ static void t01_mass_conservation() {
 static void t02_momentum_conservation() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.max_steps=50; s.cfg.t_end=1e30;
-    s.cfg.bc=BCType::Periodic; s.cfg.verbose=false; s.cfg.diag_interval=50;
+    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=50;
     s.init(1.0, [](double,double,double) {
         Prim q; q.rho=1.225; q.u=10.0; q.v=0.0; q.w=0.0;
         q.p=101325.0; q.T=q.p/(q.rho*R_GAS); q.c=std::sqrt(GAMMA*q.p/q.rho);
@@ -106,7 +106,7 @@ static void t03_rk3_order() {
 static void t04_total_energy_conservation() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.max_steps=100; s.cfg.t_end=1e30;
-    s.cfg.bc=BCType::Periodic; s.cfg.verbose=false; s.cfg.diag_interval=100;
+    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=100;
     double pi = std::acos(-1.0);
     s.init(1.0, [&](double x, double y, double) {
         Prim q;
@@ -131,7 +131,7 @@ static void t04_total_energy_conservation() {
 static void t05_ke_conservation() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.max_steps=20; s.cfg.t_end=1e30;
-    s.cfg.bc=BCType::Periodic; s.cfg.verbose=false; s.cfg.diag_interval=20;
+    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=20;
     double pi=std::acos(-1.0);
     s.init(1.0, [&](double x, double y, double) {
         Prim q; q.rho=1.225;
@@ -154,7 +154,7 @@ static void t05_ke_conservation() {
 static void t06_tgv_ke_decay() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.max_steps=20; s.cfg.t_end=1e30;
-    s.cfg.bc=BCType::Periodic; s.cfg.verbose=false; s.cfg.diag_interval=1;
+    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=1;
     double pi=std::acos(-1.0);
     double L=2.0*pi;
     s.init(L, [&](double x, double y, double) {
@@ -184,7 +184,7 @@ static void t06_tgv_ke_decay() {
 static void t07_cfl_bound() {
     NSSolver s;
     s.cfg.cfl=0.8; s.cfg.max_steps=30; s.cfg.t_end=1e30;
-    s.cfg.bc=BCType::Periodic; s.cfg.verbose=false; s.cfg.diag_interval=30;
+    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=30;
     s.init(1.0, [](double,double,double){
         Prim q; q.rho=1.225; q.u=50.0; q.v=0; q.w=0;
         q.p=101325.0; q.T=q.p/(q.rho*R_GAS); q.c=std::sqrt(GAMMA*q.p/q.rho);
@@ -205,7 +205,7 @@ static void t07_cfl_bound() {
 static void t08_diagnostics() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.max_steps=50; s.cfg.t_end=1e30;
-    s.cfg.bc=BCType::Periodic; s.cfg.verbose=false; s.cfg.diag_interval=10;
+    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=10;
     s.init(1.0,[](double,double,double){
         Prim q; q.rho=1.225; q.u=0; q.v=0; q.w=0;
         q.p=101325.0; q.T=q.p/(q.rho*R_GAS); q.c=std::sqrt(GAMMA*q.p/q.rho);
@@ -226,7 +226,7 @@ static void t08_diagnostics() {
 static void t09_imex_mass_conservation() {
     NSSolver s;
     s.cfg.cfl=0.3; s.cfg.max_steps=20; s.cfg.t_end=1e30;
-    s.cfg.bc=BCType::Periodic; s.cfg.verbose=false; s.cfg.diag_interval=20;
+    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=20;
     s.cfg.use_imex=true; s.cfg.mg_levels=3;
     double pi = std::acos(-1.0);
     s.init(1.0, [&](double x, double y, double z) {
@@ -271,7 +271,7 @@ static void t10_lts_mass_energy() {
     s.cfg.cfl             = 0.3;
     s.cfg.max_steps       = 10;
     s.cfg.t_end           = 1e30;
-    s.cfg.bc              = BCType::Periodic;
+    s.cfg.bc_variant = PeriodicBC{};
     s.cfg.verbose         = false;
     s.cfg.diag_interval   = 100;
     s.cfg.regrid_interval = 0;   // manual refine below; no auto-regrid during run
@@ -335,7 +335,7 @@ static void t11_sat_penalty() {
         s.cfg.cfl             = 0.3;
         s.cfg.max_steps       = 5;
         s.cfg.t_end           = 1e30;
-        s.cfg.bc              = BCType::Periodic;
+        s.cfg.bc_variant = PeriodicBC{};
         s.cfg.verbose         = false;
         s.cfg.diag_interval   = 100;
         s.cfg.regrid_interval = 0;
@@ -382,7 +382,7 @@ static void t12_phi_advection() {
     s.cfg.cfl           = 0.3;
     s.cfg.max_steps     = 5;
     s.cfg.t_end         = 1e30;
-    s.cfg.bc            = BCType::Periodic;
+    s.cfg.bc_variant = PeriodicBC{};
     s.cfg.verbose       = false;
     s.cfg.diag_interval = 100;
     s.cfg.use_acdi      = true;
@@ -459,7 +459,7 @@ static void t13_phi_compression() {
     s.cfg.cfl           = 0.3;
     s.cfg.max_steps     = 5;
     s.cfg.t_end         = 1e30;
-    s.cfg.bc            = BCType::Periodic;
+    s.cfg.bc_variant = PeriodicBC{};
     s.cfg.verbose       = false;
     s.cfg.diag_interval = 100;
     s.cfg.use_acdi      = true;
@@ -516,7 +516,7 @@ static void t14_phi_amr() {
     s.cfg.cfl             = 0.3;
     s.cfg.max_steps       = 5;
     s.cfg.t_end           = 1e30;
-    s.cfg.bc              = BCType::Periodic;
+    s.cfg.bc_variant = PeriodicBC{};
     s.cfg.verbose         = false;
     s.cfg.diag_interval   = 100;
     s.cfg.regrid_interval = 0;
@@ -599,7 +599,7 @@ static void t15_sg_eos_pressure_equilibrium() {
     s.cfg.cfl           = 0.3;
     s.cfg.max_steps     = 5;
     s.cfg.t_end         = 1e30;
-    s.cfg.bc            = BCType::Periodic;
+    s.cfg.bc_variant = PeriodicBC{};
     s.cfg.verbose       = false;
     s.cfg.diag_interval = 100;
     s.cfg.use_acdi      = true;
@@ -702,12 +702,11 @@ static void t16_wall_contact_angle() {
         s.cfg.cfl                = 0.3;
         s.cfg.max_steps          = 5;
         s.cfg.t_end              = 1e30;
-        s.cfg.bc                 = BCType::Wall;
+        s.cfg.bc_variant         = ContactAngleBC{theta_deg};
         s.cfg.verbose            = false;
         s.cfg.diag_interval      = 100;
         s.cfg.use_acdi           = true;
         s.cfg.acdi_ceps          = ceps;
-        s.cfg.contact_angle_wall = theta_deg;
 
         const double rho0 = 1.225, p0 = 101325.0;
         std::function<double(double,double,double)> phi_ic =

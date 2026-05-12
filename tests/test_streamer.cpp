@@ -94,7 +94,7 @@ int main() {
     solver.cfg.t_end         = 1e30;   // run until max_steps
     solver.cfg.max_steps     = 50;
     solver.cfg.cfl           = 0.4;
-    solver.cfg.bc            = BCType::Periodic;
+    solver.cfg.bc_variant = PeriodicBC{};
     solver.cfg.verbose       = false;
     solver.cfg.diag_interval = 999;
     solver.set_streamer(&streamer);

@@ -218,7 +218,7 @@ static void b1_sod_shock_tube()
     };
 
     NSSolver s;
-    s.cfg.bc             = BCType::Wall;   // reflecting walls; waves don't reach
+    s.cfg.bc_variant = WallBC{};   // reflecting walls; waves don't reach
     s.cfg.cfl            = 0.4;            // boundaries by t=0.2 so no reflection
     s.cfg.regrid_interval = 0;             // fixed mesh during run
     s.cfg.max_level      = 0;

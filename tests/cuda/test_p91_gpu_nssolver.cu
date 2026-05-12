@@ -116,7 +116,7 @@ static QSnap run_cpu(int nstep, double cfl, std::vector<double>* dts = nullptr) 
     NSSolver solver;
     SolverConfig cfg;
     cfg.cfl            = cfl;
-    cfg.bc             = BCType::Periodic;
+    cfg.bc_variant = PeriodicBC{};
     cfg.regrid_interval = 0;
     cfg.verbose        = false;
     solver.cfg = cfg;

@@ -157,7 +157,7 @@ int main() {
         cfg.cfl = 0.4;
         cfg.t_end = 1e30;
         cfg.max_steps = 20;
-        cfg.bc = BCType::Periodic;
+        cfg.bc_variant = PeriodicBC{};
         cfg.verbose = false;
         cfg.regrid_interval = 5;
         cfg.max_level = 2;

@@ -29,6 +29,12 @@
 #include <cmath>
 #include <cstdio>
 
+// R3: overloaded helper for std::visit dispatch (C++17 deduction-guide, C++20 compatible).
+template<class... Ts>
+struct overloaded : Ts... { using Ts::operator()...; };
+template<class... Ts>
+overloaded(Ts...) -> overloaded<Ts...>;
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -56,7 +62,7 @@ void NSSolver::init(double domain_L,
     // P4.1-fix: set periodic flag BEFORE tree.init() so that every subsequent
     // rebuild_neighbours() call (triggered by refine/balance) wraps domain-boundary
     // C/F faces into the periodic neighbour table.
-    tree.set_periodic(cfg.bc == BCType::Periodic);
+    tree.set_periodic(bc_is_periodic(cfg.bc_variant));
     tree.init(domain_L);
     t = 0.0; step = 0;
     history.clear();
@@ -156,19 +162,23 @@ double NSSolver::advance() {
     // P4.1: LTS path — only if tree has more than one level.
     if (cfg.use_lts && tree.max_leaf_level() > 0) return advance_lts();
 
-    bool periodic = (cfg.bc == BCType::Periodic);
-    bool open_bc   = (cfg.bc == BCType::Open);
+    bool periodic = bc_is_periodic(cfg.bc_variant);
+    bool open_bc  = bc_is_open(cfg.bc_variant);
 
     // P11.6: propagate configurable Ducros thresholds before RHS evaluation.
     set_ducros_thresholds(cfg.ducros_p_threshold, cfg.ducros_blend_width);
     // P13.4: propagate isothermal wall temperature (0 = adiabatic).
     BlockTree::set_wall_T(cfg.wall_T);
     // P13.3: propagate far-field pressure for characteristic open BC (0 = zero-gradient).
-    BlockTree::set_open_bc_pressure(cfg.open_bc_p);
+    if (auto* ob = std::get_if<OpenBC>(&cfg.bc_variant))
+        BlockTree::set_open_bc_pressure(ob->far_field_pressure);
+    else
+        BlockTree::set_open_bc_pressure(0.0);
     // P14.2: wall contact angle BC for phase-field (0° cos = neutral/Neumann).
     {
-        const double ca_cos = (cfg.use_acdi && cfg.bc == BCType::Wall)
-            ? std::cos(cfg.contact_angle_wall * (M_PI / 180.0)) : 0.0;
+        double ca_cos = 0.0;
+        if (auto* ca = std::get_if<ContactAngleBC>(&cfg.bc_variant); ca && cfg.use_acdi)
+            ca_cos = std::cos(ca->contact_angle_deg * (M_PI / 180.0));
         BlockTree::set_wall_contact_angle(ca_cos, cfg.acdi_ceps);
     }
     // P14.1c: activate stiffened-gas mixture EOS when ACDI is on and fluids differ.
@@ -318,9 +328,12 @@ double NSSolver::advance() {
     // After copy_stage_to_tree() the interior holds Q^{n+1} but ghosts
     // still carry Q^{(2)} from Stage 3's fill_ghosts call inside tree_rhs().
     if (cfg.sgs) {
-        if (periodic) tree.fill_ghosts_periodic();
-        else if (cfg.bc == BCType::Open) tree.fill_ghosts_open();
-        else          tree.fill_ghosts_wall();
+        std::visit(overloaded{
+            [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
+            [&](const OpenBC&)          { tree.fill_ghosts_open(); },
+            [&](const WallBC&)          { tree.fill_ghosts_wall(); },
+            [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
+        }, cfg.bc_variant);
         for (int li : tree.leaf_indices())
             cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
     }
@@ -403,8 +416,8 @@ double NSSolver::advance() {
 // geometrically for any α/h² (M-matrix property).
 // =============================================================================
 double NSSolver::advance_imex() {
-    bool periodic = (cfg.bc == BCType::Periodic);
-    bool open_bc   = (cfg.bc == BCType::Open);
+    bool periodic = bc_is_periodic(cfg.bc_variant);
+    bool open_bc  = bc_is_open(cfg.bc_variant);
 
     // ── Step 1: same regrid + SSP-RK3 as advance() ───────────────────────
     if (cfg.regrid_interval > 0 && step > 0 &&
@@ -472,9 +485,12 @@ double NSSolver::advance_imex() {
 
     // ── Step 2: implicit viscous Helmholtz correction per block ──────────
     // Refresh ghosts so per-block velocity stencils see Q^{n+1} values.
-    if (periodic) tree.fill_ghosts_periodic();
-    else if (cfg.bc == BCType::Open) tree.fill_ghosts_open();
-        else          tree.fill_ghosts_wall();
+    std::visit(overloaded{
+        [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
+        [&](const OpenBC&)          { tree.fill_ghosts_open(); },
+        [&](const WallBC&)          { tree.fill_ghosts_wall(); },
+        [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
+    }, cfg.bc_variant);
 
     // Per-call NB³ scratch (thread_local avoids repeated heap allocation).
     static thread_local std::vector<double> uf(NB*NB*NB);
@@ -551,9 +567,12 @@ double NSSolver::advance_imex() {
 
     // SGS operator split (same as advance()).
     if (cfg.sgs) {
-        if (periodic) tree.fill_ghosts_periodic();
-        else if (cfg.bc == BCType::Open) tree.fill_ghosts_open();
-        else          tree.fill_ghosts_wall();
+        std::visit(overloaded{
+            [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
+            [&](const OpenBC&)          { tree.fill_ghosts_open(); },
+            [&](const WallBC&)          { tree.fill_ghosts_wall(); },
+            [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
+        }, cfg.bc_variant);
         for (int li : tree.leaf_indices())
             cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
     }
@@ -643,8 +662,8 @@ void NSSolver::copy_stage_to_tree_level(const std::vector<CellBlock>& stage, int
 // the CURRENT coarse solution (frozen-coarse approximation for fine sub-steps).
 // =============================================================================
 void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coarse_mode) {
-    bool periodic = (cfg.bc == BCType::Periodic);
-    bool open_bc   = (cfg.bc == BCType::Open);
+    bool periodic = bc_is_periodic(cfg.bc_variant);
+    bool open_bc  = bc_is_open(cfg.bc_variant);
     const auto& leaves = tree.leaf_indices();
     const int NL = (int)leaves.size();
 
@@ -790,7 +809,7 @@ void NSSolver::alloc_scratch() {
 // =============================================================================
 void NSSolver::regrid() {
     bool topology_changed = false;
-    bool periodic = (cfg.bc == BCType::Periodic);
+    bool periodic = bc_is_periodic(cfg.bc_variant);
 
     // ── Pass 1: refinement ────────────────────────────────────────────────
     {
@@ -815,9 +834,12 @@ void NSSolver::regrid() {
     // spuriously coarsen them immediately in the same regrid cycle.
     if (topology_changed) {
         tree.rebuild_neighbours();
-        if (periodic) tree.fill_ghosts_periodic();
-        else if (cfg.bc == BCType::Open) tree.fill_ghosts_open();
-        else          tree.fill_ghosts_wall();
+        std::visit(overloaded{
+            [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
+            [&](const OpenBC&)          { tree.fill_ghosts_open(); },
+            [&](const WallBC&)          { tree.fill_ghosts_wall(); },
+            [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
+        }, cfg.bc_variant);
     }
 
     // ── Pass 2: coarsening ────────────────────────────────────────────────
@@ -858,22 +880,18 @@ void NSSolver::regrid() {
 
     tree.balance();
     tree.rebuild_neighbours();
-    if (periodic)
-        tree.fill_ghosts_periodic();
-    else if (cfg.bc == BCType::Open)
-        tree.fill_ghosts_open();
-    else
-        tree.fill_ghosts_wall();
+    std::visit(overloaded{
+        [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
+        [&](const OpenBC&)          { tree.fill_ghosts_open(); },
+        [&](const WallBC&)          { tree.fill_ghosts_wall(); },
+        [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
+    }, cfg.bc_variant);
 
     scratch_leaf_count_ = -1;
     alloc_scratch();
 
     // A3: rebuild GPU lists after topology change (new d_Q pointers; stale
     // CUDA graphs from the previous build would reference freed memory).
-    if (gpu_solver_) {
-        int bc_type = 0;
-        if (cfg.bc == BCType::Wall) bc_type = 1;
-        else if (cfg.bc == BCType::Open) bc_type = 2;
-        gpu_solver_->build(tree, *gpu_pool_, bc_type);
-    }
+    if (gpu_solver_)
+        gpu_solver_->build(tree, *gpu_pool_, bc_to_int(cfg.bc_variant));
 }
