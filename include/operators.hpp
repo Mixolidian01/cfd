@@ -96,17 +96,16 @@ void tree_rhs(BlockTree& tree,
               bool   open_bc             = false) noexcept;
 
 // ── R5: typed entry-point (Flux × Recon × EOS resolved at compile time) ──────
-// Concept constraints applied at this call site (Layer C, CLAUDE.md R5).
-// Delegates to compute_rhs for now; R5-extension will parameterise the impl.
-// Template body is defined here so explicit instantiations in
-// instantiation_matrix.cpp can see it (standard C++ ODR requirement).
-template<RiemannFlux Flux, SpatialReconstruction Recon, EquationOfState EOS>
-void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
-                       Flux /*flux*/, Recon /*recon*/, EOS /*eos*/) noexcept {
-    // Delegates to untemplated compute_rhs for now.
-    // R5-extension: parameterise compute_rhs_impl with flux/recon/eos functors.
-    compute_rhs(blk, rhs_blk);
-}
+// Template template parameters so the loop over Axis::X/Y/Z inside
+// operators.cpp can instantiate Flux<Axis::X>, Flux<Axis::Y>, Flux<Axis::Z>
+// from a single template argument.  Concept constraints applied here via
+// requires (Layer C, CLAUDE.md R5).  Body lives in operators.cpp; explicit
+// instantiations at the bottom of that TU satisfy the ODR.
+template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
+    requires RiemannFlux<Flux<Axis::X>>
+          && SpatialReconstruction<Recon<Axis::X>>
+          && EquationOfState<EOS>
+void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 
 // ── P14.1: Stiffened-gas mixture EOS activation ──────────────────────────────
 // Call once per advance() before tree_rhs() when use_acdi && gamma_a != gamma_b.

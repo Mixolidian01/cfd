@@ -10,7 +10,11 @@ struct CPUSerial {};
 struct GPUCuda   {};
 
 // Top-level solver interface returned by make_solver().
+// ISolver is host-only; virtual is intentional and correct here (CLAUDE.md R4).
 struct ISolver {
+    virtual void   init(double domain_L,
+                        const std::function<Prim(double,double,double)>& ic,
+                        const std::function<double(double,double,double)>* phi_ic = nullptr) = 0;
     virtual double advance() = 0;
     virtual void   run()     = 0;
     virtual ~ISolver() = default;

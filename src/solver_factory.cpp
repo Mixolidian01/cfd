@@ -6,6 +6,11 @@
 // CpuSolverWrapper — ISolver backed by an NSSolver.
 struct CpuSolverWrapper : ISolver {
     NSSolver solver;
+    void   init(double domain_L,
+                const std::function<Prim(double,double,double)>& ic,
+                const std::function<double(double,double,double)>* phi_ic) override {
+        solver.init(domain_L, ic, phi_ic);
+    }
     double advance() override { return solver.advance(); }
     void   run()     override { solver.run(); }
 };

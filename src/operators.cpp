@@ -475,6 +475,71 @@ static void convective_rhs_impl(const Prim* pc, const double* duc,
 }
 
 // =============================================================================
+// R5 — Typed convective kernel: Flux × Recon resolved at compile time
+// =============================================================================
+// accumulate_face_typed mirrors accumulate_face exactly, replacing the
+// hardcoded weno5_face_t / hllc_es_flux_t calls with functor invocations
+// Recon<DIR>{}(...) and Flux<DIR>{}(...).
+template<Axis DIR, template<Axis> class Flux, template<Axis> class Recon>
+static void accumulate_face_typed(const Prim* pc, const double* duc,
+                                   CellBlock& rhs, double ih,
+                                   int n, int a, int b) noexcept {
+    constexpr double kep_threshold = 1.0e-8;
+    const auto [Li, Ri] = face_lr_idx<DIR>(n, a, b);
+    const Prim& pL = pc[Li];
+    const Prim& pR = pc[Ri];
+    const double theta = std::max(duc[Li], duc[Ri]);
+    const bool is_bnd = (n < ilo() || n+1 > ihi());
+
+    std::array<double,NVAR> F;
+    if (!is_bnd && theta < kep_threshold) {
+        F = kep_flux_t<DIR>(pL, pR);
+    } else {
+        const auto Fk = kep_flux_t<DIR>(pL, pR);
+        std::array<double,NVAR> Fs;
+        if (!is_bnd) {
+            int xi, yi, zi;
+            face_to_ijk<DIR>(n, a, b, xi, yi, zi);
+            Prim qL, qR;
+            Recon<DIR>{}(pc, xi, yi, zi, qL, qR);
+            Fs = Flux<DIR>{}(qL, qR);
+        } else if (is_wall_ghost(pL, pR)) {
+            Fs = Fk;
+        } else {
+            Fs = Flux<DIR>{}(pL, pR);
+        }
+        const double th = is_bnd ? 1.0 : theta;
+        const double om = 1.0 - th;
+        for (int v = 0; v < NVAR; ++v) F[v] = om * Fk[v] + th * Fs[v];
+    }
+    if (n >= ilo())
+        for (int v = 0; v < NVAR; ++v) rhs.Q[v][Li] -= ih * F[v];
+    if (n+1 <= ihi())
+        for (int v = 0; v < NVAR; ++v) rhs.Q[v][Ri] += ih * F[v];
+}
+
+template<template<Axis> class Flux, template<Axis> class Recon>
+static void convective_rhs_impl_typed(const Prim* pc, const double* duc,
+                                       CellBlock& rhs, double h) noexcept {
+    const double ih = 1.0 / h;
+
+    for (int k = ilo(); k <= ihi(); ++k)
+    for (int j = ilo(); j <= ihi(); ++j)
+    for (int i = ilo()-1; i <= ihi(); ++i)
+        accumulate_face_typed<Axis::X,Flux,Recon>(pc, duc, rhs, ih, i, j, k);
+
+    for (int k = ilo(); k <= ihi(); ++k)
+    for (int j = ilo()-1; j <= ihi(); ++j)
+    for (int i = ilo(); i <= ihi(); ++i)
+        accumulate_face_typed<Axis::Y,Flux,Recon>(pc, duc, rhs, ih, j, i, k);
+
+    for (int k = ilo()-1; k <= ihi(); ++k)
+    for (int j = ilo(); j <= ihi(); ++j)
+    for (int i = ilo(); i <= ihi(); ++i)
+        accumulate_face_typed<Axis::Z,Flux,Recon>(pc, duc, rhs, ih, k, i, j);
+}
+
+// =============================================================================
 // B5 — Viscous RHS: face-averaged µ, conservative divergence form
 // =============================================================================
 // Replaces the old constant-µ expansion  a_i = µ·(Δu_i + ⅓ ∂(div u)/∂x_i).
@@ -697,6 +762,47 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
     convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h);
     viscous_rhs_impl   (pc.data(), mu_arr.data(),         rhs_blk, blk.h);
 }
+
+// =============================================================================
+// R5 — compute_rhs_typed: typed dispatch for (Flux × Recon × EOS) combinations
+// =============================================================================
+// Body lives here (not in operators.hpp) because all static helpers
+// (kep_flux_t, fill_prim_cache, fill_ducros_cache, etc.) are TU-private.
+// Explicit instantiations at the bottom of this file satisfy the ODR for all
+// supported combinations; callers link to those pre-compiled specialisations.
+template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
+    requires RiemannFlux<Flux<Axis::X>>
+          && SpatialReconstruction<Recon<Axis::X>>
+          && EquationOfState<EOS>
+void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk) noexcept
+{
+    static thread_local std::array<Prim,   NCELL> pc;
+    static thread_local std::array<double, NCELL> mu_arr;
+    static thread_local std::array<double, NCELL> duc;
+    fill_prim_cache(blk, pc.data());
+    fill_mu_cache(pc.data(), mu_arr.data());
+    fill_ducros_cache(pc.data(), duc.data(), blk.h);
+
+    for (int v = 0; v < NVAR; ++v)
+        for (int k = ilo(); k <= ihi(); ++k)
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i)
+            rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
+
+    convective_rhs_impl_typed<Flux,Recon>(pc.data(), duc.data(), rhs_blk, blk.h);
+    viscous_rhs_impl          (pc.data(), mu_arr.data(),          rhs_blk, blk.h);
+}
+
+// Explicit instantiations — one row per supported (Flux × Recon × EOS) combination.
+// Add a new row here when a new scheme is introduced.
+#include "physics/hllc_flux.hpp"
+#include "physics/weno5_recon.hpp"
+#include "physics/ideal_gas_eos.hpp"
+
+template void compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
+    const CellBlock&, CellBlock&) noexcept;
+template void compute_rhs_typed<HllcFlux,   Weno5Recon, IdealGasEOS>(
+    const CellBlock&, CellBlock&) noexcept;
 
 // =============================================================================
 // Berger-Colella reflux: undo_cf_face_flux

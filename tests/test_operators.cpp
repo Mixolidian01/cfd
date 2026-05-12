@@ -401,10 +401,7 @@ static void t_scheme_selection() {
     CellBlock rhs_typed  (0.0, 0.0, 0.0, blk.h);
 
     compute_rhs(blk, rhs_default);
-    compute_rhs_typed(blk, rhs_typed,
-                      HllcEsFlux<Axis::X>{},
-                      Weno5Recon<Axis::X>{},
-                      IdealGasEOS{});
+    compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(blk, rhs_typed);
 
     double max_diff = 0.0;
     for (int v = 0; v < NVAR; ++v)
