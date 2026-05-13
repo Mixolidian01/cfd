@@ -75,6 +75,8 @@ void SolverConfig::validate() const {
         throw std::invalid_argument("SolverConfig: ducros_p_threshold must be in [0, 1]");
     if (ducros_blend_width < 0.0)
         throw std::invalid_argument("SolverConfig: ducros_blend_width must be >= 0");
+    // Note: ducros_blend_width == 0.0 is coerced to 1e-30 in fill_ducros_cache,
+    // producing a step function rather than a ramp — set >= 1e-30 for a smooth blend.
     // wall_T == 0.0 is the adiabatic sentinel; any positive value is an
     // isothermal temperature.  Negative values are always invalid.
     if (wall_T < 0.0)
@@ -246,6 +248,8 @@ double NSSolver::advance() {
         }
         if (tree.max_leaf_level() == 0) {
             // Flat tree: full GPU path (no flux correction needed).
+            // NOTE: gpu_rhs.cu hardcodes ducros p_threshold=0.1 and blend_width=0.1;
+            // cfg.ducros_p_threshold/blend_width have no effect on this path (R9-D).
             const double dt = gpu_solver_->advance(tree, cfg.cfl);
             gpu_solver_->download_q(tree);
             last_dt_ = dt;
