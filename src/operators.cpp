@@ -63,6 +63,14 @@
 #  include <omp.h>
 #endif
 
+// ── R7: Differential operator concept verification ─────────────────────────
+static_assert(ScalarCellOperator<CellGrad<Axis::X>>);
+static_assert(ScalarCellOperator<CellGrad<Axis::X, 4>>);
+static_assert(ScalarFaceOperator<FaceGrad<Axis::X>>);
+static_assert(ScalarFaceOperator<FaceGrad<Axis::X, 4>>);
+static_assert(TensorFaceOperator<VelocityGradAtFace<Axis::X>>);
+static_assert(TensorFaceOperator<VelocityGradAtFace<Axis::X, 4>>);
+
 // =============================================================================
 // P14.1: Stiffened-gas EOS global state
 // Set once per advance() from NSSolver when use_acdi && use_sg_eos is true.

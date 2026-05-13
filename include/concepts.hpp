@@ -52,3 +52,31 @@ template<typename F>
 inline constexpr bool is_conservative_v    = is_conservative<F>::value;
 template<typename F>
 inline constexpr bool is_skew_symmetric_v  = is_skew_symmetric<F>::value;
+
+// ── R7: Differential operator concepts ───────────────────────────────────────
+// _FieldProbe: a concrete callable type to probe concept requirements without
+// depending on a specific Field template instantiation.
+using _FieldProbe = double(*)(int, int, int);
+
+template<typename Op>
+concept ScalarCellOperator =
+    std::is_trivially_copyable_v<Op> &&
+    requires(Op op, _FieldProbe f, int i, int j, int k, double h) {
+        { op(f, i, j, k, h) } -> std::convertible_to<double>;
+    };
+
+template<typename Op>
+concept ScalarFaceOperator =
+    std::is_trivially_copyable_v<Op> &&
+    requires(Op op, _FieldProbe f, int i, int j, int k, double h) {
+        { op.normal(f, i, j, k, h) } -> std::convertible_to<double>;
+    };
+
+template<typename Op>
+concept TensorFaceOperator =
+    std::is_trivially_copyable_v<Op> &&
+    requires(Op op, _FieldProbe u, _FieldProbe v, _FieldProbe w,
+             int i, int j, int k, double h) {
+        { op.plus (u, v, w, i, j, k, h) };
+        { op.minus(u, v, w, i, j, k, h) };
+    };
