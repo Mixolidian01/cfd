@@ -54,6 +54,7 @@
 #include "concepts.hpp"
 #include "physics/hllc_flux.hpp"
 #include "physics/weno5_recon.hpp"
+#include "physics/diff_ops.hpp"
 
 #include <cmath>
 #include <algorithm>
@@ -1353,46 +1354,48 @@ void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 void phi_compression_rhs(const CellBlock& blk, CellBlock& rhs_blk,
                           double ceps) noexcept
 {
-    const double h       = blk.h;
-    const double inv2h   = 0.5 / h;
-    const double eps     = ceps * h;
-    const double eps_sq  = 1e-10 / (h * h);  // regularise |∇φ|² near zero
+    const double h      = blk.h;
+    const double eps    = ceps * h;
+    const double eps_sq = 1e-10 / (h * h);
 
-    // Pass 1: flux components at cells covering interior + 1-cell halo.
-    // Stack-allocated (3 × 1728 × 8 B ≈ 41 kB; within typical stack budget).
     alignas(64) double Fx[NCELL] = {};
     alignas(64) double Fy[NCELL] = {};
     alignas(64) double Fz[NCELL] = {};
 
     static_assert(NG >= 2, "phi_compression_rhs needs NG>=2 for halo stencil");
 
+    constexpr CellGrad<Axis::X, 2> dX;
+    constexpr CellGrad<Axis::Y, 2> dY;
+    constexpr CellGrad<Axis::Z, 2> dZ;
+    auto Phi = [&blk](int i, int j, int k){ return blk.phi(i, j, k); };
+
+    // Pass 1: compute interface-compression flux F = ε·(∇φ − φ(1−φ)·n̂)
     for (int k = NG-1; k <= NG+NB; ++k)
     for (int j = NG-1; j <= NG+NB; ++j)
     for (int i = NG-1; i <= NG+NB; ++i) {
-        const double dpx = (blk.phi(i+1,j,k) - blk.phi(i-1,j,k)) * inv2h;
-        const double dpy = (blk.phi(i,j+1,k) - blk.phi(i,j-1,k)) * inv2h;
-        const double dpz = (blk.phi(i,j,k+1) - blk.phi(i,j,k-1)) * inv2h;
-        const double mag2 = dpx*dpx + dpy*dpy + dpz*dpz + eps_sq;
+        const double dpx   = dX(Phi, i, j, k, h);
+        const double dpy   = dY(Phi, i, j, k, h);
+        const double dpz   = dZ(Phi, i, j, k, h);
+        const double mag2  = dpx*dpx + dpy*dpy + dpz*dpz + eps_sq;
         const double inv_mag = 1.0 / std::sqrt(mag2);
-        const double phi_c = blk.phi(i,j,k);
-        const double g = phi_c * (1.0 - phi_c);
-        const int flat = cell_idx(i,j,k);
-        // F = ε · (∇φ − g·n̂)  where n̂ = ∇φ/|∇φ|
+        const double phi_c = blk.phi(i, j, k);
+        const double g     = phi_c * (1.0 - phi_c);
+        const int flat     = cell_idx(i, j, k);
         Fx[flat] = eps * (dpx - g * dpx * inv_mag);
         Fy[flat] = eps * (dpy - g * dpy * inv_mag);
         Fz[flat] = eps * (dpz - g * dpz * inv_mag);
     }
 
-    // Pass 2: central-difference divergence → add to rhs phi.
+    // Pass 2: central-difference divergence of F → add to rhs phi
+    constexpr CellDiv<2> divOp;
+    auto Fxa = [&Fx](int i, int j, int k){ return Fx[cell_idx(i,j,k)]; };
+    auto Fya = [&Fy](int i, int j, int k){ return Fy[cell_idx(i,j,k)]; };
+    auto Fza = [&Fz](int i, int j, int k){ return Fz[cell_idx(i,j,k)]; };
+
     for (int k = NG; k < NG+NB; ++k)
     for (int j = NG; j < NG+NB; ++j)
-    for (int i = NG; i < NG+NB; ++i) {
-        const double divF =
-            (Fx[cell_idx(i+1,j,k)] - Fx[cell_idx(i-1,j,k)]) * inv2h +
-            (Fy[cell_idx(i,j+1,k)] - Fy[cell_idx(i,j-1,k)]) * inv2h +
-            (Fz[cell_idx(i,j,k+1)] - Fz[cell_idx(i,j,k-1)]) * inv2h;
-        rhs_blk.phi_data_[cell_idx(i,j,k)] += divF;
-    }
+    for (int i = NG; i < NG+NB; ++i)
+        rhs_blk.phi_data_[cell_idx(i,j,k)] += divOp(Fxa, Fya, Fza, i, j, k, h);
 }
 
 // =============================================================================
