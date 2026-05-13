@@ -28,6 +28,8 @@
 //             with 3×3×3 box test filter at 2Δ.  Shared stress-divergence
 //             helper apply_sgs_stress_div() extracted to avoid duplication.
 #include "../include/sgs.hpp"
+#include "../include/physics/diff_ops.hpp"
+#include "../include/physics/face_interp.hpp"
 #include <cmath>
 #include <algorithm>
 #include <vector>
@@ -39,13 +41,15 @@ static constexpr double SGS_CP = GAMMA * R_GAS / (GAMMA - 1.0);
 // ── Strain-rate magnitude ─────────────────────────────────────────────────────
 double SmagorinskyModel::strain_rate(const CellBlock& b, double h_inv,
                                      int i, int j, int k) {
-    double h2 = 0.5 * h_inv;
-    double Sxx = h2*(b.u(i+1,j,k) - b.u(i-1,j,k));
-    double Syy = h2*(b.v(i,j+1,k) - b.v(i,j-1,k));
-    double Szz = h2*(b.w(i,j,k+1) - b.w(i,j,k-1));
-    double Sxy = 0.5*h2*((b.u(i,j+1,k)-b.u(i,j-1,k))+(b.v(i+1,j,k)-b.v(i-1,j,k)));
-    double Sxz = 0.5*h2*((b.u(i,j,k+1)-b.u(i,j,k-1))+(b.w(i+1,j,k)-b.w(i-1,j,k)));
-    double Syz = 0.5*h2*((b.v(i,j,k+1)-b.v(i,j,k-1))+(b.w(i,j+1,k)-b.w(i,j-1,k)));
+    const double h = 1.0 / h_inv;
+    auto u_f = [&](int ii,int jj,int kk){ return b.u(ii,jj,kk); };
+    auto v_f = [&](int ii,int jj,int kk){ return b.v(ii,jj,kk); };
+    auto w_f = [&](int ii,int jj,int kk){ return b.w(ii,jj,kk); };
+    constexpr CellGrad<Axis::X,2> DX; constexpr CellGrad<Axis::Y,2> DY; constexpr CellGrad<Axis::Z,2> DZ;
+    const double Sxx = DX(u_f,i,j,k,h), Syy = DY(v_f,i,j,k,h), Szz = DZ(w_f,i,j,k,h);
+    const double Sxy = 0.5*(DY(u_f,i,j,k,h) + DX(v_f,i,j,k,h));
+    const double Sxz = 0.5*(DZ(u_f,i,j,k,h) + DX(w_f,i,j,k,h));
+    const double Syz = 0.5*(DZ(v_f,i,j,k,h) + DY(w_f,i,j,k,h));
     return std::sqrt(2.0*(Sxx*Sxx + Syy*Syy + Szz*Szz
                         + 2.0*(Sxy*Sxy + Sxz*Sxz + Syz*Syz)));
 }
@@ -124,6 +128,13 @@ static void apply_sgs_stress_div(CellBlock& blk, double h, double dt,
         }
     }
 
+    constexpr VelocityGradAtFace<Axis::X, 2> VGX;
+    constexpr VelocityGradAtFace<Axis::Y, 2> VGY;
+    constexpr VelocityGradAtFace<Axis::Z, 2> VGZ;
+    constexpr FaceInterp<Axis::X> FI_X;
+    constexpr FaceInterp<Axis::Y> FI_Y;
+    constexpr FaceInterp<Axis::Z> FI_Z;
+
     static thread_local std::array<std::array<double,NCELL>,NVAR> dQ;
     for (int v = 0; v < NVAR; ++v)
         for (int c2 = 0; c2 < NCELL; ++c2)
@@ -137,128 +148,88 @@ static void apply_sgs_stress_div(CellBlock& blk, double h, double dt,
         auto vel = [&](int mom, int ii, int jj, int kk) -> double {
             return blk.Q[mom][cell_idx(ii,jj,kk)] / blk.Q[0][cell_idx(ii,jj,kk)];
         };
-        auto u = [&](int ii,int jj,int kk){ return vel(1,ii,jj,kk); };
-        auto v = [&](int ii,int jj,int kk){ return vel(2,ii,jj,kk); };
-        auto w = [&](int ii,int jj,int kk){ return vel(3,ii,jj,kk); };
+        auto u  = [&](int ii,int jj,int kk){ return vel(1,ii,jj,kk); };
+        auto v  = [&](int ii,int jj,int kk){ return vel(2,ii,jj,kk); };
+        auto w  = [&](int ii,int jj,int kk){ return vel(3,ii,jj,kk); };
         auto mu = [&](int ii,int jj,int kk) -> double {
             return mu_t_arr[cell_idx(ii,jj,kk)];
         };
 
-        double mu_xp=0.5*(mu(i,j,k)+mu(i+1,j,k));
-        double mu_xm=0.5*(mu(i,j,k)+mu(i-1,j,k));
-        double mu_yp=0.5*(mu(i,j,k)+mu(i,j+1,k));
-        double mu_ym=0.5*(mu(i,j,k)+mu(i,j-1,k));
-        double mu_zp=0.5*(mu(i,j,k)+mu(i,j,k+1));
-        double mu_zm=0.5*(mu(i,j,k)+mu(i,j,k-1));
+        // µ face averages via FaceInterp<DIR, ArithmeticMean>
+        const double mu_xp = FI_X(mu, i,   j,   k  );
+        const double mu_xm = FI_X(mu, i-1, j,   k  );
+        const double mu_yp = FI_Y(mu, i,   j,   k  );
+        const double mu_ym = FI_Y(mu, i,   j-1, k  );
+        const double mu_zp = FI_Z(mu, i,   j,   k  );
+        const double mu_zm = FI_Z(mu, i,   j,   k-1);
 
-        // x-faces
-        double dudx_xp=h_inv*(u(i+1,j,k)-u(i,j,k));
-        double dvdx_xp=h_inv*(v(i+1,j,k)-v(i,j,k));
-        double dwdx_xp=h_inv*(w(i+1,j,k)-w(i,j,k));
-        double dudy_xp=ih_half*(u(i+1,j+1,k)-u(i+1,j-1,k)+u(i,j+1,k)-u(i,j-1,k));
-        double dudz_xp=ih_half*(u(i+1,j,k+1)-u(i+1,j,k-1)+u(i,j,k+1)-u(i,j,k-1));
-        double dvdy_xp=ih_half*(v(i+1,j+1,k)-v(i+1,j-1,k)+v(i,j+1,k)-v(i,j-1,k));
-        double dwdz_xp=ih_half*(w(i+1,j,k+1)-w(i+1,j,k-1)+w(i,j,k+1)-w(i,j,k-1));
-        double dudx_xm=h_inv*(u(i,j,k)-u(i-1,j,k));
-        double dvdx_xm=h_inv*(v(i,j,k)-v(i-1,j,k));
-        double dwdx_xm=h_inv*(w(i,j,k)-w(i-1,j,k));
-        double dudy_xm=ih_half*(u(i-1,j+1,k)-u(i-1,j-1,k)+u(i,j+1,k)-u(i,j-1,k));
-        double dudz_xm=ih_half*(u(i-1,j,k+1)-u(i-1,j,k-1)+u(i,j,k+1)-u(i,j,k-1));
-        double dvdy_xm=ih_half*(v(i-1,j+1,k)-v(i-1,j-1,k)+v(i,j+1,k)-v(i,j-1,k));
-        double dwdz_xm=ih_half*(w(i-1,j,k+1)-w(i-1,j,k-1)+w(i,j,k+1)-w(i,j,k-1));
-        double divu_xp=dudx_xp+dvdy_xp+dwdz_xp;
-        double divu_xm=dudx_xm+dvdy_xm+dwdz_xm;
+        // Velocity gradients at all 6 faces (tangentials use 1/(4h) — correct)
+        const auto gxp = VGX.plus (u, v, w, i, j, k, h);
+        const auto gxm = VGX.minus(u, v, w, i, j, k, h);
+        const auto gyp = VGY.plus (u, v, w, i, j, k, h);
+        const auto gym = VGY.minus(u, v, w, i, j, k, h);
+        const auto gzp = VGZ.plus (u, v, w, i, j, k, h);
+        const auto gzm = VGZ.minus(u, v, w, i, j, k, h);
 
-        // y-faces
-        double dvdy_yp=h_inv*(v(i,j+1,k)-v(i,j,k));
-        double dudx_yp=ih_half*(u(i+1,j+1,k)-u(i-1,j+1,k)+u(i+1,j,k)-u(i-1,j,k));
-        double dwdz_yp=ih_half*(w(i,j+1,k+1)-w(i,j+1,k-1)+w(i,j,k+1)-w(i,j,k-1));
-        double dudy_yp=h_inv*(u(i,j+1,k)-u(i,j,k));
-        double dvdx_yp=ih_half*(v(i+1,j+1,k)-v(i-1,j+1,k)+v(i+1,j,k)-v(i-1,j,k));
-        double dvdz_yp=ih_half*(v(i,j+1,k+1)-v(i,j+1,k-1)+v(i,j,k+1)-v(i,j,k-1));
-        double dwdy_yp=h_inv*(w(i,j+1,k)-w(i,j,k));
-        double dvdy_ym=h_inv*(v(i,j,k)-v(i,j-1,k));
-        double dudx_ym=ih_half*(u(i+1,j-1,k)-u(i-1,j-1,k)+u(i+1,j,k)-u(i-1,j,k));
-        double dwdz_ym=ih_half*(w(i,j-1,k+1)-w(i,j-1,k-1)+w(i,j,k+1)-w(i,j,k-1));
-        double dudy_ym=h_inv*(u(i,j,k)-u(i,j-1,k));
-        double dvdx_ym=ih_half*(v(i+1,j-1,k)-v(i-1,j-1,k)+v(i+1,j,k)-v(i-1,j,k));
-        double dvdz_ym=ih_half*(v(i,j-1,k+1)-v(i,j-1,k-1)+v(i,j,k+1)-v(i,j,k-1));
-        double dwdy_ym=h_inv*(w(i,j,k)-w(i,j-1,k));
-        double divu_yp=dudx_yp+dvdy_yp+dwdz_yp;
-        double divu_ym=dudx_ym+dvdy_ym+dwdz_ym;
+        // SGS stress at x-faces (DIR=X: n=x, t1=y, t2=z)
+        const double txx_xp = mu_xp*(2.0*gxp.dun_dxn - (2.0/3.0)*gxp.divu());
+        const double txy_xp = mu_xp*(gxp.dun_dxt1 + gxp.dut1_dxn);
+        const double txz_xp = mu_xp*(gxp.dun_dxt2 + gxp.dut2_dxn);
+        const double txx_xm = mu_xm*(2.0*gxm.dun_dxn - (2.0/3.0)*gxm.divu());
+        const double txy_xm = mu_xm*(gxm.dun_dxt1 + gxm.dut1_dxn);
+        const double txz_xm = mu_xm*(gxm.dun_dxt2 + gxm.dut2_dxn);
 
-        // z-faces
-        double dwdz_zp=h_inv*(w(i,j,k+1)-w(i,j,k));
-        double dudx_zp=ih_half*(u(i+1,j,k+1)-u(i-1,j,k+1)+u(i+1,j,k)-u(i-1,j,k));
-        double dvdy_zp=ih_half*(v(i,j+1,k+1)-v(i,j-1,k+1)+v(i,j+1,k)-v(i,j-1,k));
-        double dudz_zp=h_inv*(u(i,j,k+1)-u(i,j,k));
-        double dwdx_zp=ih_half*(w(i+1,j,k+1)-w(i-1,j,k+1)+w(i+1,j,k)-w(i-1,j,k));
-        double dvdz_zp=h_inv*(v(i,j,k+1)-v(i,j,k));
-        double dwdy_zp=ih_half*(w(i,j+1,k+1)-w(i,j-1,k+1)+w(i,j+1,k)-w(i,j-1,k));
-        double dwdz_zm=h_inv*(w(i,j,k)-w(i,j,k-1));
-        double dudx_zm=ih_half*(u(i+1,j,k-1)-u(i-1,j,k-1)+u(i+1,j,k)-u(i-1,j,k));
-        double dvdy_zm=ih_half*(v(i,j+1,k-1)-v(i,j-1,k-1)+v(i,j+1,k)-v(i,j-1,k));
-        double dudz_zm=h_inv*(u(i,j,k)-u(i,j,k-1));
-        double dwdx_zm=ih_half*(w(i+1,j,k-1)-w(i-1,j,k-1)+w(i+1,j,k)-w(i-1,j,k));
-        double dvdz_zm=h_inv*(v(i,j,k)-v(i,j,k-1));
-        double dwdy_zm=ih_half*(w(i,j+1,k-1)-w(i,j-1,k-1)+w(i,j+1,k)-w(i,j-1,k));
-        double divu_zp=dudx_zp+dvdy_zp+dwdz_zp;
-        double divu_zm=dudx_zm+dvdy_zm+dwdz_zm;
+        // SGS stress at y-faces (DIR=Y: n=y, t1=x, t2=z)
+        const double tyx_yp = mu_yp*(gyp.dut1_dxn + gyp.dun_dxt1);
+        const double tyy_yp = mu_yp*(2.0*gyp.dun_dxn - (2.0/3.0)*gyp.divu());
+        const double tyz_yp = mu_yp*(gyp.dun_dxt2 + gyp.dut2_dxn);
+        const double tyx_ym = mu_ym*(gym.dut1_dxn + gym.dun_dxt1);
+        const double tyy_ym = mu_ym*(2.0*gym.dun_dxn - (2.0/3.0)*gym.divu());
+        const double tyz_ym = mu_ym*(gym.dun_dxt2 + gym.dut2_dxn);
 
-        double txx_xp=mu_xp*(2.0*dudx_xp-(2.0/3.0)*divu_xp);
-        double txy_xp=mu_xp*(dudy_xp+dvdx_xp);
-        double txz_xp=mu_xp*(dudz_xp+dwdx_xp);
-        double txx_xm=mu_xm*(2.0*dudx_xm-(2.0/3.0)*divu_xm);
-        double txy_xm=mu_xm*(dudy_xm+dvdx_xm);
-        double txz_xm=mu_xm*(dudz_xm+dwdx_xm);
-        double tyx_yp=mu_yp*(dudy_yp+dvdx_yp);
-        double tyy_yp=mu_yp*(2.0*dvdy_yp-(2.0/3.0)*divu_yp);
-        double tyz_yp=mu_yp*(dvdz_yp+dwdy_yp);
-        double tyx_ym=mu_ym*(dudy_ym+dvdx_ym);
-        double tyy_ym=mu_ym*(2.0*dvdy_ym-(2.0/3.0)*divu_ym);
-        double tyz_ym=mu_ym*(dvdz_ym+dwdy_ym);
-        double tzx_zp=mu_zp*(dudz_zp+dwdx_zp);
-        double tzy_zp=mu_zp*(dvdz_zp+dwdy_zp);
-        double tzz_zp=mu_zp*(2.0*dwdz_zp-(2.0/3.0)*divu_zp);
-        double tzx_zm=mu_zm*(dudz_zm+dwdx_zm);
-        double tzy_zm=mu_zm*(dvdz_zm+dwdy_zm);
-        double tzz_zm=mu_zm*(2.0*dwdz_zm-(2.0/3.0)*divu_zm);
+        // SGS stress at z-faces (DIR=Z: n=z, t1=x, t2=y)
+        const double tzx_zp = mu_zp*(gzp.dut1_dxn + gzp.dun_dxt1);
+        const double tzy_zp = mu_zp*(gzp.dut2_dxn + gzp.dun_dxt2);
+        const double tzz_zp = mu_zp*(2.0*gzp.dun_dxn - (2.0/3.0)*gzp.divu());
+        const double tzx_zm = mu_zm*(gzm.dut1_dxn + gzm.dun_dxt1);
+        const double tzy_zm = mu_zm*(gzm.dut2_dxn + gzm.dun_dxt2);
+        const double tzz_zm = mu_zm*(2.0*gzm.dun_dxn - (2.0/3.0)*gzm.divu());
 
-        double ax=h_inv*((txx_xp-txx_xm)+(tyx_yp-tyx_ym)+(tzx_zp-tzx_zm));
-        double ay=h_inv*((txy_xp-txy_xm)+(tyy_yp-tyy_ym)+(tzy_zp-tzy_zm));
-        double az=h_inv*((txz_xp-txz_xm)+(tyz_yp-tyz_ym)+(tzz_zp-tzz_zm));
+        const double ax = h_inv*((txx_xp-txx_xm)+(tyx_yp-tyx_ym)+(tzx_zp-tzx_zm));
+        const double ay = h_inv*((txy_xp-txy_xm)+(tyy_yp-tyy_ym)+(tzy_zp-tzy_zm));
+        const double az = h_inv*((txz_xp-txz_xm)+(tyz_yp-tyz_ym)+(tzz_zp-tzz_zm));
 
-        // Cell-centred tau:S for energy dissipation and heat conduction
-        double dudx_c=ih_half*(u(i+1,j,k)-u(i-1,j,k));
-        double dudy_c=ih_half*(u(i,j+1,k)-u(i,j-1,k));
-        double dudz_c=ih_half*(u(i,j,k+1)-u(i,j,k-1));
-        double dvdx_c=ih_half*(v(i+1,j,k)-v(i-1,j,k));
-        double dvdy_c=ih_half*(v(i,j+1,k)-v(i,j-1,k));
-        double dvdz_c=ih_half*(v(i,j,k+1)-v(i,j,k-1));
-        double dwdx_c=ih_half*(w(i+1,j,k)-w(i-1,j,k));
-        double dwdy_c=ih_half*(w(i,j+1,k)-w(i,j-1,k));
-        double dwdz_c=ih_half*(w(i,j,k+1)-w(i,j,k-1));
-        double divu_c=dudx_c+dvdy_c+dwdz_c;
-        double mu_c=mu_t_arr[cell_idx(i,j,k)];
-        double txx_c=mu_c*(2.0*dudx_c-(2.0/3.0)*divu_c);
-        double tyy_c=mu_c*(2.0*dvdy_c-(2.0/3.0)*divu_c);
-        double tzz_c=mu_c*(2.0*dwdz_c-(2.0/3.0)*divu_c);
-        double txy_c=mu_c*(dudy_c+dvdx_c);
-        double txz_c=mu_c*(dudz_c+dwdx_c);
-        double tyz_c=mu_c*(dvdz_c+dwdy_c);
-        double visc_work=txx_c*dudx_c+tyy_c*dvdy_c+tzz_c*dwdz_c
-                        +txy_c*(dudy_c+dvdx_c)+txz_c*(dudz_c+dwdx_c)+tyz_c*(dvdz_c+dwdy_c);
+        // Cell-centred tau:S for energy dissipation and heat conduction (1/(2h) — correct)
+        const double dudx_c = ih_half*(u(i+1,j,k)-u(i-1,j,k));
+        const double dudy_c = ih_half*(u(i,j+1,k)-u(i,j-1,k));
+        const double dudz_c = ih_half*(u(i,j,k+1)-u(i,j,k-1));
+        const double dvdx_c = ih_half*(v(i+1,j,k)-v(i-1,j,k));
+        const double dvdy_c = ih_half*(v(i,j+1,k)-v(i,j-1,k));
+        const double dvdz_c = ih_half*(v(i,j,k+1)-v(i,j,k-1));
+        const double dwdx_c = ih_half*(w(i+1,j,k)-w(i-1,j,k));
+        const double dwdy_c = ih_half*(w(i,j+1,k)-w(i,j-1,k));
+        const double dwdz_c = ih_half*(w(i,j,k+1)-w(i,j,k-1));
+        const double divu_c = dudx_c+dvdy_c+dwdz_c;
+        const double mu_c   = mu_t_arr[cell_idx(i,j,k)];
+        const double txx_c  = mu_c*(2.0*dudx_c-(2.0/3.0)*divu_c);
+        const double tyy_c  = mu_c*(2.0*dvdy_c-(2.0/3.0)*divu_c);
+        const double tzz_c  = mu_c*(2.0*dwdz_c-(2.0/3.0)*divu_c);
+        const double txy_c  = mu_c*(dudy_c+dvdx_c);
+        const double txz_c  = mu_c*(dudz_c+dwdx_c);
+        const double tyz_c  = mu_c*(dvdz_c+dwdy_c);
+        const double visc_work = txx_c*dudx_c+tyy_c*dvdy_c+tzz_c*dwdz_c
+                                +txy_c*(dudy_c+dvdx_c)+txz_c*(dudz_c+dwdx_c)+tyz_c*(dvdz_c+dwdy_c);
 
-        double lap_T=ih2*(blk.T(i+1,j,k)-2.0*q.T+blk.T(i-1,j,k)
-                         +blk.T(i,j+1,k)-2.0*q.T+blk.T(i,j-1,k)
-                         +blk.T(i,j,k+1)-2.0*q.T+blk.T(i,j,k-1));
-        double heat=mu_c*kap_fac*lap_T;
+        const double lap_T = ih2*(blk.T(i+1,j,k)-2.0*q.T+blk.T(i-1,j,k)
+                                 +blk.T(i,j+1,k)-2.0*q.T+blk.T(i,j-1,k)
+                                 +blk.T(i,j,k+1)-2.0*q.T+blk.T(i,j,k-1));
+        const double heat   = mu_c*kap_fac*lap_T;
 
-        int c2=cell_idx(i,j,k);
-        dQ[1][c2]+=dt*ax;
-        dQ[2][c2]+=dt*ay;
-        dQ[3][c2]+=dt*az;
-        dQ[4][c2]+=dt*(heat-visc_work);
+        const int c2 = cell_idx(i,j,k);
+        dQ[1][c2] += dt*ax;
+        dQ[2][c2] += dt*ay;
+        dQ[3][c2] += dt*az;
+        dQ[4][c2] += dt*(heat-visc_work);
     }
 
     for (int k=NG; k<NG+NB; ++k)
@@ -292,14 +263,18 @@ void SmagorinskyModel::apply(CellBlock& blk, double h, double dt) const {
 // =============================================================================
 void DynamicSmagorinskyModel::apply(CellBlock& blk, double h, double dt) const
 {
-    const double h_inv  = 1.0 / h;
-    const double ih2    = 0.5 * h_inv;  // factor for central diffs
     const double Delta2 = h * h;
     constexpr double inv27 = 1.0 / 27.0;
+    constexpr CellGrad<Axis::X,2> DX;
+    constexpr CellGrad<Axis::Y,2> DY;
+    constexpr CellGrad<Axis::Z,2> DZ;
 
     auto vel = [&](int comp, int i, int j, int k) -> double {
         return blk.Q[comp][cell_idx(i,j,k)] / blk.Q[0][cell_idx(i,j,k)];
     };
+    auto u_dsm = [&](int ii, int jj, int kk){ return vel(1, ii, jj, kk); };
+    auto v_dsm = [&](int ii, int jj, int kk){ return vel(2, ii, jj, kk); };
+    auto w_dsm = [&](int ii, int jj, int kk){ return vel(3, ii, jj, kk); };
 
     // ── Step 1: S_ij and |S̄| for [1..NB2-2] ─────────────────────────────────
     // Layout: Sij[idx][0..5] = {Sxx,Sxy,Sxz,Syy,Syz,Szz}
@@ -314,15 +289,12 @@ void DynamicSmagorinskyModel::apply(CellBlock& blk, double h, double dt) const
     for (int j = 1; j < NB2-1; ++j)
     for (int i = 1; i < NB2-1; ++i) {
         int idx = cell_idx(i,j,k);
-        double Sxx = ih2*(vel(1,i+1,j,k)-vel(1,i-1,j,k));
-        double Syy = ih2*(vel(2,i,j+1,k)-vel(2,i,j-1,k));
-        double Szz = ih2*(vel(3,i,j,k+1)-vel(3,i,j,k-1));
-        double Sxy = 0.5*ih2*((vel(1,i,j+1,k)-vel(1,i,j-1,k))
-                              +(vel(2,i+1,j,k)-vel(2,i-1,j,k)));
-        double Sxz = 0.5*ih2*((vel(1,i,j,k+1)-vel(1,i,j,k-1))
-                              +(vel(3,i+1,j,k)-vel(3,i-1,j,k)));
-        double Syz = 0.5*ih2*((vel(2,i,j,k+1)-vel(2,i,j,k-1))
-                              +(vel(3,i,j+1,k)-vel(3,i,j-1,k)));
+        const double Sxx = DX(u_dsm,i,j,k,h);
+        const double Syy = DY(v_dsm,i,j,k,h);
+        const double Szz = DZ(w_dsm,i,j,k,h);
+        const double Sxy = 0.5*(DY(u_dsm,i,j,k,h) + DX(v_dsm,i,j,k,h));
+        const double Sxz = 0.5*(DZ(u_dsm,i,j,k,h) + DX(w_dsm,i,j,k,h));
+        const double Syz = 0.5*(DZ(v_dsm,i,j,k,h) + DY(w_dsm,i,j,k,h));
         Sij[idx][0]=Sxx; Sij[idx][1]=Sxy; Sij[idx][2]=Sxz;
         Sij[idx][3]=Syy; Sij[idx][4]=Syz; Sij[idx][5]=Szz;
         Smag[idx] = std::sqrt(2.0*(Sxx*Sxx+Syy*Syy+Szz*Szz
@@ -376,12 +348,12 @@ void DynamicSmagorinskyModel::apply(CellBlock& blk, double h, double dt) const
         auto vtf = [&](int ii,int jj,int kk){ return v_tf[cell_idx(ii,jj,kk)]; };
         auto wtf = [&](int ii,int jj,int kk){ return w_tf[cell_idx(ii,jj,kk)]; };
 
-        double Stxx=ih2*(utf(i+1,j,k)-utf(i-1,j,k));
-        double Styy=ih2*(vtf(i,j+1,k)-vtf(i,j-1,k));
-        double Stzz=ih2*(wtf(i,j,k+1)-wtf(i,j,k-1));
-        double Stxy=0.5*ih2*((utf(i,j+1,k)-utf(i,j-1,k))+(vtf(i+1,j,k)-vtf(i-1,j,k)));
-        double Stxz=0.5*ih2*((utf(i,j,k+1)-utf(i,j,k-1))+(wtf(i+1,j,k)-wtf(i-1,j,k)));
-        double Styz=0.5*ih2*((vtf(i,j,k+1)-vtf(i,j,k-1))+(wtf(i,j+1,k)-wtf(i,j-1,k)));
+        const double Stxx = DX(utf,i,j,k,h);
+        const double Styy = DY(vtf,i,j,k,h);
+        const double Stzz = DZ(wtf,i,j,k,h);
+        const double Stxy = 0.5*(DY(utf,i,j,k,h) + DX(vtf,i,j,k,h));
+        const double Stxz = 0.5*(DZ(utf,i,j,k,h) + DX(wtf,i,j,k,h));
+        const double Styz = 0.5*(DZ(vtf,i,j,k,h) + DY(wtf,i,j,k,h));
         double Stmag=std::sqrt(2.0*(Stxx*Stxx+Styy*Styy+Stzz*Stzz
                                + 2.0*(Stxy*Stxy+Stxz*Stxz+Styz*Styz)));
 

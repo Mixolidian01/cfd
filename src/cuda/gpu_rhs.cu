@@ -513,7 +513,7 @@ void k_rhs_visc(const GpuLeafRhsMeta* __restrict__ metas) {
     const int    ilo = GPU_NG;
     const int    ihi = GPU_NG + GPU_NB - 1;
     const double ih  = 1.0 / m.h;
-    const double ihs = 0.5 * ih;
+    const double ihs = 0.25 * ih;  // 1/(4h): average of two 1/(2h) central diffs
 
     const int i = GPU_NG + threadIdx.x;
     const int j = GPU_NG + threadIdx.y;

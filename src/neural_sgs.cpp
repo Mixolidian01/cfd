@@ -7,6 +7,7 @@
 // uses ν_t from either Vreman or the ONNX network instead of |S̄|·(Cs·Δ)².
 
 #include "../include/neural_sgs.hpp"
+#include "../include/physics/diff_ops.hpp"
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
@@ -299,16 +300,12 @@ void NeuralSGSModel::apply(CellBlock& blk, double h, double dt) const
 
         // Energy update: d(E)/dt += u·(ρ·lap u) + thermal SGS
         // Thermal: κ_t · ∇²T,  κ_t = ρ · ν_t · Cp / Pr_t
-        const double T_c  = blk.prim(i,j,k).T;
         const auto   T_at = [&](int ii, int jj, int kk) {
             return blk.prim(ii,jj,kk).T;
         };
         const double rho_nu_t  = rho * nu_t[f];
         const double kappa_t   = rho_nu_t * CP / Pr_t_;
-        const double lapT = ih*ih*(
-            kappa_t*(T_at(i+1,j,k) - 2*T_c + T_at(i-1,j,k))
-          + kappa_t*(T_at(i,j+1,k) - 2*T_c + T_at(i,j-1,k))
-          + kappa_t*(T_at(i,j,k+1) - 2*T_c + T_at(i,j,k-1)));
+        const double lapT = kappa_t * CellLaplacian<2>{}(T_at, i, j, k, h);
 
         blk.Q[4][f] += dt * (uc*lapu + vc*lapv + wc*lapw + lapT);
     }

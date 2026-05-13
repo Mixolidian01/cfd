@@ -778,6 +778,41 @@ static void undo_cf_face_flux(const BlockTree& tree, int node_idx,
     }
 }
 
+// ── cf_visc_energy_flux<AX> ──────────────────────────────────────────────────
+// Viscous energy flux at one C/F face. Uses VelocityGradAtFace<AX,2> to match
+// the 1/(4h) tangential stencil of viscous_rhs_impl (R7).
+// ns=+1 → plus-side face (AX+½); ns=-1 → minus-side face (AX-½).
+template<Axis AX>
+static double cf_visc_energy_flux(
+    const CellBlock& blk, double h,
+    int ci, int cj, int ck, int gi, int gj, int gk, double ns) noexcept
+{
+    const Prim p_i = blk.prim(ci,cj,ck);
+    const Prim p_g = blk.prim(gi,gj,gk);
+    const double mu_f  = 0.5*(sutherland(p_i.T) + sutherland(p_g.T));
+    const double kappa = mu_f * CP / PR;
+    const double u_f   = 0.5*(p_i.u + p_g.u);
+    const double v_f   = 0.5*(p_i.v + p_g.v);
+    const double w_f   = 0.5*(p_i.w + p_g.w);
+    const double ih    = 1.0 / h;
+    auto uf = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).u; };
+    auto vf = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).v; };
+    auto wf = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).w; };
+    constexpr VelocityGradAtFace<AX, 2> VGA;
+    const auto g = (ns > 0) ? VGA.plus(uf, vf, wf, ci, cj, ck, h)
+                             : VGA.minus(uf, vf, wf, ci, cj, ck, h);
+    const double tau_nn  = mu_f*(2.0*g.dun_dxn - (2.0/3.0)*g.divu());
+    const double tau_nt1 = mu_f*(g.dun_dxt1 + g.dut1_dxn);
+    const double tau_nt2 = mu_f*(g.dun_dxt2 + g.dut2_dxn);
+    const double kT      = kappa * ns * ih * (p_g.T - p_i.T);
+    if constexpr (AX == Axis::X)
+        return tau_nn * u_f + tau_nt1 * v_f + tau_nt2 * w_f + kT;
+    else if constexpr (AX == Axis::Y)
+        return tau_nt1 * u_f + tau_nn * v_f + tau_nt2 * w_f + kT;
+    else
+        return tau_nt1 * u_f + tau_nt2 * v_f + tau_nn * w_f + kT;
+}
+
 // =============================================================================
 // Berger-Colella reflux: undo_cf_viscous_energy
 // ─────────────────────────────────────────────
@@ -804,25 +839,20 @@ static void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
     const auto& blk  = *nd.block;
     const double h   = blk.h;
     const double ih  = 1.0 / h;
-    const double ihhalf = 0.5 * ih;
 
     static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
     static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
 
-    auto U = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).u; };
-    auto V = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).v; };
-    auto W = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).w; };
-
     for (int d = 0; d < NFACES; ++d) {
         const int ni = nd.neighbours[d];
         if (ni < 0 || !tree.nodes[ni].has_block()) continue;
-        if (tree.nodes[ni].level == nd.level) continue;  // same-level: skip
+        if (tree.nodes[ni].level == nd.level) continue;
 
         const int axis   = face_axis[d];
         const int delta  = face_delta[d];
-        const double ns  = (double)delta;  // ±1: normal direction sign
+        const double ns  = (double)delta;
         const int bound  = (delta > 0) ? ihi() : ilo();
-        const int gbound = bound + delta;  // ghost cell index along normal
+        const int gbound = bound + delta;
 
         for (int b = ilo(); b <= ihi(); ++b)
         for (int a = ilo(); a <= ihi(); ++a) {
@@ -831,62 +861,11 @@ static void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
             else if (axis == 1) { ci=a; cj=bound; ck=b; gi=a;      gj=gbound; gk=b; }
             else                { ci=a; cj=b; ck=bound; gi=a;      gj=b;      gk=gbound; }
 
-            const Prim p_i = blk.prim(ci,cj,ck);
-            const Prim p_g = blk.prim(gi,gj,gk);
-            const double mu_f  = 0.5*(sutherland(p_i.T) + sutherland(p_g.T));
-            const double kappa = mu_f * CP / PR;
-            const double u_f   = 0.5*(p_i.u + p_g.u);
-            const double v_f   = 0.5*(p_i.v + p_g.v);
-            const double w_f   = 0.5*(p_i.w + p_g.w);
-
-            // Reproduce the same face-stress stencil as viscous_rhs_impl.
-            // Normal gradients (i.e. across the face) need the sign factor ns
-            // because (gi,gj,gk) is the ghost: for delta>0, ghost is "right"
-            // (forward); for delta<0, ghost is "left" (backward).
-            // Tangential gradients (cross-stencil) are symmetric and need no ns.
             double Fvisc_E;
-            if (axis == 0) {
-                double dudx = ns*ih*(U(gi,gj,gk)-U(ci,cj,ck));
-                double dvdx = ns*ih*(V(gi,gj,gk)-V(ci,cj,ck));
-                double dwdx = ns*ih*(W(gi,gj,gk)-W(ci,cj,ck));
-                double dudy = ihhalf*(U(gi,gj+1,gk)-U(gi,gj-1,gk)+U(ci,cj+1,ck)-U(ci,cj-1,ck));
-                double dudz = ihhalf*(U(gi,gj,gk+1)-U(gi,gj,gk-1)+U(ci,cj,ck+1)-U(ci,cj,ck-1));
-                double dvdy = ihhalf*(V(gi,gj+1,gk)-V(gi,gj-1,gk)+V(ci,cj+1,ck)-V(ci,cj-1,ck));
-                double dwdz = ihhalf*(W(gi,gj,gk+1)-W(gi,gj,gk-1)+W(ci,cj,ck+1)-W(ci,cj,ck-1));
-                double divu = dudx + dvdy + dwdz;
-                double txx  = mu_f*(2.0*dudx - (2.0/3.0)*divu);
-                double txy  = mu_f*(dudy + dvdx);
-                double txz  = mu_f*(dudz + dwdx);
-                Fvisc_E = txx*u_f + txy*v_f + txz*w_f + kappa*ns*ih*(p_g.T-p_i.T);
-            } else if (axis == 1) {
-                double dvdy = ns*ih*(V(gi,gj,gk)-V(ci,cj,ck));
-                double dudy = ns*ih*(U(gi,gj,gk)-U(ci,cj,ck));
-                double dwdy = ns*ih*(W(gi,gj,gk)-W(ci,cj,ck));
-                double dvdx = ihhalf*(V(gi+1,gj,gk)-V(gi-1,gj,gk)+V(ci+1,cj,ck)-V(ci-1,cj,ck));
-                double dvdz = ihhalf*(V(gi,gj,gk+1)-V(gi,gj,gk-1)+V(ci,cj,ck+1)-V(ci,cj,ck-1));
-                double dudx = ihhalf*(U(gi+1,gj,gk)-U(gi-1,gj,gk)+U(ci+1,cj,ck)-U(ci-1,cj,ck));
-                double dwdz = ihhalf*(W(gi,gj,gk+1)-W(gi,gj,gk-1)+W(ci,cj,ck+1)-W(ci,cj,ck-1));
-                double divu = dudx + dvdy + dwdz;
-                double tyx  = mu_f*(dudy + dvdx);
-                double tyy  = mu_f*(2.0*dvdy - (2.0/3.0)*divu);
-                double tyz  = mu_f*(dvdz + dwdy);
-                Fvisc_E = tyx*u_f + tyy*v_f + tyz*w_f + kappa*ns*ih*(p_g.T-p_i.T);
-            } else {
-                double dwdz = ns*ih*(W(gi,gj,gk)-W(ci,cj,ck));
-                double dudz = ns*ih*(U(gi,gj,gk)-U(ci,cj,ck));
-                double dvdz = ns*ih*(V(gi,gj,gk)-V(ci,cj,ck));
-                double dwdx = ihhalf*(W(gi+1,gj,gk)-W(gi-1,gj,gk)+W(ci+1,cj,ck)-W(ci-1,cj,ck));
-                double dwdy = ihhalf*(W(gi,gj+1,gk)-W(gi,gj-1,gk)+W(ci,cj+1,ck)-W(ci,cj-1,ck));
-                double dudx = ihhalf*(U(gi+1,gj,gk)-U(gi-1,gj,gk)+U(ci+1,cj,ck)-U(ci-1,cj,ck));
-                double dvdy = ihhalf*(V(gi,gj+1,gk)-V(gi,gj-1,gk)+V(ci,cj+1,ck)-V(ci,cj-1,ck));
-                double divu = dudx + dvdy + dwdz;
-                double tzx  = mu_f*(dudz + dwdx);
-                double tzy  = mu_f*(dvdz + dwdy);
-                double tzz  = mu_f*(2.0*dwdz - (2.0/3.0)*divu);
-                Fvisc_E = tzx*u_f + tzy*v_f + tzz*w_f + kappa*ns*ih*(p_g.T-p_i.T);
-            }
+            if      (axis == 0) Fvisc_E = cf_visc_energy_flux<Axis::X>(blk,h,ci,cj,ck,gi,gj,gk,ns);
+            else if (axis == 1) Fvisc_E = cf_visc_energy_flux<Axis::Y>(blk,h,ci,cj,ck,gi,gj,gk,ns);
+            else                Fvisc_E = cf_visc_energy_flux<Axis::Z>(blk,h,ci,cj,ck,gi,gj,gk,ns);
 
-            // viscous_rhs_impl added ns*ih*Fvisc_E to rhs.Q[4]; subtract it.
             rhs.Q[4][cell_idx(ci,cj,ck)] -= ns * ih * Fvisc_E;
         }
     }
