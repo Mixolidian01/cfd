@@ -37,6 +37,14 @@ struct MpiPartition;
 uint32_t morton_encode(uint32_t x, uint32_t y, uint32_t z) noexcept;
 void     morton_decode(uint32_t code, uint32_t& x, uint32_t& y, uint32_t& z) noexcept;
 
+// ── BC runtime configuration (R9-A2: replaces file-scope statics) ──────────────────
+struct BCRuntimeConfig {
+    double wall_T       = 0.0;   // > 0 → isothermal wall; 0 → adiabatic
+    double open_bc_p    = 0.0;   // > 0 → subsonic outflow pressure; 0 → transmissive
+    double wall_ca_cos  = 0.0;   // cos(θ_w) for ACDI contact angle
+    double wall_ca_ceps = 0.0;   // acdi_ceps at wall (0 → disabled)
+};
+
 // ── Face direction enum ─────────────────────────────────────────────────────────────
 enum FaceDir : int {
     XMINUS = 0, XPLUS  = 1,
@@ -128,6 +136,9 @@ struct BlockTree {
     // ── Neighbour topology ────────────────────────────────────────────────────
     void rebuild_neighbours();
 
+    // R9-A2: BC runtime configuration — assign fields directly before advancing.
+    BCRuntimeConfig bc_cfg;
+
     // ── Ghost fill ─────────────────────────────────────────────────────────────
     // P1.3: dispatches fill_cf_ghosts for coarse-fine faces
     // cf_zero_grad=false (default): coarse C/F ghosts filled from fine cell averages.
@@ -137,23 +148,6 @@ struct BlockTree {
     void fill_ghosts_periodic(bool cf_zero_grad = false);
     void fill_ghosts_wall    (bool cf_zero_grad = false);
     void fill_ghosts_open    (bool cf_zero_grad = false); // zero-gradient transmissive
-
-    // P13.4: configure isothermal wall temperature (0 = adiabatic, default).
-    // Call once before advancing; thread-safe (read-only during ghost fill).
-    static void set_wall_T(double T_w) noexcept;
-
-    // P13.3: far-field pressure for characteristic open BC (0 = zero-gradient, default).
-    // When > 0: subsonic outflow ghost uses isentropic ρ_ghost = ρ·(p∞/p)^(1/γ) and
-    //   Riemann-invariant velocity, making HLLC-ES add entropy dissipation at the face.
-    static void set_open_bc_pressure(double p_inf) noexcept;
-
-    // P14.2: wall contact angle BC for phase-field (ACDI only).
-    // cos_theta_w = cos(θ_w): 0 → neutral (90°, Neumann ∂φ/∂n=0, default);
-    //   +1 → fully wetting (0°); -1 → fully non-wetting (180°).
-    // acdi_ceps: compression coefficient from SolverConfig; 0 disables BC.
-    // Ghost fill: φ_ghost = φ_int - dist·cos(θ)/(ε/h)·g'(φ_int)
-    //   where g'(φ)=φ(1-φ)(1-2φ)/2 (double-well derivative), ε=ceps·h.
-    static void set_wall_contact_angle(double cos_theta_w, double acdi_ceps) noexcept;
 
     // ── Flux register management (P1.4) ───────────────────────────────────────
     void zero_flux_registers();

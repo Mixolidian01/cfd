@@ -312,9 +312,9 @@ static void t12_isothermal_wall() {
     }
 
     const double T_wall = 350.0;   // hot wall
-    BlockTree::set_wall_T(T_wall);
+    tree.bc_cfg.wall_T = T_wall;
     tree.fill_ghosts_wall();
-    BlockTree::set_wall_T(0.0);    // reset to adiabatic for other tests
+    tree.bc_cfg.wall_T = 0.0;     // reset to adiabatic for other tests
 
     // Expected E_ghost = ρ·Cv·(2Tw−T_int) + ½ρ|u|²
     const double Cv = R_GAS / (GAMMA - 1.0);

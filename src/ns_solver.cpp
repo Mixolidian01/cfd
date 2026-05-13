@@ -206,19 +206,21 @@ double NSSolver::advance() {
 
     // P11.6: propagate configurable Ducros thresholds before RHS evaluation.
     set_ducros_thresholds(cfg.ducros_p_threshold, cfg.ducros_blend_width);
-    // P13.4: propagate isothermal wall temperature (0 = adiabatic).
-    BlockTree::set_wall_T(cfg.wall_T);
-    // P13.3: propagate far-field pressure for characteristic open BC (0 = zero-gradient).
+    // R9-A2: populate BCRuntimeConfig on the tree (replaces static setter calls).
+    // P13.4: isothermal wall temperature (0 = adiabatic).
+    tree.bc_cfg.wall_T = cfg.wall_T;
+    // P13.3: far-field pressure for characteristic open BC (0 = zero-gradient).
     if (auto* ob = std::get_if<OpenBC>(&cfg.bc_variant))
-        BlockTree::set_open_bc_pressure(ob->far_field_pressure);
+        tree.bc_cfg.open_bc_p = ob->far_field_pressure;
     else
-        BlockTree::set_open_bc_pressure(0.0);
+        tree.bc_cfg.open_bc_p = 0.0;
     // P14.2: wall contact angle BC for phase-field (0° cos = neutral/Neumann).
     {
         double ca_cos = 0.0;
         if (auto* ca = std::get_if<ContactAngleBC>(&cfg.bc_variant); ca && cfg.use_acdi)
             ca_cos = std::cos(ca->contact_angle_deg * (M_PI / 180.0));
-        BlockTree::set_wall_contact_angle(ca_cos, cfg.acdi_ceps);
+        tree.bc_cfg.wall_ca_cos  = ca_cos;
+        tree.bc_cfg.wall_ca_ceps = cfg.acdi_ceps;
     }
     // P14.1c: activate stiffened-gas mixture EOS when ACDI is on and fluids differ.
     {

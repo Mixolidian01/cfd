@@ -37,7 +37,7 @@ inline bool bc_is_open(const BCVariant& v) noexcept {
 }
 
 // GPU integer encoding: 0=periodic, 1=wall, 2=open
-// ContactAngleBC uses GPU wall path (1); Phase 14.2 sets contact angle via set_wall_contact_angle().
+// ContactAngleBC uses GPU wall path (1); Phase 14.2 sets contact angle via BlockTree::bc_cfg.
 inline int bc_to_int(const BCVariant& v) noexcept {
     if (std::holds_alternative<WallBC>(v))           return 1;
     if (std::holds_alternative<OpenBC>(v))           return 2;

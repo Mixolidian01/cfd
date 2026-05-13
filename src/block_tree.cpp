@@ -551,43 +551,28 @@ int BlockTree::balance() {
 static inline int fd_axis(int d) { return d >> 1; }  // 0→x, 2→y, 4→z
 static inline int fd_side(int d) { return d & 1;  }  // 0→minus, 1→plus
 
-// P13.4: isothermal wall temperature (0 = adiabatic, default)
-static double g_wall_T = 0.0;
-void BlockTree::set_wall_T(double T_w) noexcept { g_wall_T = T_w; }
-
-// P13.3: far-field pressure for characteristic open BC (0 = zero-gradient, default)
-static double g_open_bc_p = 0.0;
-void BlockTree::set_open_bc_pressure(double p_inf) noexcept { g_open_bc_p = p_inf; }
-
-// P14.2: wall contact angle BC for phase-field (0 = neutral/Neumann, default)
-static double g_wall_ca_cos  = 0.0;   // cos(θ_w)
-static double g_wall_ca_ceps = 0.0;   // acdi_ceps (0 → disabled)
-void BlockTree::set_wall_contact_angle(double cos_theta_w, double ceps) noexcept {
-    g_wall_ca_cos  = cos_theta_w;
-    g_wall_ca_ceps = ceps;
-}
-
 // Compute characteristic ghost Prim for one open-boundary cell.
 // axis: 0/1/2 = x/y/z; outward_sign: +1 for + faces, -1 for - faces.
-// Returns zero-gradient state when g_open_bc_p == 0 or supersonic outflow.
-static Prim open_char_ghost(const Prim& p, int axis, double outward_sign) noexcept {
+// Returns zero-gradient state when open_bc_p == 0 or supersonic outflow.
+static Prim open_char_ghost(const Prim& p, int axis, double outward_sign,
+                            double open_bc_p) noexcept {
     // Normal velocity component (positive = flow exits the domain)
     const double u_n = outward_sign * (axis==0 ? p.u : axis==1 ? p.v : p.w);
 
     // Zero-gradient: no far-field pressure, supersonic outflow, or inflow
-    if (g_open_bc_p <= 0.0 || u_n >= p.c || u_n < 0.0) return p;
+    if (open_bc_p <= 0.0 || u_n >= p.c || u_n < 0.0) return p;
 
     // Subsonic outflow: set p_ghost = p_∞, isentropic ρ, Riemann-invariant u_n
     // ρ_g = ρ·(p∞/p)^(1/γ),  c_g = c·(p∞/p)^((γ-1)/(2γ))
     // Incoming Riemann char: u_n_g - outward_sign·2c_g/(γ-1) = u_n_i - outward_sign·2c_i/(γ-1)
     //   → δu_n_g = outward_sign·2·(c_g - c_i)/(γ-1)  (both + and - face use same formula
     //               because outward_sign cancels from both sides of the invariant eq.)
-    const double ratio = g_open_bc_p / p.p;
+    const double ratio = open_bc_p / p.p;
     const double c_g   = p.c * std::pow(ratio, (GAMMA-1.0)/(2.0*GAMMA));
     const double delta_u_n = outward_sign * 2.0*(c_g - p.c)/(GAMMA-1.0);
 
     Prim g = p;
-    g.p   = g_open_bc_p;
+    g.p   = open_bc_p;
     g.rho = p.rho * std::pow(ratio, 1.0/GAMMA);
     if (axis==0) g.u = p.u + delta_u_n;
     else if (axis==1) g.v = p.v + delta_u_n;
@@ -953,11 +938,14 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
         auto& blk = *nd.block;
 
         // P13.4: isothermal ghost energy: E_g = ρ·Cv·(2Tw−Ti) + ½ρ|u|²
-        // Adiabatic (g_wall_T == 0): copy E directly (∂T/∂n = 0 at wall).
-        auto wall_E = [](const CellBlock& b, int mi, int mj, int mk) noexcept {
-            if (g_wall_T <= 0.0) return b.E(mi, mj, mk);
+        // Adiabatic (bc_cfg.wall_T == 0): copy E directly (∂T/∂n = 0 at wall).
+        const double wall_T    = bc_cfg.wall_T;
+        const double ca_cos    = bc_cfg.wall_ca_cos;
+        const double ca_ceps   = bc_cfg.wall_ca_ceps;
+        auto wall_E = [wall_T](const CellBlock& b, int mi, int mj, int mk) noexcept {
+            if (wall_T <= 0.0) return b.E(mi, mj, mk);
             const Prim p = b.prim(mi, mj, mk);
-            const double T_ghost = 2.0*g_wall_T - p.T;
+            const double T_ghost = 2.0*wall_T - p.T;
             const double KE = 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
             return p.rho * (R_GAS/(GAMMA-1.0)) * T_ghost + KE;
         };
@@ -966,10 +954,10 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
         // g'(phi) = phi*(1-phi)*(1-2*phi)/2  (double-well derivative)
         // dist: ghost-cell distance from wall in cell spacings (1 for nearest, 2 for outermost).
         // With gi<ilo(): XMINUS wall, ref = ilo(); gi>ihi(): XPLUS wall, ref = ihi().
-        auto phi_wall_ghost = [](double phi_ref, int dist) noexcept -> double {
-            if (g_wall_ca_ceps <= 0.0) return phi_ref;  // disabled → Neumann
+        auto phi_wall_ghost = [ca_cos, ca_ceps](double phi_ref, int dist) noexcept -> double {
+            if (ca_ceps <= 0.0) return phi_ref;  // disabled → Neumann
             const double g_prime = 0.5 * phi_ref * (1.0 - phi_ref) * (1.0 - 2.0 * phi_ref);
-            const double phi_g = phi_ref - dist * g_wall_ca_cos / g_wall_ca_ceps * g_prime;
+            const double phi_g = phi_ref - dist * ca_cos / ca_ceps * g_prime;
             return (phi_g < 0.0) ? 0.0 : (phi_g > 1.0) ? 1.0 : phi_g;
         };
 
@@ -1138,8 +1126,8 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
 }
 
 // ── fill_ghosts_open (P13.3: characteristic open BC with optional p∞) ────────
-// When g_open_bc_p == 0: zero-gradient transmissive (legacy behaviour).
-// When g_open_bc_p >  0: subsonic outflow uses isentropic ghost + Riemann-
+// When bc_cfg.open_bc_p == 0: zero-gradient transmissive (legacy behaviour).
+// When bc_cfg.open_bc_p >  0: subsonic outflow uses isentropic ghost + Riemann-
 //   invariant velocity; HLLC-ES then adds entropy dissipation at the face.
 //   Supersonic outflow and inflow fall back to zero-gradient.
 void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
@@ -1159,24 +1147,25 @@ void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
                                 + 0.5*g.rho*(g.u*g.u+g.v*g.v+g.w*g.w);
         };
 
+        const double open_bc_p = bc_cfg.open_bc_p;
         auto open_x = [&](int gi, int mi, double outward_sign) noexcept {
             for (int k=ilo();k<=ihi();++k)
             for (int j=ilo();j<=ihi();++j) {
-                write_ghost(gi, j, k, open_char_ghost(blk.prim(mi,j,k), 0, outward_sign));
+                write_ghost(gi, j, k, open_char_ghost(blk.prim(mi,j,k), 0, outward_sign, open_bc_p));
                 blk.phi(gi,j,k) = blk.phi(mi,j,k);  // P14.1: zero-gradient
             }
         };
         auto open_y = [&](int gj, int mj, double outward_sign) noexcept {
             for (int k=ilo();k<=ihi();++k)
             for (int i=ilo();i<=ihi();++i) {
-                write_ghost(i, gj, k, open_char_ghost(blk.prim(i,mj,k), 1, outward_sign));
+                write_ghost(i, gj, k, open_char_ghost(blk.prim(i,mj,k), 1, outward_sign, open_bc_p));
                 blk.phi(i,gj,k) = blk.phi(i,mj,k);  // P14.1: zero-gradient
             }
         };
         auto open_z = [&](int gk, int mk, double outward_sign) noexcept {
             for (int j=ilo();j<=ihi();++j)
             for (int i=ilo();i<=ihi();++i) {
-                write_ghost(i, j, gk, open_char_ghost(blk.prim(i,j,mk), 2, outward_sign));
+                write_ghost(i, j, gk, open_char_ghost(blk.prim(i,j,mk), 2, outward_sign, open_bc_p));
                 blk.phi(i,j,gk) = blk.phi(i,j,mk);  // P14.1: zero-gradient
             }
         };
