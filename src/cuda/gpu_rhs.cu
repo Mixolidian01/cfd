@@ -12,6 +12,7 @@
 #include "../../include/cuda/gpu_hllc.cuh"
 #include "../../include/cuda/gpu_check.cuh"
 #include "../../include/cuda/gpu_meta_buffer.cuh"
+#include "../../include/physics/face_interp.hpp"
 #include <cstring>
 #include <vector>
 
@@ -422,34 +423,36 @@ sp_vel(const double* __restrict__ sp, int comp, int ii, int jj, int kk) {
     return sp[(comp + 1) * GPU_NCELL + gpu_cell_idx(ii, jj, kk)];
 }
 
-// Viscous stress + energy flux at face (ax, dn∈{+1,-1}) of cell (i,j,k).
-// t1=(ax+1)%3, t2=(ax+2)%3.
-// dn sign convention: grad_nn = ih*dn*(v_nb - v_c) is positive outward for both faces.
-// tnn: normal-normal stress; tnt1/tnt2: shear on (ax,t1)/(ax,t2) planes.
+// Viscous stress + energy flux at face AX±½ of cell (i,j,k).
+// AX: compile-time axis (0=X,1=Y,2=Z). dn ∈ {+1,-1}: +½ or -½ face.
+// dn sign convention: grad_nn = ih*dn*(v_nb - v_c) is positive outward.
+// tnn: normal-normal stress; tnt1/tnt2: shear on (AX,t1)/(AX,t2) planes.
 // Fe: τ·u + κ∇T at face (energy flux, outward positive).
+template<int AX>
 __device__ __forceinline__ static void face_visc(
     const double* __restrict__ sp,
-    int ax, int dn, int i, int j, int k,
+    int dn, int i, int j, int k,
     double mu, double kc, double ih, double ihs,
     double& tnn, double& tnt1, double& tnt2, double& Fe)
 {
-    const int t1 = (ax + 1) % 3, t2 = (ax + 2) % 3;
-    const int ni = i + (ax == 0 ? dn : 0);
-    const int nj = j + (ax == 1 ? dn : 0);
-    const int nk = k + (ax == 2 ? dn : 0);
-    const int d1i = (t1 == 0), d1j = (t1 == 1), d1k = (t1 == 2);
-    const int d2i = (t2 == 0), d2j = (t2 == 1), d2k = (t2 == 2);
+    constexpr int t1 = (AX + 1) % 3;
+    constexpr int t2 = (AX + 2) % 3;
+    const int ni = i + (AX == 0 ? dn : 0);
+    const int nj = j + (AX == 1 ? dn : 0);
+    const int nk = k + (AX == 2 ? dn : 0);
+    constexpr int d1i = (t1 == 0), d1j = (t1 == 1), d1k = (t1 == 2);
+    constexpr int d2i = (t2 == 0), d2j = (t2 == 1), d2k = (t2 == 2);
 
     // Normal velocity gradients at this face (sign absorbed by dn)
-    const double dnn  = ih * dn * (sp_vel(sp, ax, ni, nj, nk) - sp_vel(sp, ax, i, j, k));
+    const double dnn  = ih * dn * (sp_vel(sp, AX, ni, nj, nk) - sp_vel(sp, AX, i, j, k));
     const double dtn1 = ih * dn * (sp_vel(sp, t1, ni, nj, nk) - sp_vel(sp, t1, i, j, k));
     const double dtn2 = ih * dn * (sp_vel(sp, t2, ni, nj, nk) - sp_vel(sp, t2, i, j, k));
 
     // Tangential gradients: face-averaged between neighbor and center cells
-    const double d_ax_dt1 = ihs*(sp_vel(sp,ax,ni+d1i,nj+d1j,nk+d1k)-sp_vel(sp,ax,ni-d1i,nj-d1j,nk-d1k)
-                                +sp_vel(sp,ax,i +d1i,j +d1j,k +d1k)-sp_vel(sp,ax,i -d1i,j -d1j,k -d1k));
-    const double d_ax_dt2 = ihs*(sp_vel(sp,ax,ni+d2i,nj+d2j,nk+d2k)-sp_vel(sp,ax,ni-d2i,nj-d2j,nk-d2k)
-                                +sp_vel(sp,ax,i +d2i,j +d2j,k +d2k)-sp_vel(sp,ax,i -d2i,j -d2j,k -d2k));
+    const double d_ax_dt1 = ihs*(sp_vel(sp,AX,ni+d1i,nj+d1j,nk+d1k)-sp_vel(sp,AX,ni-d1i,nj-d1j,nk-d1k)
+                                +sp_vel(sp,AX,i +d1i,j +d1j,k +d1k)-sp_vel(sp,AX,i -d1i,j -d1j,k -d1k));
+    const double d_ax_dt2 = ihs*(sp_vel(sp,AX,ni+d2i,nj+d2j,nk+d2k)-sp_vel(sp,AX,ni-d2i,nj-d2j,nk-d2k)
+                                +sp_vel(sp,AX,i +d2i,j +d2j,k +d2k)-sp_vel(sp,AX,i -d2i,j -d2j,k -d2k));
     const double d_t1_dt1 = ihs*(sp_vel(sp,t1,ni+d1i,nj+d1j,nk+d1k)-sp_vel(sp,t1,ni-d1i,nj-d1j,nk-d1k)
                                 +sp_vel(sp,t1,i +d1i,j +d1j,k +d1k)-sp_vel(sp,t1,i -d1i,j -d1j,k -d1k));
     const double d_t2_dt2 = ihs*(sp_vel(sp,t2,ni+d2i,nj+d2j,nk+d2k)-sp_vel(sp,t2,ni-d2i,nj-d2j,nk-d2k)
@@ -460,11 +463,41 @@ __device__ __forceinline__ static void face_visc(
     tnt1 = mu * (d_ax_dt1 + dtn1);
     tnt2 = mu * (d_ax_dt2 + dtn2);
 
-    Fe = tnn  * 0.5 * (sp_vel(sp, ax, ni, nj, nk) + sp_vel(sp, ax, i, j, k))
-       + tnt1 * 0.5 * (sp_vel(sp, t1, ni, nj, nk) + sp_vel(sp, t1, i, j, k))
-       + tnt2 * 0.5 * (sp_vel(sp, t2, ni, nj, nk) + sp_vel(sp, t2, i, j, k))
+    // Face velocity: FaceInterp<AX> at the lower-index cell of this face.
+    // dn=+1 → lower index = (i,j,k); dn=-1 → lower index = (ni,nj,nk).
+    const int li = (AX == 0 ? (dn == 1 ? i : ni) : i);
+    const int lj = (AX == 1 ? (dn == 1 ? j : nj) : j);
+    const int lk = (AX == 2 ? (dn == 1 ? k : nk) : k);
+    auto vel_ax = [sp](int ii,int jj,int kk){ return sp_vel(sp, AX, ii, jj, kk); };
+    auto vel_t1 = [sp](int ii,int jj,int kk){ return sp_vel(sp, t1, ii, jj, kk); };
+    auto vel_t2 = [sp](int ii,int jj,int kk){ return sp_vel(sp, t2, ii, jj, kk); };
+    constexpr FaceInterp<static_cast<Axis>(AX)> fi;
+    Fe = tnn  * fi(vel_ax, li, lj, lk)
+       + tnt1 * fi(vel_t1, li, lj, lk)
+       + tnt2 * fi(vel_t2, li, lj, lk)
        + kc * ih * dn * (sp[5*GPU_NCELL + gpu_cell_idx(ni,nj,nk)]
                         - sp[5*GPU_NCELL + gpu_cell_idx(i, j, k)]);
+}
+
+// Accumulate viscous stress divergence for one axis AX into acc[] and Fe_acc.
+template<int AX>
+__device__ __forceinline__ static void visc_axis(
+    const double* __restrict__ sp, double ih, double ihs,
+    int i, int j, int k, double mu_p, double mu_m,
+    double (&acc)[3], double& Fe_acc)
+{
+    constexpr int t1 = (AX + 1) % 3;
+    constexpr int t2 = (AX + 2) % 3;
+    double tnn_p, tnt1_p, tnt2_p, Fe_p;
+    double tnn_m, tnt1_m, tnt2_m, Fe_m;
+    face_visc<AX>(sp, +1, i, j, k, mu_p, mu_p*GPU_CP/GPU_PR, ih, ihs,
+                  tnn_p, tnt1_p, tnt2_p, Fe_p);
+    face_visc<AX>(sp, -1, i, j, k, mu_m, mu_m*GPU_CP/GPU_PR, ih, ihs,
+                  tnn_m, tnt1_m, tnt2_m, Fe_m);
+    acc[AX] += ih * (tnn_p  - tnn_m );
+    acc[t1] += ih * (tnt1_p - tnt1_m);
+    acc[t2] += ih * (tnt2_p - tnt2_m);
+    Fe_acc  += ih * (Fe_p   - Fe_m  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -485,39 +518,25 @@ void k_rhs_visc(const GpuLeafRhsMeta* __restrict__ metas) {
     const int i = GPU_NG + threadIdx.x;
     const int j = GPU_NG + threadIdx.y;
 
-    auto MU = [&](int ii,int jj,int kk){ return sp[7*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
+    auto MU = [sp](int ii,int jj,int kk){ return sp[7*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
+    constexpr FaceInterp<Axis::X> fi_x;
+    constexpr FaceInterp<Axis::Y> fi_y;
+    constexpr FaceInterp<Axis::Z> fi_z;
 
     for (int k = ilo; k <= ihi; ++k) {
-        const double mu_c = MU(i,j,k);
-        const double mu_p[3] = {
-            0.5*(mu_c + MU(i+1,j,  k  )),
-            0.5*(mu_c + MU(i,  j+1,k  )),
-            0.5*(mu_c + MU(i,  j,  k+1))
-        };
-        const double mu_m[3] = {
-            0.5*(mu_c + MU(i-1,j,  k  )),
-            0.5*(mu_c + MU(i,  j-1,k  )),
-            0.5*(mu_c + MU(i,  j,  k-1))
-        };
+        // µ face averaging via FaceInterp<DIR, ArithmeticMean>
+        const double mu_xp = fi_x(MU, i,   j,   k  );
+        const double mu_xm = fi_x(MU, i-1, j,   k  );
+        const double mu_yp = fi_y(MU, i,   j,   k  );
+        const double mu_ym = fi_y(MU, i,   j-1, k  );
+        const double mu_zp = fi_z(MU, i,   j,   k  );
+        const double mu_zm = fi_z(MU, i,   j,   k-1);
 
         double acc[3] = {0.0, 0.0, 0.0};
         double Fe_acc = 0.0;
-
-        for (int ax = 0; ax < 3; ++ax) {
-            const int t1 = (ax + 1) % 3, t2 = (ax + 2) % 3;
-            double tnn_p, tnt1_p, tnt2_p, Fe_p;
-            double tnn_m, tnt1_m, tnt2_m, Fe_m;
-            face_visc(sp, ax, +1, i, j, k,
-                      mu_p[ax], mu_p[ax] * GPU_CP / GPU_PR, ih, ihs,
-                      tnn_p, tnt1_p, tnt2_p, Fe_p);
-            face_visc(sp, ax, -1, i, j, k,
-                      mu_m[ax], mu_m[ax] * GPU_CP / GPU_PR, ih, ihs,
-                      tnn_m, tnt1_m, tnt2_m, Fe_m);
-            acc[ax] += ih * (tnn_p  - tnn_m );
-            acc[t1] += ih * (tnt1_p - tnt1_m);
-            acc[t2] += ih * (tnt2_p - tnt2_m);
-            Fe_acc  += ih * (Fe_p   - Fe_m  );
-        }
+        visc_axis<0>(sp, ih, ihs, i, j, k, mu_xp, mu_xm, acc, Fe_acc);
+        visc_axis<1>(sp, ih, ihs, i, j, k, mu_yp, mu_ym, acc, Fe_acc);
+        visc_axis<2>(sp, ih, ihs, i, j, k, mu_zp, mu_zm, acc, Fe_acc);
 
         const int flat = gpu_cell_idx(i,j,k);
         rhs[1*GPU_NCELL+flat] += acc[0];
