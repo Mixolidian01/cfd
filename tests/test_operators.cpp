@@ -618,6 +618,60 @@ static void t_dd_velocity_grad_components_divu() {
           g.divu(), 14.0);
 }
 
+// ── R7 T-DE: VelocityGradAtFace<DIR,2> — exact on linear velocity field ──────
+// u=x, v=2y, w=3z  → all gradients constant, exact regardless of h
+static void t_de_velocity_grad_at_face_linear() {
+    const double h = 0.1;
+    auto U = [&](int i, int /*j*/, int /*k*/){ return 1.0 * i * h; };  // u = x
+    auto V = [&](int /*i*/, int j, int /*k*/){ return 2.0 * j * h; };  // v = 2y
+    auto W = [&](int /*i*/, int /*j*/, int k){ return 3.0 * k * h; };  // w = 3z
+
+    // DIR=X, plus face at i+½: dun_dxn=∂u/∂x=1, dut1_dxt1=∂v/∂y=2, dut2_dxt2=∂w/∂z=3
+    {
+        VelocityGradAtFace<Axis::X, 2> VGX;
+        auto g = VGX.plus(U, V, W, 5, 5, 5, h);
+        check("VGAtFace<X> plus: dun_dxn == 1.0", std::abs(g.dun_dxn - 1.0) < 1e-12,
+              g.dun_dxn, 1.0);
+        check("VGAtFace<X> plus: dut1_dxt1 == 2.0", std::abs(g.dut1_dxt1 - 2.0) < 1e-12,
+              g.dut1_dxt1, 2.0);
+        check("VGAtFace<X> plus: dut2_dxt2 == 3.0", std::abs(g.dut2_dxt2 - 3.0) < 1e-12,
+              g.dut2_dxt2, 3.0);
+        check("VGAtFace<X> plus: divu == 6.0", std::abs(g.divu() - 6.0) < 1e-12,
+              g.divu(), 6.0);
+        // All cross-terms zero for this diagonal velocity field
+        check("VGAtFace<X> plus: dut1_dxn == 0.0", std::abs(g.dut1_dxn) < 1e-12,
+              g.dut1_dxn, 0.0);
+        check("VGAtFace<X> plus: dun_dxt1 == 0.0", std::abs(g.dun_dxt1) < 1e-12,
+              g.dun_dxt1, 0.0);
+    }
+    // DIR=X minus face — must match plus shifted by -1
+    {
+        VelocityGradAtFace<Axis::X, 2> VGX;
+        auto gp = VGX.plus (U, V, W, 4, 5, 5, h);
+        auto gm = VGX.minus(U, V, W, 5, 5, 5, h);
+        check("VGAtFace<X> minus == plus(i-1)", std::abs(gp.dun_dxn - gm.dun_dxn) < 1e-12,
+              gp.dun_dxn - gm.dun_dxn, 0.0);
+    }
+    // DIR=Y, plus face: dun_dxn=∂v/∂y=2, dut1_dxt1=∂u/∂x=1, dut2_dxt2=∂w/∂z=3
+    {
+        VelocityGradAtFace<Axis::Y, 2> VGY;
+        auto g = VGY.plus(U, V, W, 5, 5, 5, h);
+        check("VGAtFace<Y> plus: dun_dxn == 2.0", std::abs(g.dun_dxn - 2.0) < 1e-12,
+              g.dun_dxn, 2.0);
+        check("VGAtFace<Y> plus: divu == 6.0", std::abs(g.divu() - 6.0) < 1e-12,
+              g.divu(), 6.0);
+    }
+    // DIR=Z, plus face: dun_dxn=∂w/∂z=3
+    {
+        VelocityGradAtFace<Axis::Z, 2> VGZ;
+        auto g = VGZ.plus(U, V, W, 5, 5, 5, h);
+        check("VGAtFace<Z> plus: dun_dxn == 3.0", std::abs(g.dun_dxn - 3.0) < 1e-12,
+              g.dun_dxn, 3.0);
+        check("VGAtFace<Z> plus: divu == 6.0", std::abs(g.divu() - 6.0) < 1e-12,
+              g.divu(), 6.0);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 3: Layer 2 — Discrete Operators ===\n");
@@ -643,6 +697,7 @@ int main() {
     t_dd_face_grad_order2();
     t_dd_face_grad_order4_smoke();
     t_dd_velocity_grad_components_divu();
+    t_de_velocity_grad_at_face_linear();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)

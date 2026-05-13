@@ -160,3 +160,61 @@ struct VelocityGradComponents {
     __host__ __device__
     double divu() const noexcept { return dun_dxn + dut1_dxt1 + dut2_dxt2; }
 };
+
+// ── VelocityGradAtFace<DIR, Order> ──────────────────────────────────────────
+// Composite: calls FaceGrad<DIR,Order> for all 7 τ-relevant components.
+// plus():  face at (i+½, j, k) for DIR=X
+// minus(): face at (i-½, j, k) for DIR=X — shifts index by −1 along DIR then
+//          delegates to plus(), so stencil logic lives in exactly one place.
+//
+// Component mapping by axis:
+//   DIR=X: u_n=u  u_t1=v  u_t2=w   t1=Y  t2=Z
+//   DIR=Y: u_n=v  u_t1=u  u_t2=w   t1=X  t2=Z
+//   DIR=Z: u_n=w  u_t1=u  u_t2=v   t1=X  t2=Y
+template<Axis DIR, int Order = 2>
+struct VelocityGradAtFace {
+
+    template<typename UF, typename VF, typename WF>
+    __host__ __device__
+    VelocityGradComponents plus(UF u, VF v, WF w,
+                                int i, int j, int k, double h) const noexcept {
+        FaceGrad<DIR, Order> fg;
+        VelocityGradComponents g;
+        if constexpr (DIR == Axis::X) {
+            g.dun_dxn   = fg.normal(u, i, j, k, h);
+            g.dut1_dxn  = fg.normal(v, i, j, k, h);
+            g.dut2_dxn  = fg.normal(w, i, j, k, h);
+            g.dun_dxt1  = fg.template tangential<Axis::Y>(u, i, j, k, h);
+            g.dun_dxt2  = fg.template tangential<Axis::Z>(u, i, j, k, h);
+            g.dut1_dxt1 = fg.template tangential<Axis::Y>(v, i, j, k, h);
+            g.dut2_dxt2 = fg.template tangential<Axis::Z>(w, i, j, k, h);
+        } else if constexpr (DIR == Axis::Y) {
+            g.dun_dxn   = fg.normal(v, i, j, k, h);
+            g.dut1_dxn  = fg.normal(u, i, j, k, h);
+            g.dut2_dxn  = fg.normal(w, i, j, k, h);
+            g.dun_dxt1  = fg.template tangential<Axis::X>(v, i, j, k, h);
+            g.dun_dxt2  = fg.template tangential<Axis::Z>(v, i, j, k, h);
+            g.dut1_dxt1 = fg.template tangential<Axis::X>(u, i, j, k, h);
+            g.dut2_dxt2 = fg.template tangential<Axis::Z>(w, i, j, k, h);
+        } else {
+            g.dun_dxn   = fg.normal(w, i, j, k, h);
+            g.dut1_dxn  = fg.normal(u, i, j, k, h);
+            g.dut2_dxn  = fg.normal(v, i, j, k, h);
+            g.dun_dxt1  = fg.template tangential<Axis::X>(w, i, j, k, h);
+            g.dun_dxt2  = fg.template tangential<Axis::Y>(w, i, j, k, h);
+            g.dut1_dxt1 = fg.template tangential<Axis::X>(u, i, j, k, h);
+            g.dut2_dxt2 = fg.template tangential<Axis::Y>(v, i, j, k, h);
+        }
+        return g;
+    }
+
+    template<typename UF, typename VF, typename WF>
+    __host__ __device__
+    VelocityGradComponents minus(UF u, VF v, WF w,
+                                 int i, int j, int k, double h) const noexcept {
+        const int im = (DIR == Axis::X) ? i-1 : i;
+        const int jm = (DIR == Axis::Y) ? j-1 : j;
+        const int km = (DIR == Axis::Z) ? k-1 : k;
+        return plus(u, v, w, im, jm, km, h);
+    }
+};
