@@ -49,6 +49,32 @@ inline std::array<double,5> hllc_flux_t(const Prim& L, const Prim& R) noexcept {
     return HllcFlux<DIR>{}(L, R);
 }
 
+// ── P3.2 — KE-consistent (Pirozzoli 2011) flux — shared by convective_rhs.cpp
+//           and operators.cpp (accumulate_face_typed). Inline header to avoid
+//           duplication across the two translation units.
+// P13.2: FDKEC mass flux (Subbareddy & Candler 2009).
+// P14.1: stiffened-gas E for H computation.
+template<Axis DIR>
+inline std::array<double,NVAR> kep_flux_t(const Prim& L, const Prim& R) noexcept {
+    const double u_a   = 0.5*(L.u   + R.u  );
+    const double v_a   = 0.5*(L.v   + R.v  );
+    const double w_a   = 0.5*(L.w   + R.w  );
+    const double p_a   = 0.5*(L.p   + R.p  );
+    const double E_L   = (L.p + L.gamma_m*L.p_inf_m)/(L.gamma_m-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
+    const double E_R   = (R.p + R.gamma_m*R.p_inf_m)/(R.gamma_m-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
+    const double H_a   = 0.5*((E_L+L.p)/L.rho + (E_R+R.p)/R.rho);
+    const double un_L  = (DIR==Axis::X) ? L.u : (DIR==Axis::Y) ? L.v : L.w;
+    const double un_R  = (DIR==Axis::X) ? R.u : (DIR==Axis::Y) ? R.v : R.w;
+    const double mass  = 0.5*(L.rho*un_L + R.rho*un_R);
+    std::array<double,NVAR> F;
+    F[0] = mass;
+    F[1] = mass*u_a + (DIR==Axis::X ? p_a : 0.0);
+    F[2] = mass*v_a + (DIR==Axis::Y ? p_a : 0.0);
+    F[3] = mass*w_a + (DIR==Axis::Z ? p_a : 0.0);
+    F[4] = mass*H_a;
+    return F;
+}
+
 // ── Per-block convective RHS  dQ/dt|_conv = -(1/h)(dF/dx + dG/dy + dH/dz) ──
 // Ghost cells must be filled.  rhs is added to (not overwritten).
 void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;

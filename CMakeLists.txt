@@ -53,6 +53,9 @@ target_link_libraries(block PUBLIC linalg)
 find_package(OpenMP)
 add_library(operators STATIC
     src/operators.cpp
+    src/convective_rhs.cpp          # R9-E3: convective kernel (convective_rhs_impl)
+    src/viscous_rhs.cpp             # R9-E3: viscous kernel (viscous_rhs_impl, undo_cf_viscous_energy)
+    src/rhs_sensors.cpp             # R9-E3: sensors & sources (fill_ducros_cache, phi_*, tree_sat_penalty)
     src/instantiation_matrix.cpp   # R5: pre-compiled (Flux × Recon × EOS) matrix
 )
 target_link_libraries(operators PUBLIC block)
@@ -150,12 +153,18 @@ if(NVCC)
     set(_GPU_BASE  ${_S}/linalg.cpp ${_S}/block_tree.cpp
                    ${_S}/amr_operators.cpp ${_S}/mpi_comm.cpp)
     set(_GPU_POOL  ${_S}/cuda/gpu_pool.cu ${_GPU_BASE})
+    set(_GPU_OPS                                        # R9-E3: operators split set
+        ${_S}/operators.cpp
+        ${_S}/convective_rhs.cpp
+        ${_S}/viscous_rhs.cpp
+        ${_S}/rhs_sensors.cpp
+    )
     set(_GPU_NS                                         # full solver set (t25, t26)
         ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
         ${_S}/cuda/gpu_rhs.cu   ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
         ${_GPU_BASE}
-        ${_S}/operators.cpp   ${_S}/ns_solver.cpp  ${_S}/flux_register.cpp
-        ${_S}/sgs.cpp         ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
+        ${_GPU_OPS}             ${_S}/ns_solver.cpp  ${_S}/flux_register.cpp
+        ${_S}/sgs.cpp           ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
         ${_S}/live_streamer.cpp
     )
     set(_LZ4 "$<$<BOOL:${LZ4_LIBRARY}>:-llz4>")
@@ -193,7 +202,7 @@ if(NVCC)
         EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_gpu.cu
              ${_S}/linalg.cpp ${_S}/block_tree.cpp ${_S}/amr_operators.cpp
-             ${_S}/operators.cpp ${_S}/ns_solver.cpp ${_S}/flux_register.cpp
+             ${_GPU_OPS} ${_S}/ns_solver.cpp ${_S}/flux_register.cpp
              ${_S}/sgs.cpp ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
              ${_S}/live_streamer.cpp
     )
@@ -210,7 +219,7 @@ if(NVCC)
         EXTRA_FLAGS --extended-lambda ${_WNO}
         SRCS ${_T}/test_p83_gpu_rhs.cu
              ${_S}/cuda/gpu_rhs.cu ${_S}/cuda/gpu_ghost_fill.cu ${_GPU_POOL}
-             ${_S}/operators.cpp
+             ${_GPU_OPS}
     )
     add_nvcc_gate(TARGET t22 BIN t22_gpu_cfl       COMMENT "P8.5 GPU CFL warp-shuffle"
         EXTRA_FLAGS ${_WNO}
@@ -225,7 +234,7 @@ if(NVCC)
         SRCS ${_T}/test_p86_gpu_graph.cu
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_GPU_POOL}
-             ${_S}/operators.cpp
+             ${_GPU_OPS}
     )
     add_nvcc_gate(TARGET t25 BIN t25_gpu_nssolver          COMMENT "P9.1 GPU vs CPU NSSolver"
         EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
