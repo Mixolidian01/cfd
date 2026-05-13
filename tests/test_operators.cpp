@@ -556,6 +556,66 @@ static void t_dd_face_grad_order2() {
                   prev_err/max_err, 3.9);
         prev_err = max_err;
     }
+    // Y-axis normal convergence
+    prev_err = -1.0;
+    for (double h : {0.04, 0.02, 0.01}) {
+        FaceGrad<Axis::Y, 2> fgy;
+        auto fy = [&](int /*i*/, int j, int /*k*/){ return std::sin(k2pi * j * h); };
+        double max_err = 0.0;
+        for (int j = 2; j <= 23; ++j) {
+            double got   = fgy.normal(fy, 0, j, 0, h);
+            double yface = (j + 0.5) * h;
+            double exact = k2pi * std::cos(k2pi * yface);
+            max_err = std::max(max_err, std::abs(got - exact));
+        }
+        if (prev_err > 0.0)
+            check("FaceGrad<Y,2> normal O(h²) ratio >= 3.9", prev_err/max_err >= 3.9,
+                  prev_err/max_err, 3.9);
+        prev_err = max_err;
+    }
+    // Z-axis normal convergence
+    prev_err = -1.0;
+    for (double h : {0.04, 0.02, 0.01}) {
+        FaceGrad<Axis::Z, 2> fgz;
+        auto fz = [&](int /*i*/, int /*j*/, int k){ return std::sin(k2pi * k * h); };
+        double max_err = 0.0;
+        for (int k = 2; k <= 23; ++k) {
+            double got   = fgz.normal(fz, 0, 0, k, h);
+            double zface = (k + 0.5) * h;
+            double exact = k2pi * std::cos(k2pi * zface);
+            max_err = std::max(max_err, std::abs(got - exact));
+        }
+        if (prev_err > 0.0)
+            check("FaceGrad<Z,2> normal O(h²) ratio >= 3.9", prev_err/max_err >= 3.9,
+                  prev_err/max_err, 3.9);
+        prev_err = max_err;
+    }
+}
+
+// ── R7 T-DD4: FaceGrad<X,4> — smoke test, O(h⁴) error visibly smaller ────────
+static void t_dd_face_grad_order4_smoke() {
+    const double k2pi = 2.0 * M_PI;
+    // Compare error of Order=2 vs Order=4 at same resolution h=0.05
+    const double h = 0.05;
+    FaceGrad<Axis::X, 2> fg2;
+    FaceGrad<Axis::X, 4> fg4;
+    auto f = [&](int i, int /*j*/, int /*k*/){ return std::sin(k2pi * i * h); };
+    double err2 = 0.0, err4 = 0.0;
+    for (int i = 2; i <= 20; ++i) {
+        double xface = (i + 0.5) * h;
+        double exact = k2pi * std::cos(k2pi * xface);
+        err2 = std::max(err2, std::abs(fg2.normal(f, i, 0, 0, h) - exact));
+        err4 = std::max(err4, std::abs(fg4.normal(f, i, 0, 0, h) - exact));
+    }
+    check("FaceGrad<X,4> error < FaceGrad<X,2> error", err4 < err2, err4, err2);
+}
+
+// ── R7 T-DD5: VelocityGradComponents::divu() ─────────────────────────────────
+static void t_dd_velocity_grad_components_divu() {
+    VelocityGradComponents g{1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0};
+    // divu = dun_dxn + dut1_dxt1 + dut2_dxt2 = 1 + 6 + 7 = 14
+    check("VelocityGradComponents::divu() == 14.0", std::abs(g.divu() - 14.0) < 1e-12,
+          g.divu(), 14.0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -581,6 +641,8 @@ int main() {
     t_db_cell_laplacian_exact();
     t_dc_cell_div_order2();
     t_dd_face_grad_order2();
+    t_dd_face_grad_order4_smoke();
+    t_dd_velocity_grad_components_divu();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)

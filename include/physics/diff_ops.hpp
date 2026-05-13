@@ -86,7 +86,7 @@ struct FaceGrad {
             if constexpr (DIR == Axis::Z) return (f(i,j,k+1) - f(i,j,k)) / h;
         } else {
             static_assert(Order == 4, "FaceGrad: Order must be 2 or 4");
-            // 4th-order: uses one upstream ghost cell (NG≥2 satisfied)
+            // 4th-order: uses cells i-1…i+2; NG≥2 required on both sides
             if constexpr (DIR == Axis::X)
                 return (-f(i+2,j,k)+27.0*f(i+1,j,k)-27.0*f(i,j,k)+f(i-1,j,k))/(24.0*h);
             if constexpr (DIR == Axis::Y)
@@ -117,6 +117,7 @@ struct FaceGrad {
                 return (f(i,j+1,k+1)-f(i,j-1,k+1)+f(i,j+1,k)-f(i,j-1,k))/(4.0*h);
         } else {
             static_assert(Order == 4, "FaceGrad: Order must be 2 or 4");
+            // requires NG>=2 in transverse direction
             // Average of 4th-order central diffs from both cells sharing the face
             if constexpr (DIR==Axis::X && T==Axis::Y)
                 return ((-f(i+1,j+2,k)+8*f(i+1,j+1,k)-8*f(i+1,j-1,k)+f(i+1,j-2,k))
