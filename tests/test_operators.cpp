@@ -676,6 +676,20 @@ static void t_de_velocity_grad_at_face_linear() {
     }
 }
 
+// ── R7 T-DF: VelocityGradAtFace<X,4> — exact on linear field ────────────────
+static void t_df_order4_smoke() {
+    const double hv = 0.1;
+    auto U = [&](int i, int /*j*/, int /*k*/){ return 1.0 * i * hv; };
+    auto V = [&](int /*i*/, int j, int /*k*/){ return 2.0 * j * hv; };
+    auto W = [&](int /*i*/, int /*j*/, int k){ return 3.0 * k * hv; };
+    VelocityGradAtFace<Axis::X, 4> VGX4;
+    auto g = VGX4.plus(U, V, W, 5, 5, 5, hv);
+    check("VGAtFace<X,4> plus: dun_dxn == 1.0 exactly", std::abs(g.dun_dxn - 1.0) < 1e-10,
+          g.dun_dxn, 1.0);
+    check("VGAtFace<X,4> plus: divu == 6.0 exactly", std::abs(g.divu() - 6.0) < 1e-10,
+          g.divu(), 6.0);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 3: Layer 2 — Discrete Operators ===\n");
@@ -702,6 +716,7 @@ int main() {
     t_dd_face_grad_order4_smoke();
     t_dd_velocity_grad_components_divu();
     t_de_velocity_grad_at_face_linear();
+    t_df_order4_smoke();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)

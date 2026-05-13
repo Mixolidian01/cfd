@@ -528,16 +528,17 @@ static constexpr double CP = CPU_CP;
 static void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
                               CellBlock& rhs, double h) noexcept
 {
-    const double ih      = 1.0 / h;
-    const double ih2     = ih * ih;
-    const double ih_half = 0.5 * ih;   // 1/(2h): face tangential gradients
+    const double ih = 1.0 / h;
 
-    // Velocity and µ accessors from caches
     auto U  = [&](int ii,int jj,int kk){ return pc[cell_idx(ii,jj,kk)].u; };
     auto V  = [&](int ii,int jj,int kk){ return pc[cell_idx(ii,jj,kk)].v; };
     auto W  = [&](int ii,int jj,int kk){ return pc[cell_idx(ii,jj,kk)].w; };
     auto Tf = [&](int ii,int jj,int kk){ return pc[cell_idx(ii,jj,kk)].T; };
     auto MU = [&](int ii,int jj,int kk){ return mu_arr[cell_idx(ii,jj,kk)]; };
+
+    constexpr VelocityGradAtFace<Axis::X, 2> VGX;
+    constexpr VelocityGradAtFace<Axis::Y, 2> VGY;
+    constexpr VelocityGradAtFace<Axis::Z, 2> VGZ;
 
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
@@ -551,90 +552,36 @@ static void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
         double mu_zp = 0.5*(MU(i,j,k) + MU(i,  j,  k+1));
         double mu_zm = 0.5*(MU(i,j,k) + MU(i,  j,  k-1));
 
-        // ── Velocity gradients at x-faces (i±½) ─────────────────────────────
-        // x+½
-        double dudx_xp = ih*(U(i+1,j,k)-U(i,j,k));
-        double dvdx_xp = ih*(V(i+1,j,k)-V(i,j,k));
-        double dwdx_xp = ih*(W(i+1,j,k)-W(i,j,k));
-        double dudy_xp = ih_half*(U(i+1,j+1,k)-U(i+1,j-1,k) + U(i,j+1,k)-U(i,j-1,k));
-        double dudz_xp = ih_half*(U(i+1,j,k+1)-U(i+1,j,k-1) + U(i,j,k+1)-U(i,j,k-1));
-        double dvdy_xp = ih_half*(V(i+1,j+1,k)-V(i+1,j-1,k) + V(i,j+1,k)-V(i,j-1,k));
-        double dwdz_xp = ih_half*(W(i+1,j,k+1)-W(i+1,j,k-1) + W(i,j,k+1)-W(i,j,k-1));
-        double divu_xp = dudx_xp + dvdy_xp + dwdz_xp;
-        // x-½
-        double dudx_xm = ih*(U(i,j,k)-U(i-1,j,k));
-        double dvdx_xm = ih*(V(i,j,k)-V(i-1,j,k));
-        double dwdx_xm = ih*(W(i,j,k)-W(i-1,j,k));
-        double dudy_xm = ih_half*(U(i-1,j+1,k)-U(i-1,j-1,k) + U(i,j+1,k)-U(i,j-1,k));
-        double dudz_xm = ih_half*(U(i-1,j,k+1)-U(i-1,j,k-1) + U(i,j,k+1)-U(i,j,k-1));
-        double dvdy_xm = ih_half*(V(i-1,j+1,k)-V(i-1,j-1,k) + V(i,j+1,k)-V(i,j-1,k));
-        double dwdz_xm = ih_half*(W(i-1,j,k+1)-W(i-1,j,k-1) + W(i,j,k+1)-W(i,j,k-1));
-        double divu_xm = dudx_xm + dvdy_xm + dwdz_xm;
+        // ── Velocity gradient tensors at 6 faces (R7: VelocityGradAtFace) ──
+        const auto gxp = VGX.plus (U, V, W, i, j, k, h);
+        const auto gxm = VGX.minus(U, V, W, i, j, k, h);
+        const auto gyp = VGY.plus (U, V, W, i, j, k, h);
+        const auto gym = VGY.minus(U, V, W, i, j, k, h);
+        const auto gzp = VGZ.plus (U, V, W, i, j, k, h);
+        const auto gzm = VGZ.minus(U, V, W, i, j, k, h);
 
-        // ── Velocity gradients at y-faces (j±½) ─────────────────────────────
-        // j+½
-        double dudy_yp = ih*(U(i,j+1,k)-U(i,j,k));
-        double dvdx_yp = ih_half*(V(i+1,j+1,k)-V(i-1,j+1,k) + V(i+1,j,k)-V(i-1,j,k));
-        double dvdy_yp = ih*(V(i,j+1,k)-V(i,j,k));
-        double dvdz_yp = ih_half*(V(i,j+1,k+1)-V(i,j+1,k-1) + V(i,j,k+1)-V(i,j,k-1));
-        double dwdy_yp = ih*(W(i,j+1,k)-W(i,j,k));
-        double dudx_yp = ih_half*(U(i+1,j+1,k)-U(i-1,j+1,k) + U(i+1,j,k)-U(i-1,j,k));
-        double dwdz_yp = ih_half*(W(i,j+1,k+1)-W(i,j+1,k-1) + W(i,j,k+1)-W(i,j,k-1));
-        double divu_yp = dudx_yp + dvdy_yp + dwdz_yp;
-        // j-½
-        double dudy_ym = ih*(U(i,j,k)-U(i,j-1,k));
-        double dvdx_ym = ih_half*(V(i+1,j-1,k)-V(i-1,j-1,k) + V(i+1,j,k)-V(i-1,j,k));
-        double dvdy_ym = ih*(V(i,j,k)-V(i,j-1,k));
-        double dvdz_ym = ih_half*(V(i,j-1,k+1)-V(i,j-1,k-1) + V(i,j,k+1)-V(i,j,k-1));
-        double dwdy_ym = ih*(W(i,j,k)-W(i,j-1,k));
-        double dudx_ym = ih_half*(U(i+1,j-1,k)-U(i-1,j-1,k) + U(i+1,j,k)-U(i-1,j,k));
-        double dwdz_ym = ih_half*(W(i,j-1,k+1)-W(i,j-1,k-1) + W(i,j,k+1)-W(i,j,k-1));
-        double divu_ym = dudx_ym + dvdy_ym + dwdz_ym;
-
-        // ── Velocity gradients at z-faces (k±½) ─────────────────────────────
-        // k+½
-        double dudz_zp = ih*(U(i,j,k+1)-U(i,j,k));
-        double dvdz_zp = ih*(V(i,j,k+1)-V(i,j,k));
-        double dwdz_zp = ih*(W(i,j,k+1)-W(i,j,k));
-        double dwdx_zp = ih_half*(W(i+1,j,k+1)-W(i-1,j,k+1) + W(i+1,j,k)-W(i-1,j,k));
-        double dwdy_zp = ih_half*(W(i,j+1,k+1)-W(i,j-1,k+1) + W(i,j+1,k)-W(i,j-1,k));
-        double dudx_zp = ih_half*(U(i+1,j,k+1)-U(i-1,j,k+1) + U(i+1,j,k)-U(i-1,j,k));
-        double dvdy_zp = ih_half*(V(i,j+1,k+1)-V(i,j-1,k+1) + V(i,j+1,k)-V(i,j-1,k));
-        double divu_zp = dudx_zp + dvdy_zp + dwdz_zp;
-        // k-½
-        double dudz_zm = ih*(U(i,j,k)-U(i,j,k-1));
-        double dvdz_zm = ih*(V(i,j,k)-V(i,j,k-1));
-        double dwdz_zm = ih*(W(i,j,k)-W(i,j,k-1));
-        double dwdx_zm = ih_half*(W(i+1,j,k-1)-W(i-1,j,k-1) + W(i+1,j,k)-W(i-1,j,k));
-        double dwdy_zm = ih_half*(W(i,j+1,k-1)-W(i,j-1,k-1) + W(i,j+1,k)-W(i,j-1,k));
-        double dudx_zm = ih_half*(U(i+1,j,k-1)-U(i-1,j,k-1) + U(i+1,j,k)-U(i-1,j,k));
-        double dvdy_zm = ih_half*(V(i,j+1,k-1)-V(i,j-1,k-1) + V(i,j+1,k)-V(i,j-1,k));
-        double divu_zm = dudx_zm + dvdy_zm + dwdz_zm;
-
-        // ── Face stresses τ_ab|_{face} = µ_face·(∂u_a/∂x_b + ∂u_b/∂x_a - δ·⅔ div u)
-        // x-faces: components needed for ax(τ_xx), ay(τ_xy), az(τ_xz)
-        double txx_xp = mu_xp*(2.0*dudx_xp - (2.0/3.0)*divu_xp);
-        double txy_xp = mu_xp*(dudy_xp + dvdx_xp);
-        double txz_xp = mu_xp*(dudz_xp + dwdx_xp);
-        double txx_xm = mu_xm*(2.0*dudx_xm - (2.0/3.0)*divu_xm);
-        double txy_xm = mu_xm*(dudy_xm + dvdx_xm);
-        double txz_xm = mu_xm*(dudz_xm + dwdx_xm);
-
-        // y-faces: τ_yx(=τ_xy), τ_yy, τ_yz
-        double tyx_yp = mu_yp*(dudy_yp + dvdx_yp);
-        double tyy_yp = mu_yp*(2.0*dvdy_yp - (2.0/3.0)*divu_yp);
-        double tyz_yp = mu_yp*(dvdz_yp + dwdy_yp);
-        double tyx_ym = mu_ym*(dudy_ym + dvdx_ym);
-        double tyy_ym = mu_ym*(2.0*dvdy_ym - (2.0/3.0)*divu_ym);
-        double tyz_ym = mu_ym*(dvdz_ym + dwdy_ym);
-
-        // z-faces: τ_zx(=τ_xz), τ_zy(=τ_yz), τ_zz
-        double tzx_zp = mu_zp*(dudz_zp + dwdx_zp);
-        double tzy_zp = mu_zp*(dvdz_zp + dwdy_zp);
-        double tzz_zp = mu_zp*(2.0*dwdz_zp - (2.0/3.0)*divu_zp);
-        double tzx_zm = mu_zm*(dudz_zm + dwdx_zm);
-        double tzy_zm = mu_zm*(dvdz_zm + dwdy_zm);
-        double tzz_zm = mu_zm*(2.0*dwdz_zm - (2.0/3.0)*divu_zm);
+        // ── Face stresses τ = µ·(∂u_a/∂x_b + ∂u_b/∂x_a − δ·⅔ div u) ────
+        // x-faces
+        double txx_xp = mu_xp*(2.0*gxp.dun_dxn - (2.0/3.0)*gxp.divu());
+        double txy_xp = mu_xp*(gxp.dun_dxt1 + gxp.dut1_dxn);
+        double txz_xp = mu_xp*(gxp.dun_dxt2 + gxp.dut2_dxn);
+        double txx_xm = mu_xm*(2.0*gxm.dun_dxn - (2.0/3.0)*gxm.divu());
+        double txy_xm = mu_xm*(gxm.dun_dxt1 + gxm.dut1_dxn);
+        double txz_xm = mu_xm*(gxm.dun_dxt2 + gxm.dut2_dxn);
+        // y-faces
+        double tyx_yp = mu_yp*(gyp.dut1_dxn + gyp.dun_dxt1);
+        double tyy_yp = mu_yp*(2.0*gyp.dun_dxn - (2.0/3.0)*gyp.divu());
+        double tyz_yp = mu_yp*(gyp.dun_dxt2 + gyp.dut2_dxn);
+        double tyx_ym = mu_ym*(gym.dut1_dxn + gym.dun_dxt1);
+        double tyy_ym = mu_ym*(2.0*gym.dun_dxn - (2.0/3.0)*gym.divu());
+        double tyz_ym = mu_ym*(gym.dun_dxt2 + gym.dut2_dxn);
+        // z-faces
+        double tzx_zp = mu_zp*(gzp.dut1_dxn + gzp.dun_dxt1);
+        double tzy_zp = mu_zp*(gzp.dut2_dxn + gzp.dun_dxt2);
+        double tzz_zp = mu_zp*(2.0*gzp.dun_dxn - (2.0/3.0)*gzp.divu());
+        double tzx_zm = mu_zm*(gzm.dut1_dxn + gzm.dun_dxt1);
+        double tzy_zm = mu_zm*(gzm.dut2_dxn + gzm.dun_dxt2);
+        double tzz_zm = mu_zm*(2.0*gzm.dun_dxn - (2.0/3.0)*gzm.divu());
 
         // ── Conservative momentum divergences ────────────────────────────────
         double ax = ih*((txx_xp-txx_xm) + (tyx_yp-tyx_ym) + (tzx_zp-tzx_zm));
