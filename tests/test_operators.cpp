@@ -518,6 +518,46 @@ static void t_dc_cell_div_order2() {
     }
 }
 
+// ── R7 T-DD: FaceGrad<DIR,2> — normal O(h²), tangential O(h²) ───────────────
+static void t_dd_face_grad_order2() {
+    // Normal: f(x)=sin(2πx), face at x_{i+½}=(i+0.5)*h
+    // (f(i+1)-f(i))/h approximates ∂f/∂x at (i+0.5)*h to O(h²)
+    const double k2pi = 2.0 * M_PI;
+    double prev_err = -1.0;
+    for (double h : {0.04, 0.02, 0.01}) {
+        FaceGrad<Axis::X, 2> fg;
+        auto f = [&](int i, int /*j*/, int /*k*/){ return std::sin(k2pi * i * h); };
+        double max_err = 0.0;
+        for (int i = 2; i <= 23; ++i) {
+            double got   = fg.normal(f, i, 0, 0, h);
+            double xface = (i + 0.5) * h;
+            double exact = k2pi * std::cos(k2pi * xface);
+            max_err = std::max(max_err, std::abs(got - exact));
+        }
+        if (prev_err > 0.0)
+            check("FaceGrad<X,2> normal O(h²) ratio >= 3.9", prev_err/max_err >= 3.9,
+                  prev_err/max_err, 3.9);
+        prev_err = max_err;
+    }
+    // Tangential: f(y)=sin(2πy) at x-face, ∂f/∂y averaged from both sides
+    prev_err = -1.0;
+    for (double h : {0.04, 0.02, 0.01}) {
+        FaceGrad<Axis::X, 2> fg;
+        auto f = [&](int /*i*/, int j, int /*k*/){ return std::sin(k2pi * j * h); };
+        double max_err = 0.0;
+        for (int j = 2; j <= 23; ++j) {
+            double got   = fg.template tangential<Axis::Y>(f, 5, j, 5, h);
+            double yface = j * h;   // averaged ⇒ exact at cell center
+            double exact = k2pi * std::cos(k2pi * yface);
+            max_err = std::max(max_err, std::abs(got - exact));
+        }
+        if (prev_err > 0.0)
+            check("FaceGrad<X,2> tangential<Y> O(h²) ratio >= 3.9", prev_err/max_err >= 3.9,
+                  prev_err/max_err, 3.9);
+        prev_err = max_err;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 3: Layer 2 — Discrete Operators ===\n");
@@ -540,6 +580,7 @@ int main() {
     t_da_cell_grad_order2();
     t_db_cell_laplacian_exact();
     t_dc_cell_div_order2();
+    t_dd_face_grad_order2();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)
