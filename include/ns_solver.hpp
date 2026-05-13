@@ -144,9 +144,6 @@ struct SolverConfig {
     // Ghost BC: φ_ghost = φ_int − dist·cos(θ_w)/(acdi_ceps)·g'(φ_int),
     //   g'(φ)=φ(1-φ)(1-2φ)/2.  Requires acdi_ceps > 0 and bc_variant=ContactAngleBC.
 
-    // R9-A4: validate() checks invariants on construction-time parameters.
-    // Throws std::invalid_argument on any out-of-range value.
-    // Called at the start of NSSolver::init() before any tree allocation.
     void validate() const;
 };
 

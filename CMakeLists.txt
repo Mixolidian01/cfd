@@ -416,3 +416,4 @@ add_custom_target(t4 DEPENDS test_ns        COMMAND $<TARGET_FILE:test_ns>      
 # t5 defined above in the CUDA block
 add_custom_target(t6 DEPENDS test_amr6      COMMAND $<TARGET_FILE:test_amr6>      COMMENT "Step 6 gate: test_amr6"      USES_TERMINAL)
 add_custom_target(t7 DEPENDS test_step7     COMMAND $<TARGET_FILE:test_step7>     COMMENT "Step 7 gate: test_step7"     USES_TERMINAL)
+add_custom_target(tconfig DEPENDS test_config COMMAND $<TARGET_FILE:test_config> COMMENT "R9-A4 gate: test_config" USES_TERMINAL)

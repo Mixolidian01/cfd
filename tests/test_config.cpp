@@ -12,6 +12,11 @@ static void test_bad_cfl_throws() {
     cfg.cfl = 1.5;
     try { cfg.validate(); assert(false && "should have thrown"); }
     catch (const std::invalid_argument&) {}
+
+    SolverConfig cfg2;
+    cfg2.cfl = 0.0;
+    try { cfg2.validate(); assert(false && "should have thrown"); }
+    catch (const std::invalid_argument&) {}
 }
 
 static void test_bad_max_level_throws() {

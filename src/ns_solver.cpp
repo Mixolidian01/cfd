@@ -75,8 +75,10 @@ void SolverConfig::validate() const {
         throw std::invalid_argument("SolverConfig: ducros_p_threshold must be in [0, 1]");
     if (ducros_blend_width < 0.0)
         throw std::invalid_argument("SolverConfig: ducros_blend_width must be >= 0");
+    // wall_T == 0.0 is the adiabatic sentinel; any positive value is an
+    // isothermal temperature.  Negative values are always invalid.
     if (wall_T < 0.0)
-        throw std::invalid_argument("SolverConfig: wall_T must be >= 0");
+        throw std::invalid_argument("SolverConfig: wall_T must be >= 0 (0 = adiabatic)");
     if (gamma_a <= 1.0)
         throw std::invalid_argument("SolverConfig: gamma_a must be > 1");
     if (gamma_b <= 1.0)
