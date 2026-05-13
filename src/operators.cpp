@@ -199,18 +199,10 @@ static std::array<double,NVAR> kep_flux_t(const Prim& L, const Prim& R) noexcept
 //   Φ_p:   fires near stationary pressure discontinuities (e.g., t=0 Riemann IC),
 //          inactive for smooth flows (TGV: Φ_p ~ 0.07%, threshold 10%).
 //
-// Configurable pressure-sensor thresholds (P11.6) — set via set_ducros_thresholds().
-static double g_ducros_p_thr = 0.1;  // |Δp|/p below this → phi_p = 0
-static double g_ducros_blend = 0.1;  // linear blend width above threshold
-
-void set_ducros_thresholds(double p_threshold, double blend_width) noexcept {
-    g_ducros_p_thr = p_threshold;
-    g_ducros_blend = (blend_width > 1e-30) ? blend_width : 1e-30;
-}
-
 // Computed for cells in [1, NB2-2] per axis.
 // Output range: duc[cell_idx(i,j,k)] ∈ [0,1] for all valid cells.
-static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
+static void fill_ducros_cache(const Prim* pc, double* duc, double h,
+                               const DucrosConfig& ducros) noexcept
 {
     constexpr double eps_duc = 1.0e-30;
     constexpr CellGrad<Axis::X, 2> dX;
@@ -252,8 +244,9 @@ static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
         const double dpz  = std::max(std::abs(pc[cell_idx(i,j,k+1)].p - pC),
                                      std::abs(pc[cell_idx(i,j,k-1)].p - pC));
         const double phi_p = std::max({dpx, dpy, dpz}) / (pC + eps_duc);
+        const double blend = (ducros.blend_width > 1e-30) ? ducros.blend_width : 1e-30;
         const double phi_p_clamped = std::min(1.0, std::max(0.0,
-            (phi_p - g_ducros_p_thr) / g_ducros_blend));
+            (phi_p - ducros.p_threshold) / blend));
 
         duc[cell_idx(i,j,k)] = std::max(phi_vel, phi_p_clamped);
     }
@@ -626,7 +619,7 @@ void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> duc;
     fill_prim_cache(blk, pc.data());
-    fill_ducros_cache(pc.data(), duc.data(), blk.h);
+    fill_ducros_cache(pc.data(), duc.data(), blk.h, DucrosConfig{});
     convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h);
 }
 
@@ -645,14 +638,15 @@ void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 // =============================================================================
 // Full RHS — P2.3 + B5 + P3.2: prim, µ, and Ducros caches built once
 // =============================================================================
-void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
+void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
+                 const DucrosConfig& ducros) noexcept
 {
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> mu_arr;
     static thread_local std::array<double, NCELL> duc;
     fill_prim_cache(blk, pc.data());
     fill_mu_cache(pc.data(), mu_arr.data());
-    fill_ducros_cache(pc.data(), duc.data(), blk.h);
+    fill_ducros_cache(pc.data(), duc.data(), blk.h, ducros);
 
     for (int v = 0; v < NVAR; ++v)
         for (int k = ilo(); k <= ihi(); ++k)
@@ -675,14 +669,15 @@ template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
     requires RiemannFlux<Flux<Axis::X>>
           && SpatialReconstruction<Recon<Axis::X>>
           && EquationOfState<EOS>
-void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk) noexcept
+void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
+                       const DucrosConfig& ducros) noexcept
 {
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> mu_arr;
     static thread_local std::array<double, NCELL> duc;
     fill_prim_cache(blk, pc.data());
     fill_mu_cache(pc.data(), mu_arr.data());
-    fill_ducros_cache(pc.data(), duc.data(), blk.h);
+    fill_ducros_cache(pc.data(), duc.data(), blk.h, ducros);
 
     for (int v = 0; v < NVAR; ++v)
         for (int k = ilo(); k <= ihi(); ++k)
@@ -699,9 +694,9 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 #include "physics/ideal_gas_eos.hpp"
 
 template void compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
-    const CellBlock&, CellBlock&) noexcept;
+    const CellBlock&, CellBlock&, const DucrosConfig&) noexcept;
 template void compute_rhs_typed<HllcFlux,   Weno5Recon, IdealGasEOS>(
-    const CellBlock&, CellBlock&) noexcept;
+    const CellBlock&, CellBlock&, const DucrosConfig&) noexcept;
 
 // =============================================================================
 // Berger-Colella reflux: undo_cf_face_flux
@@ -1019,7 +1014,8 @@ void tree_rhs(BlockTree& tree,
               double stage_weight,
               int    level_filter,
               bool   cf_coarse_zero_grad,
-              bool   open_bc) noexcept
+              bool   open_bc,
+              const DucrosConfig& ducros) noexcept
 {
     // ── 1. Ghost fill — always global (C/F fills need the full tree) ─────────
     if (periodic)
@@ -1052,7 +1048,7 @@ void tree_rhs(BlockTree& tree,
         const int li       = order[oi];
         const int node_idx = leaves[li];
         if (!tree.nodes[node_idx].has_block()) continue;  // P7.1: remote leaf
-        compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li]);
+        compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li], ducros);
         undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
         if (cf_coarse_zero_grad)
             undo_cf_viscous_energy(tree, node_idx, rhs_blocks[li]);

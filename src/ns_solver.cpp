@@ -218,8 +218,8 @@ double NSSolver::advance() {
     bool periodic = bc_is_periodic(cfg.bc_variant);
     bool open_bc  = bc_is_open(cfg.bc_variant);
 
-    // P11.6: propagate configurable Ducros thresholds before RHS evaluation.
-    set_ducros_thresholds(cfg.ducros_p_threshold, cfg.ducros_blend_width);
+    // P11.6: Ducros sensor parameters threaded as a value through tree_rhs.
+    const DucrosConfig ducros{ cfg.ducros_p_threshold, cfg.ducros_blend_width };
     // P14.1c: activate stiffened-gas mixture EOS when ACDI is on and fluids differ.
     {
         const bool sg = cfg.use_acdi &&
@@ -303,7 +303,7 @@ double NSSolver::advance() {
 
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
     if (mpi_) mpi_exchange_halos(tree, *mpi_);
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
     if (use_sat) tree_sat_penalty(tree, rhs_, cfg.sat_tau);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
@@ -321,7 +321,7 @@ double NSSolver::advance() {
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
     if (mpi_) mpi_exchange_halos(tree, *mpi_);
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
     if (use_sat) tree_sat_penalty(tree, rhs_, cfg.sat_tau);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
@@ -339,7 +339,7 @@ double NSSolver::advance() {
 
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
     if (mpi_) mpi_exchange_halos(tree, *mpi_);
-    tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc);
+    tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
     if (use_sat) tree_sat_penalty(tree, rhs_, cfg.sat_tau);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
@@ -457,6 +457,7 @@ double NSSolver::advance() {
 double NSSolver::advance_imex() {
     bool periodic = bc_is_periodic(cfg.bc_variant);
     bool open_bc  = bc_is_open(cfg.bc_variant);
+    const DucrosConfig ducros{ cfg.ducros_p_threshold, cfg.ducros_blend_width };
 
     // ── Step 1: same regrid + SSP-RK3 as advance() ───────────────────────
     if (cfg.regrid_interval > 0 && step > 0 &&
@@ -472,7 +473,7 @@ double NSSolver::advance_imex() {
     tree.zero_flux_registers();
 
     // Stage 1: Q^(1) = Q^n + dt·L(Q^n)   [RK weight 1/6]
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -487,7 +488,7 @@ double NSSolver::advance_imex() {
     copy_stage_to_tree(Qs_);
 
     // Stage 2: Q^(2) = 3/4·Q^n + 1/4·(Q^(1) + dt·L(Q^(1)))   [RK weight 1/6]
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc);
+    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -502,7 +503,7 @@ double NSSolver::advance_imex() {
     copy_stage_to_tree(Qs_);
 
     // Stage 3: Q^{n+1} = 1/3·Q^n + 2/3·(Q^(2) + dt·L(Q^(2)))  [RK weight 2/3]
-    tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc);
+    tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -703,6 +704,7 @@ void NSSolver::copy_stage_to_tree_level(const std::vector<CellBlock>& stage, int
 void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coarse_mode) {
     bool periodic = bc_is_periodic(cfg.bc_variant);
     bool open_bc  = bc_is_open(cfg.bc_variant);
+    const DucrosConfig ducros{ cfg.ducros_p_threshold, cfg.ducros_blend_width };
     const auto& leaves = tree.leaf_indices();
     const int NL = (int)leaves.size();
 
@@ -710,7 +712,7 @@ void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coars
     copy_tree_to_stage_level(Qn_, level);
 
     // Stage 1: Q^(1) = Q^n + dt * L(Q^n)
-    tree_rhs(tree, rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc);
+    tree_rhs(tree, rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc, ducros);
     for (int ii = 0; ii < NL; ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
         for (int v = 0; v < NVAR; ++v)
@@ -726,7 +728,7 @@ void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coars
     copy_stage_to_tree_level(Qs_, level);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))
-    tree_rhs(tree, rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc);
+    tree_rhs(tree, rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc, ducros);
     for (int ii = 0; ii < NL; ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
         for (int v = 0; v < NVAR; ++v)
@@ -742,7 +744,7 @@ void NSSolver::lts_rk3_level(int level, double dt, double sub_weight, bool coars
     copy_stage_to_tree_level(Qs_, level);
 
     // Stage 3: Q^{n+1} = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))
-    tree_rhs(tree, rhs_, periodic, sub_weight * (2.0/3.0), level, coarse_mode, open_bc);
+    tree_rhs(tree, rhs_, periodic, sub_weight * (2.0/3.0), level, coarse_mode, open_bc, ducros);
     for (int ii = 0; ii < NL; ++ii) {
         if (tree.nodes[leaves[ii]].level != level) continue;
         for (int v = 0; v < NVAR; ++v)

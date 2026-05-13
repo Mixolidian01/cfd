@@ -59,13 +59,17 @@ void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 
 // ── Ducros sensor configuration (P11.6) ──────────────────────────────────────
-// Set before the first tree_rhs() call each step.  Thread-safe (values are
-// only read by compute_rhs, never written during a concurrent step).
-void set_ducros_thresholds(double p_threshold, double blend_width) noexcept;
+// Passed as a value to compute_rhs / tree_rhs; constructed from SolverConfig
+// fields (ducros_p_threshold, ducros_blend_width) by the caller.
+struct DucrosConfig {
+    double p_threshold = 0.1;   // |Δp|/p below this → phi_p = 0
+    double blend_width = 0.1;   // linear blend width above threshold
+};
 
 // ── Full RHS: convective + viscous ───────────────────────────────────────────
 // rhs_blk.Q is zeroed then filled with convective + viscous contributions.
-void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
+void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
+                 const DucrosConfig& ducros = DucrosConfig{}) noexcept;
 
 // ── Tree-level RHS (loops over all leaves) ───────────────────────────────────
 // Fills ghost cells, then calls compute_rhs for every leaf block.
@@ -89,7 +93,8 @@ void tree_rhs(BlockTree& tree,
               double stage_weight        = 1.0,
               int    level_filter        = -1,
               bool   cf_coarse_zero_grad = false,
-              bool   open_bc             = false) noexcept;
+              bool   open_bc             = false,
+              const DucrosConfig& ducros = DucrosConfig{}) noexcept;
 
 // ── R5: typed entry-point (Flux × Recon × EOS resolved at compile time) ──────
 // Template template parameters so the loop over Axis::X/Y/Z inside
@@ -101,7 +106,8 @@ template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
     requires RiemannFlux<Flux<Axis::X>>
           && SpatialReconstruction<Recon<Axis::X>>
           && EquationOfState<EOS>
-void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
+void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
+                       const DucrosConfig& ducros = DucrosConfig{}) noexcept;
 
 // ── P14.1: ACDI phase-field advection RHS ────────────────────────────────────
 // Conservative 1st-order upwind: ∂φ/∂t = -∇·(φu).
