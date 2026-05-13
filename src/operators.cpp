@@ -220,39 +220,37 @@ void set_ducros_thresholds(double p_threshold, double blend_width) noexcept {
 static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
 {
     constexpr double eps_duc = 1.0e-30;
-    const double ih2 = 0.5 / h;   // 1/(2h)
+    constexpr CellGrad<Axis::X, 2> dX;
+    constexpr CellGrad<Axis::Y, 2> dY;
+    constexpr CellGrad<Axis::Z, 2> dZ;
 
-    // Zero all cells first (covers absolute ghost boundary 0 and NB2-1)
+    auto U = [pc](int i, int j, int k){ return pc[cell_idx(i,j,k)].u; };
+    auto V = [pc](int i, int j, int k){ return pc[cell_idx(i,j,k)].v; };
+    auto W = [pc](int i, int j, int k){ return pc[cell_idx(i,j,k)].w; };
+
     std::fill(duc, duc + NCELL, 0.0);
 
-    // Compute for all cells one layer inside the absolute boundary
     for (int k = 1; k < NB2-1; ++k)
     for (int j = 1; j < NB2-1; ++j)
     for (int i = 1; i < NB2-1; ++i) {
-        // Central-difference velocity gradients (all 9 components)
-        const double dudx = ih2*(pc[cell_idx(i+1,j,k)].u - pc[cell_idx(i-1,j,k)].u);
-        const double dudy = ih2*(pc[cell_idx(i,j+1,k)].u - pc[cell_idx(i,j-1,k)].u);
-        const double dudz = ih2*(pc[cell_idx(i,j,k+1)].u - pc[cell_idx(i,j,k-1)].u);
-        const double dvdx = ih2*(pc[cell_idx(i+1,j,k)].v - pc[cell_idx(i-1,j,k)].v);
-        const double dvdy = ih2*(pc[cell_idx(i,j+1,k)].v - pc[cell_idx(i,j-1,k)].v);
-        const double dvdz = ih2*(pc[cell_idx(i,j,k+1)].v - pc[cell_idx(i,j,k-1)].v);
-        const double dwdx = ih2*(pc[cell_idx(i+1,j,k)].w - pc[cell_idx(i-1,j,k)].w);
-        const double dwdy = ih2*(pc[cell_idx(i,j+1,k)].w - pc[cell_idx(i,j-1,k)].w);
-        const double dwdz = ih2*(pc[cell_idx(i,j,k+1)].w - pc[cell_idx(i,j,k-1)].w);
+        const double dudx = dX(U, i, j, k, h);
+        const double dudy = dY(U, i, j, k, h);
+        const double dudz = dZ(U, i, j, k, h);
+        const double dvdx = dX(V, i, j, k, h);
+        const double dvdy = dY(V, i, j, k, h);
+        const double dvdz = dZ(V, i, j, k, h);
+        const double dwdx = dX(W, i, j, k, h);
+        const double dwdy = dY(W, i, j, k, h);
+        const double dwdz = dZ(W, i, j, k, h);
 
-        // Dilatation (div u) and vorticity magnitude squared
         const double divu = dudx + dvdy + dwdz;
-        const double ox   = dwdy - dvdz;   // ω_x = ∂w/∂y − ∂v/∂z
-        const double oy   = dudz - dwdx;   // ω_y = ∂u/∂z − ∂w/∂x
-        const double oz   = dvdx - dudy;   // ω_z = ∂v/∂x − ∂u/∂y
+        const double ox   = dwdy - dvdz;
+        const double oy   = dudz - dwdx;
+        const double oz   = dvdx - dudy;
         const double d2   = divu*divu;
         const double c2   = ox*ox + oy*oy + oz*oz;
         const double phi_vel = d2 / (d2 + c2 + eps_duc);
 
-        // Pressure-ratio sensor: catches stationary shocks/contact discontinuities
-        // where the velocity-based Ducros term is zero (u=0 at t=0).
-        // Fires when any neighbor has |Δp| / p_local > 0.1 (10% relative jump).
-        // Inactive for smooth flows (TGV: ~0.07%) and smooth pressure variations.
         const double pC   = pc[cell_idx(i,j,k)].p;
         const double dpx  = std::max(std::abs(pc[cell_idx(i+1,j,k)].p - pC),
                                      std::abs(pc[cell_idx(i-1,j,k)].p - pC));
@@ -261,7 +259,6 @@ static void fill_ducros_cache(const Prim* pc, double* duc, double h) noexcept
         const double dpz  = std::max(std::abs(pc[cell_idx(i,j,k+1)].p - pC),
                                      std::abs(pc[cell_idx(i,j,k-1)].p - pC));
         const double phi_p = std::max({dpx, dpy, dpz}) / (pC + eps_duc);
-        // Smooth blend: phi_p < thr → 0; phi_p > thr+width → 1; linear in between
         const double phi_p_clamped = std::min(1.0, std::max(0.0,
             (phi_p - g_ducros_p_thr) / g_ducros_blend));
 
