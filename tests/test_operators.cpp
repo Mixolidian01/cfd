@@ -641,8 +641,12 @@ static void t_de_velocity_grad_at_face_linear() {
         // All cross-terms zero for this diagonal velocity field
         check("VGAtFace<X> plus: dut1_dxn == 0.0", std::abs(g.dut1_dxn) < 1e-12,
               g.dut1_dxn, 0.0);
+        check("VGAtFace<X> plus: dut2_dxn == 0.0", std::abs(g.dut2_dxn) < 1e-12,
+              g.dut2_dxn, 0.0);
         check("VGAtFace<X> plus: dun_dxt1 == 0.0", std::abs(g.dun_dxt1) < 1e-12,
               g.dun_dxt1, 0.0);
+        check("VGAtFace<X> plus: dun_dxt2 == 0.0", std::abs(g.dun_dxt2) < 1e-12,
+              g.dun_dxt2, 0.0);
     }
     // DIR=X minus face — must match plus shifted by -1
     {
