@@ -225,7 +225,7 @@ double NSSolver::advance() {
         const bool sg = cfg.use_acdi &&
                         (cfg.gamma_a != cfg.gamma_b ||
                          cfg.p_inf_a != 0.0 || cfg.p_inf_b != 0.0);
-        set_sg_eos(sg, cfg.gamma_a, cfg.gamma_b, cfg.p_inf_a, cfg.p_inf_b);
+        CellBlock::set_sg_eos(sg, cfg.gamma_a, cfg.gamma_b, cfg.p_inf_a, cfg.p_inf_b);
     }
 
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree

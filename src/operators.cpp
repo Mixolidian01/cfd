@@ -78,23 +78,8 @@ static_assert(FaceInterpolator<FaceInterp<Axis::X, GeometricMean>>);
 static_assert(FaceInterpolator<FaceInterp<Axis::X, LogMean>>);
 static_assert(FaceInterpolator<FaceInterp<Axis::X, HarmonicMean>>);
 
-// =============================================================================
-// P14.1: Stiffened-gas EOS global state
-// Set once per advance() from NSSolver when use_acdi && use_sg_eos is true.
-// =============================================================================
-static bool   g_sg_active = false;
-static double g_sg_ga  = GAMMA, g_sg_gb  = GAMMA;
-static double g_sg_pia = 0.0,   g_sg_pib = 0.0;
-
-void set_sg_eos(bool active, double ga, double gb, double pia, double pib) noexcept {
-    g_sg_active = active;
-    g_sg_ga = ga; g_sg_gb = gb;
-    g_sg_pia = pia; g_sg_pib = pib;
-    // P14.1c: propagate to CellBlock statics so prim() and cfl_dt() use the correct EOS
-    CellBlock::sg_active_ = active;
-    CellBlock::sg_ga_     = ga;  CellBlock::sg_gb_  = gb;
-    CellBlock::sg_pia_    = pia; CellBlock::sg_pib_ = pib;
-}
+// P14.1: Stiffened-gas EOS state lives in CellBlock statics (single source of truth).
+// operators.cpp reads CellBlock::sg_active_ / sg_ga_ / sg_gb_ / sg_pia_ / sg_pib_ directly.
 
 // =============================================================================
 // HLLC Riemann flux
@@ -126,7 +111,7 @@ std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept
 // Pre-compute all NCELL primitive states (and Sutherland µ) once per
 // compute_rhs call.  Interior + ghost cells filled → stencil = pure lookup.
 static void fill_prim_cache(const CellBlock& blk, Prim* pc) noexcept {
-    if (!g_sg_active) {
+    if (!CellBlock::sg_active_) {
         // P4.2: tile loop — 5 aligned 64-byte loads per tile, enables SIMD EOS.
         for (int t = 0; t < CellBlock::NTILE; ++t) {
             const double* rho_p  = blk.Q[0].tile_ptr(t);
@@ -143,7 +128,8 @@ static void fill_prim_cache(const CellBlock& blk, Prim* pc) noexcept {
         // P14.1: stiffened-gas per-cell mixture EOS from phi_data_
         for (int flat = 0; flat < NCELL; ++flat) {
             double gm, pim;
-            mix_eos(blk.phi_data_[flat], g_sg_ga, g_sg_gb, g_sg_pia, g_sg_pib, gm, pim);
+            mix_eos(blk.phi_data_[flat], CellBlock::sg_ga_, CellBlock::sg_gb_,
+                    CellBlock::sg_pia_, CellBlock::sg_pib_, gm, pim);
             pc[flat] = eos_cons_to_prim_sg(blk.Q[0][flat], blk.Q[1][flat],
                                             blk.Q[2][flat], blk.Q[3][flat],
                                             blk.Q[4][flat], gm, pim);

@@ -257,11 +257,18 @@ struct alignas(64) CellBlock {
     double rhow(int i,int j,int k) const noexcept { return Q[3][cell_idx(i,j,k)]; }
     double E   (int i,int j,int k) const noexcept { return Q[4][cell_idx(i,j,k)]; }
 
-    // P14.1c: stiffened-gas EOS parameters set globally from set_sg_eos().
-    // Used by prim() and cfl_dt() to compute the correct c for any fluid.
+    // P14.1c: stiffened-gas EOS parameters — single source of truth.
+    // Set via set_sg_eos(); read by prim(), cfl_dt(), and operators.cpp.
     static inline bool   sg_active_ = false;
     static inline double sg_ga_     = GAMMA, sg_gb_ = GAMMA;
     static inline double sg_pia_    = 0.0,   sg_pib_ = 0.0;
+
+    static void set_sg_eos(bool active, double ga, double gb,
+                           double pia, double pib) noexcept {
+        sg_active_ = active;
+        sg_ga_ = ga; sg_gb_ = gb;
+        sg_pia_ = pia; sg_pib_ = pib;
+    }
 
     // Primitive variables at cell (i,j,k)
     Prim prim(int i, int j, int k) const noexcept {
