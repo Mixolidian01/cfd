@@ -34,12 +34,6 @@
 // Both states are given as primitive variables (rho,u,v,w,p).
 std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept;
 
-// ── P3.3 — Entropy-stable HLLC-ES flux (Chandrashekar 2013) ─────────────────
-// Entropy-conservative (EC) base using log-mean ρ_ln, β_ln (β=ρ/2p) +
-// Lax-Friedrichs scalar dissipation λ_max/2 * ΔQ.
-// Satisfies the entropy inequality ∂η/∂t + ∂F_η/∂x ≤ 0 pointwise.
-std::array<double,5> hllc_es_flux(const Prim& L, const Prim& R, int axis) noexcept;
-
 // ── P13.1/R2 — compile-time-axis variants (DIR known at compile time) ─────────
 // R2: delegates directly to HllcFlux<DIR> / HllcEsFlux<DIR> physics functors
 // (include/physics/hllc_flux.hpp) — no runtime axis dispatch overhead.

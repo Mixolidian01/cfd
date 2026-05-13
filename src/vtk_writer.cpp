@@ -1,6 +1,4 @@
 // vtk_writer.cpp — VTK legacy format output
-// FIX B1: node.h → node.block->h (BlockNode::h was removed)
-// FIX B1: ORIGIN now uses actual block->ox/oy/oz instead of 0,0,0
 #include "../include/vtk_writer.hpp"
 #include <cstdio>
 #include <stdexcept>

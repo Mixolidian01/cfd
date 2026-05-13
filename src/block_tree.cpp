@@ -1,8 +1,6 @@
 // DESIGN.md reference: Layer 1 — Block Tree implementation
 // Fix log:
 //   #1  / III  : octant helpers now from block_tree.hpp (oct_ix/iy/iz)
-//   #2  / I    : BlockNode::h removed; child h lives in block->h only
-//   #4         : find_or_create_node / rebuild_neighbours_recursive removed
 //   #16        : refine() caches parent state before resize() to avoid UB
 //   P0.7       : dead ternary removed in fill_ghosts_periodic
 //   A04-fix    : edge+corner ghost fill added to fill_ghosts_periodic and

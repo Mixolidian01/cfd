@@ -57,7 +57,6 @@
 
 #include <cmath>
 #include <algorithm>
-#include <numeric>
 #include <cassert>
 #include <cstring>
 #ifdef _OPENMP
@@ -103,22 +102,6 @@ std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept
         case 0:  return HllcFlux<Axis::X>{}(L, R);
         case 1:  return HllcFlux<Axis::Y>{}(L, R);
         default: return HllcFlux<Axis::Z>{}(L, R);
-    }
-}
-
-// =============================================================================
-// P3.3 — Entropy-stable HLLC-ES flux (Chandrashekar 2013)
-// =============================================================================
-// R2: implementation lives in HllcEsFlux<DIR> functor (include/physics/hllc_flux.hpp).
-// This wrapper maintains the runtime-axis API used by kep_flux fallback paths.
-
-std::array<double,NVAR> hllc_es_flux(const Prim& L, const Prim& R, int axis) noexcept
-{
-    // R2: delegate to HllcEsFlux<DIR> physics functor
-    switch (axis) {
-        case 0:  return HllcEsFlux<Axis::X>{}(L, R);
-        case 1:  return HllcEsFlux<Axis::Y>{}(L, R);
-        default: return HllcEsFlux<Axis::Z>{}(L, R);
     }
 }
 
@@ -177,35 +160,6 @@ static void fill_mu_cache(const Prim* pc, double* mu_arr) noexcept {
 //   F[0] = ρ̄ · ū_n
 //   F[mom] = ρ̄ · ū_n · ū_i + p̄ · δ_{in}
 //   F[4]   = ρ̄ · ū_n · H̄   where H̄ = ½(H_L + H_R), H = (E+p)/ρ
-// Runtime fallback — used by undo_cf_face_flux / accumulate_fine_fluxes
-static std::array<double,NVAR> kep_flux(const Prim& L, const Prim& R,
-                                         int axis) noexcept
-{
-    const double u_a   = 0.5*(L.u   + R.u  );
-    const double v_a   = 0.5*(L.v   + R.v  );
-    const double w_a   = 0.5*(L.w   + R.w  );
-    const double p_a   = 0.5*(L.p   + R.p  );
-    // P14.1: stiffened-gas E for H computation
-    const double E_L   = (L.p + L.gamma_m*L.p_inf_m)/(L.gamma_m-1.0) + 0.5*L.rho*(L.u*L.u+L.v*L.v+L.w*L.w);
-    const double E_R   = (R.p + R.gamma_m*R.p_inf_m)/(R.gamma_m-1.0) + 0.5*R.rho*(R.u*R.u+R.v*R.v+R.w*R.w);
-    const double H_L   = (E_L + L.p) / L.rho;
-    const double H_R   = (E_R + R.p) / R.rho;
-    const double H_a   = 0.5*(H_L + H_R);
-    // P13.2: FDKEC mass flux (Subbareddy & Candler 2009):
-    //   mass = ½(ρL·u_nL + ρR·u_nR)  vs  KG: ρ_avg·u_n_avg
-    const double un_L  = (axis==0)?L.u:(axis==1)?L.v:L.w;
-    const double un_R  = (axis==0)?R.u:(axis==1)?R.v:R.w;
-    const double mass  = 0.5*(L.rho*un_L + R.rho*un_R);
-
-    std::array<double,NVAR> F;
-    F[0] = mass;
-    F[1] = mass*u_a + (axis==0 ? p_a : 0.0);
-    F[2] = mass*v_a + (axis==1 ? p_a : 0.0);
-    F[3] = mass*w_a + (axis==2 ? p_a : 0.0);
-    F[4] = mass*H_a;
-    return F;
-}
-
 // P13.1 stage 3 — compile-time axis: dead branches eliminated by constexpr if
 template<Axis DIR>
 static std::array<double,NVAR> kep_flux_t(const Prim& L, const Prim& R) noexcept {
@@ -686,7 +640,6 @@ static void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
         // This form telescopes at any boundary type (periodic, wall, C/F) so that
         // total energy is conserved when viscous face fluxes vanish at boundaries.
         // F_visc_E_x|face = τxx*u_face + τxy*v_face + τxz*w_face + κ*dT/dx|face
-        const Prim& c = pc[cell_idx(i,j,k)];
         auto UF=[&](int ii,int jj,int kk){return 0.5*(U(ii,jj,kk)+U(i,j,k));};
         auto VF=[&](int ii,int jj,int kk){return 0.5*(V(ii,jj,kk)+V(i,j,k));};
         auto WF=[&](int ii,int jj,int kk){return 0.5*(W(ii,jj,kk)+W(i,j,k));};
@@ -795,8 +748,6 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 
 // Explicit instantiations — one row per supported (Flux × Recon × EOS) combination.
 // Add a new row here when a new scheme is introduced.
-#include "physics/hllc_flux.hpp"
-#include "physics/weno5_recon.hpp"
 #include "physics/ideal_gas_eos.hpp"
 
 template void compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(

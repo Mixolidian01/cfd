@@ -15,11 +15,6 @@ struct CpuSolverWrapper : ISolver {
     void   run()     override { solver.run(); }
 };
 
-// R4 stub: domain_L and n_blocks are reserved for when ISolver gains an init()
-// method (R4-extension).  Current usage pattern:
-//   auto s = make_solver(cfg, L, n);
-//   static_cast<CpuSolverWrapper*>(s.get())->solver.init(L, n, ic);
-//   s->run();
 std::unique_ptr<ISolver> make_solver(SolverConfig cfg,
                                      double /*domain_L*/, int /*n_blocks*/) {
     if (cfg.backend == SolverConfig::ExecutionBackend::GPU)
