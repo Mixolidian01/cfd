@@ -54,11 +54,48 @@ static double block_kinetic_energy(const CellBlock& b) {
 }
 
 // =============================================================================
+// SolverConfig::validate
+// =============================================================================
+void SolverConfig::validate() const {
+    if (cfl <= 0.0 || cfl > 1.0)
+        throw std::invalid_argument("SolverConfig: cfl must be in (0, 1]");
+    if (t_end <= 0.0)
+        throw std::invalid_argument("SolverConfig: t_end must be > 0");
+    if (max_steps <= 0)
+        throw std::invalid_argument("SolverConfig: max_steps must be > 0");
+    if (max_level < 0 || max_level > 6)
+        throw std::invalid_argument("SolverConfig: max_level must be in [0, 6]");
+    if (lts_ratio != 1 && lts_ratio != 2 && lts_ratio != 4)
+        throw std::invalid_argument("SolverConfig: lts_ratio must be 1, 2, or 4");
+    if (acdi_ceps < 0.0)
+        throw std::invalid_argument("SolverConfig: acdi_ceps must be >= 0");
+    if (sat_tau < 0.0)
+        throw std::invalid_argument("SolverConfig: sat_tau must be >= 0");
+    if (ducros_p_threshold < 0.0 || ducros_p_threshold > 1.0)
+        throw std::invalid_argument("SolverConfig: ducros_p_threshold must be in [0, 1]");
+    if (ducros_blend_width < 0.0)
+        throw std::invalid_argument("SolverConfig: ducros_blend_width must be >= 0");
+    if (wall_T < 0.0)
+        throw std::invalid_argument("SolverConfig: wall_T must be >= 0");
+    if (gamma_a <= 1.0)
+        throw std::invalid_argument("SolverConfig: gamma_a must be > 1");
+    if (gamma_b <= 1.0)
+        throw std::invalid_argument("SolverConfig: gamma_b must be > 1");
+    if (p_inf_a < 0.0)
+        throw std::invalid_argument("SolverConfig: p_inf_a must be >= 0");
+    if (p_inf_b < 0.0)
+        throw std::invalid_argument("SolverConfig: p_inf_b must be >= 0");
+    if (mg_levels < 1 || mg_levels > 8)
+        throw std::invalid_argument("SolverConfig: mg_levels must be in [1, 8]");
+}
+
+// =============================================================================
 // NSSolver::init
 // =============================================================================
 void NSSolver::init(double domain_L,
                     const std::function<Prim(double,double,double)>& ic,
                     const std::function<double(double,double,double)>* phi_ic) {
+    cfg.validate();
     // P4.1-fix: set periodic flag BEFORE tree.init() so that every subsequent
     // rebuild_neighbours() call (triggered by refine/balance) wraps domain-boundary
     // C/F faces into the periodic neighbour table.

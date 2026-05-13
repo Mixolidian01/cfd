@@ -110,6 +110,7 @@ add_executable(test_operators tests/test_operators.cpp)
 add_executable(test_ns        tests/test_ns.cpp)
 add_executable(test_amr6      tests/test_amr6.cpp)
 add_executable(test_step7     tests/test_step7.cpp)
+add_executable(test_config    tests/test_config.cpp)
 
 target_link_libraries(test_linalg    PRIVATE linalg    m)
 target_link_libraries(test_block     PRIVATE block      m)
@@ -117,6 +118,7 @@ target_link_libraries(test_operators PRIVATE operators  m)
 target_link_libraries(test_ns        PRIVATE ns_solver  m)
 target_link_libraries(test_amr6      PRIVATE ns_solver  m)
 target_link_libraries(test_step7     PRIVATE ns_solver  m)
+target_link_libraries(test_config    PRIVATE ns_solver  m)
 
 add_test(NAME linalg    COMMAND test_linalg)
 add_test(NAME block     COMMAND test_block)
@@ -124,6 +126,7 @@ add_test(NAME operators COMMAND test_operators)
 add_test(NAME ns        COMMAND test_ns)
 add_test(NAME amr6      COMMAND test_amr6)
 add_test(NAME step7     COMMAND test_step7)
+add_test(NAME config    COMMAND test_config)
 
 # =============================================================================
 # CUDA gate tests  (t5, t8, t19–t26)  — conditional on nvcc
@@ -395,12 +398,12 @@ add_custom_target(sim
 # =============================================================================
 
 add_custom_target(b
-    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7
+    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config
     COMMENT "Build all targets (incremental)"
 )
 
 add_custom_target(ba
-    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7
+    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
