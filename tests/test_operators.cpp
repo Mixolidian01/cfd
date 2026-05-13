@@ -16,6 +16,7 @@
 #include "physics/hllc_flux.hpp"
 #include "physics/weno5_recon.hpp"
 #include "physics/ideal_gas_eos.hpp"
+#include "physics/diff_ops.hpp"
 #include <cstdio>
 #include <cmath>
 #include <vector>
@@ -411,6 +412,98 @@ static void t_scheme_selection() {
     check("R5 scheme-selection: typed == default rhs", max_diff < 1e-14, max_diff, 0.0);
 }
 
+// ── R7 T-DA: CellGrad<DIR,2> — O(h²) convergence on sin(2πx) ────────────────
+static void t_da_cell_grad_order2() {
+    // f(x) = sin(2π·x),  x_i = i·h (integer lattice so ghost cells are natural)
+    // ∂f/∂x = 2π·cos(2π·x)
+    const double k2pi = 2.0 * M_PI;
+    auto field = [&](int i, int /*j*/, int /*k*/) { return std::sin(k2pi * i * 0.01); };
+    // Convergence: halve h twice, expect error ratio ≥ 3.9 each time
+    double prev_err = -1.0;
+    for (double h : {0.04, 0.02, 0.01}) {
+        CellGrad<Axis::X, 2> dX;
+        double max_err = 0.0;
+        // interior indices 2..23 (avoid boundaries so ghost cells exist)
+        for (int i = 2; i <= 23; ++i) {
+            double got   = dX([&](int ii, int jj, int kk){ return std::sin(k2pi * ii * h); },
+                              i, 0, 0, h);
+            double exact = k2pi * std::cos(k2pi * i * h);
+            max_err = std::max(max_err, std::abs(got - exact));
+        }
+        if (prev_err > 0.0) {
+            double ratio = prev_err / max_err;
+            check("CellGrad<X,2> O(h²) ratio >= 3.9", ratio >= 3.9, ratio, 3.9);
+        }
+        prev_err = max_err;
+    }
+    // Same for Y and Z axes — same formula, different template arg
+    {
+        CellGrad<Axis::Y, 2> dY;
+        double max_err = 0.0;
+        for (int j = 2; j <= 23; ++j) {
+            double got   = dY([&](int ii, int jj, int kk){ return std::sin(k2pi * jj * 0.01); },
+                              0, j, 0, 0.01);
+            double exact = k2pi * std::cos(k2pi * j * 0.01);
+            max_err = std::max(max_err, std::abs(got - exact));
+        }
+        check("CellGrad<Y,2> max_err < 5e-3", max_err < 5e-3, max_err, 5e-3);
+    }
+    {
+        CellGrad<Axis::Z, 2> dZ;
+        double max_err = 0.0;
+        for (int k = 2; k <= 23; ++k) {
+            double got   = dZ([&](int ii, int jj, int kk){ return std::sin(k2pi * kk * 0.01); },
+                              0, 0, k, 0.01);
+            double exact = k2pi * std::cos(k2pi * k * 0.01);
+            max_err = std::max(max_err, std::abs(got - exact));
+        }
+        check("CellGrad<Z,2> max_err < 5e-3", max_err < 5e-3, max_err, 5e-3);
+    }
+}
+
+// ── R7 T-DB: CellLaplacian<2> — exact on quadratic f = x²+y²+z² ─────────────
+static void t_db_cell_laplacian_exact() {
+    // ∇²(x²+y²+z²) = 6 exactly for any h with 2nd-order stencil (exact on quadratics)
+    const double h = 0.1;
+    CellLaplacian<2> lap;
+    auto f = [&](int i, int j, int k) {
+        double x = i*h, y = j*h, z = k*h;
+        return x*x + y*y + z*z;
+    };
+    double got = lap(f, 5, 5, 5, h);
+    check("CellLaplacian<2> on x²+y²+z² == 6.0 exactly", std::abs(got - 6.0) < 1e-12,
+          got, 6.0);
+}
+
+// ── R7 T-DC: CellDiv<2> — O(h²) convergence on div(sin·x̂ + sin·ŷ + sin·ẑ) ──
+static void t_dc_cell_div_order2() {
+    // F = (sin(2πx), sin(2πy), sin(2πz))
+    // ∇·F = 2π(cos(2πx) + cos(2πy) + cos(2πz))
+    const double k2pi = 2.0 * M_PI;
+    double prev_err = -1.0;
+    for (double h : {0.04, 0.02, 0.01}) {
+        CellDiv<2> divOp;
+        auto Fx = [&](int i, int j, int k){ return std::sin(k2pi * i * h); };
+        auto Fy = [&](int i, int j, int k){ return std::sin(k2pi * j * h); };
+        auto Fz = [&](int i, int j, int k){ return std::sin(k2pi * k * h); };
+        double max_err = 0.0;
+        for (int i = 2; i <= 23; ++i)
+        for (int j = 2; j <= 23; ++j)
+        for (int k = 2; k <= 23; ++k) {
+            double got   = divOp(Fx, Fy, Fz, i, j, k, h);
+            double exact = k2pi * (std::cos(k2pi*i*h)
+                                 + std::cos(k2pi*j*h)
+                                 + std::cos(k2pi*k*h));
+            max_err = std::max(max_err, std::abs(got - exact));
+        }
+        if (prev_err > 0.0) {
+            double ratio = prev_err / max_err;
+            check("CellDiv<2> O(h²) ratio >= 3.9", ratio >= 3.9, ratio, 3.9);
+        }
+        prev_err = max_err;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 3: Layer 2 — Discrete Operators ===\n");
@@ -430,6 +523,9 @@ int main() {
     t10_tree_cfl();
     t11_t13_aoaoa();
     t_scheme_selection();
+    t_da_cell_grad_order2();
+    t_db_cell_laplacian_exact();
+    t_dc_cell_div_order2();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)
