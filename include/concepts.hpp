@@ -80,3 +80,10 @@ concept TensorFaceOperator =
         { op.plus (u, v, w, i, j, k, h) };
         { op.minus(u, v, w, i, j, k, h) };
     };
+
+template<typename Op>
+concept FaceInterpolator =
+    std::is_trivially_copyable_v<Op> &&
+    requires(Op op, _FieldProbe f, int i, int j, int k) {
+        { op(f, i, j, k) } -> std::convertible_to<double>;
+    };

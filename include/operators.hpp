@@ -22,6 +22,7 @@
 #include "concepts.hpp"
 #include "physics/hllc_flux.hpp"
 #include "physics/diff_ops.hpp"
+#include "physics/face_interp.hpp"
 #include <array>
 
 // ── P13.1: compile-time axis tag ─────────────────────────────────────────────

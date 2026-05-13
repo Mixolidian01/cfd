@@ -17,6 +17,7 @@
 #include "physics/weno5_recon.hpp"
 #include "physics/ideal_gas_eos.hpp"
 #include "physics/diff_ops.hpp"
+#include "physics/face_interp.hpp"
 #include <cstdio>
 #include <cmath>
 #include <vector>
@@ -690,6 +691,51 @@ static void t_df_order4_smoke() {
           g.divu(), 6.0);
 }
 
+// ── R8 T-DG: FaceInterp mean policies ────────────────────────────────────────
+static void t_dg_face_interp_policies() {
+    // 1. ArithmeticMean: exact midpoint for linear field on all three axes
+    {
+        auto Fx = [](int i, int,   int  ){ return double(i); };
+        auto Fy = [](int,   int j, int  ){ return double(j); };
+        auto Fz = [](int,   int,   int k){ return double(k); };
+        constexpr FaceInterp<Axis::X> fi_x;
+        constexpr FaceInterp<Axis::Y> fi_y;
+        constexpr FaceInterp<Axis::Z> fi_z;
+        check("FaceInterp<X,AM>: face 3+½ == 3.5",
+              std::abs(fi_x(Fx, 3, 0, 0) - 3.5) < 1e-14, fi_x(Fx, 3, 0, 0), 3.5);
+        check("FaceInterp<Y,AM>: face 5+½ == 5.5",
+              std::abs(fi_y(Fy, 0, 5, 0) - 5.5) < 1e-14, fi_y(Fy, 0, 5, 0), 5.5);
+        check("FaceInterp<Z,AM>: face 7+½ == 7.5",
+              std::abs(fi_z(Fz, 0, 0, 7) - 7.5) < 1e-14, fi_z(Fz, 0, 0, 7), 7.5);
+    }
+    // 2. Mean ordering: HM <= GM <= LM <= AM for a=2, b=8
+    {
+        // Field: cell 0 → 2.0, cell 1 → 8.0
+        auto F = [](int i, int, int){ return i == 0 ? 2.0 : 8.0; };
+        constexpr FaceInterp<Axis::X, ArithmeticMean> fi_am;
+        constexpr FaceInterp<Axis::X, GeometricMean>  fi_gm;
+        constexpr FaceInterp<Axis::X, LogMean>        fi_lm;
+        constexpr FaceInterp<Axis::X, HarmonicMean>   fi_hm;
+        const double am = fi_am(F, 0, 0, 0);  // (2+8)/2 = 5
+        const double gm = fi_gm(F, 0, 0, 0);  // sqrt(16) = 4
+        const double lm = fi_lm(F, 0, 0, 0);  // 6/ln(4) ≈ 4.33
+        const double hm = fi_hm(F, 0, 0, 0);  // 2*16/10 = 3.2
+        check("FaceInterp AM == 5.0",   std::abs(am - 5.0) < 1e-14, am, 5.0);
+        check("FaceInterp GM == 4.0",   std::abs(gm - 4.0) < 1e-14, gm, 4.0);
+        check("FaceInterp HM == 3.2",   std::abs(hm - 3.2) < 1e-14, hm, 3.2);
+        check("FaceInterp HM <= GM",    hm <= gm, hm, gm);
+        check("FaceInterp GM <= LM",    gm <= lm, gm, lm);
+        check("FaceInterp LM <= AM",    lm <= am, lm, am);
+    }
+    // 3. LogMean degenerates to arithmetic when a == b
+    {
+        auto Fc = [](int, int, int){ return 7.0; };
+        constexpr FaceInterp<Axis::X, LogMean> fi_lm;
+        const double v = fi_lm(Fc, 0, 0, 0);
+        check("FaceInterp<LM>: a==b → 7.0", std::abs(v - 7.0) < 1e-10, v, 7.0);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 3: Layer 2 — Discrete Operators ===\n");
@@ -717,6 +763,7 @@ int main() {
     t_dd_velocity_grad_components_divu();
     t_de_velocity_grad_at_face_linear();
     t_df_order4_smoke();
+    t_dg_face_interp_policies();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)

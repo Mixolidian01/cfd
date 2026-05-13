@@ -72,6 +72,12 @@ static_assert(ScalarFaceOperator<FaceGrad<Axis::X, 4>>);
 static_assert(TensorFaceOperator<VelocityGradAtFace<Axis::X>>);
 static_assert(TensorFaceOperator<VelocityGradAtFace<Axis::X, 4>>);
 
+// ── FaceInterp: all four mean policies ─────────────────────────────────────
+static_assert(FaceInterpolator<FaceInterp<Axis::X>>);
+static_assert(FaceInterpolator<FaceInterp<Axis::X, GeometricMean>>);
+static_assert(FaceInterpolator<FaceInterp<Axis::X, LogMean>>);
+static_assert(FaceInterpolator<FaceInterp<Axis::X, HarmonicMean>>);
+
 // =============================================================================
 // P14.1: Stiffened-gas EOS global state
 // Set once per advance() from NSSolver when use_acdi && use_sg_eos is true.
@@ -539,18 +545,21 @@ static void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
     constexpr VelocityGradAtFace<Axis::X, 2> VGX;
     constexpr VelocityGradAtFace<Axis::Y, 2> VGY;
     constexpr VelocityGradAtFace<Axis::Z, 2> VGZ;
+    constexpr FaceInterp<Axis::X> FI_X;
+    constexpr FaceInterp<Axis::Y> FI_Y;
+    constexpr FaceInterp<Axis::Z> FI_Z;
 
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i) {
 
-        // ── Face-averaged µ at the 6 faces ──────────────────────────────────
-        double mu_xp = 0.5*(MU(i,j,k) + MU(i+1,j,  k  ));
-        double mu_xm = 0.5*(MU(i,j,k) + MU(i-1,j,  k  ));
-        double mu_yp = 0.5*(MU(i,j,k) + MU(i,  j+1,k  ));
-        double mu_ym = 0.5*(MU(i,j,k) + MU(i,  j-1,k  ));
-        double mu_zp = 0.5*(MU(i,j,k) + MU(i,  j,  k+1));
-        double mu_zm = 0.5*(MU(i,j,k) + MU(i,  j,  k-1));
+        // ── Face-averaged µ at the 6 faces (FaceInterp<DIR, ArithmeticMean>) ─
+        double mu_xp = FI_X(MU, i,   j,   k  );
+        double mu_xm = FI_X(MU, i-1, j,   k  );
+        double mu_yp = FI_Y(MU, i,   j,   k  );
+        double mu_ym = FI_Y(MU, i,   j-1, k  );
+        double mu_zp = FI_Z(MU, i,   j,   k  );
+        double mu_zm = FI_Z(MU, i,   j,   k-1);
 
         // ── Velocity gradient tensors at 6 faces (R7: VelocityGradAtFace) ──
         const auto gxp = VGX.plus (U, V, W, i, j, k, h);
