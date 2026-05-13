@@ -1,4 +1,13 @@
 #pragma once
+// Compatibility: __host__ and __device__ are empty in non-CUDA (GCC/Clang) TUs.
+#ifndef __CUDACC__
+#  ifndef __host__
+#    define __host__
+#  endif
+#  ifndef __device__
+#    define __device__
+#  endif
+#endif
 // Layer P — Differential operator functors (R7)
 // All structs are empty, trivially copyable, __host__ __device__ safe.
 // Field: any callable double(int,int,int).

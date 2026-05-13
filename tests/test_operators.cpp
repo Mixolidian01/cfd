@@ -417,7 +417,6 @@ static void t_da_cell_grad_order2() {
     // f(x) = sin(2π·x),  x_i = i·h (integer lattice so ghost cells are natural)
     // ∂f/∂x = 2π·cos(2π·x)
     const double k2pi = 2.0 * M_PI;
-    auto field = [&](int i, int /*j*/, int /*k*/) { return std::sin(k2pi * i * 0.01); };
     // Convergence: halve h twice, expect error ratio ≥ 3.9 each time
     double prev_err = -1.0;
     for (double h : {0.04, 0.02, 0.01}) {
@@ -425,7 +424,7 @@ static void t_da_cell_grad_order2() {
         double max_err = 0.0;
         // interior indices 2..23 (avoid boundaries so ghost cells exist)
         for (int i = 2; i <= 23; ++i) {
-            double got   = dX([&](int ii, int jj, int kk){ return std::sin(k2pi * ii * h); },
+            double got   = dX([&](int ii, int /*jj*/, int /*kk*/){ return std::sin(k2pi * ii * h); },
                               i, 0, 0, h);
             double exact = k2pi * std::cos(k2pi * i * h);
             max_err = std::max(max_err, std::abs(got - exact));
@@ -436,28 +435,43 @@ static void t_da_cell_grad_order2() {
         }
         prev_err = max_err;
     }
-    // Same for Y and Z axes — same formula, different template arg
+    // Y axis — same convergence structure as X
     {
-        CellGrad<Axis::Y, 2> dY;
-        double max_err = 0.0;
-        for (int j = 2; j <= 23; ++j) {
-            double got   = dY([&](int ii, int jj, int kk){ return std::sin(k2pi * jj * 0.01); },
-                              0, j, 0, 0.01);
-            double exact = k2pi * std::cos(k2pi * j * 0.01);
-            max_err = std::max(max_err, std::abs(got - exact));
+        double prev_err_y = -1.0;
+        for (double h : {0.04, 0.02, 0.01}) {
+            CellGrad<Axis::Y, 2> dY;
+            double max_err = 0.0;
+            for (int j = 2; j <= 23; ++j) {
+                double got   = dY([&](int /*ii*/, int jj, int /*kk*/){ return std::sin(k2pi * jj * h); },
+                                  0, j, 0, h);
+                double exact = k2pi * std::cos(k2pi * j * h);
+                max_err = std::max(max_err, std::abs(got - exact));
+            }
+            if (prev_err_y > 0.0) {
+                double ratio = prev_err_y / max_err;
+                check("CellGrad<Y,2> O(h²) ratio >= 3.9", ratio >= 3.9, ratio, 3.9);
+            }
+            prev_err_y = max_err;
         }
-        check("CellGrad<Y,2> max_err < 5e-3", max_err < 5e-3, max_err, 5e-3);
     }
+    // Z axis — same convergence structure as X
     {
-        CellGrad<Axis::Z, 2> dZ;
-        double max_err = 0.0;
-        for (int k = 2; k <= 23; ++k) {
-            double got   = dZ([&](int ii, int jj, int kk){ return std::sin(k2pi * kk * 0.01); },
-                              0, 0, k, 0.01);
-            double exact = k2pi * std::cos(k2pi * k * 0.01);
-            max_err = std::max(max_err, std::abs(got - exact));
+        double prev_err_z = -1.0;
+        for (double h : {0.04, 0.02, 0.01}) {
+            CellGrad<Axis::Z, 2> dZ;
+            double max_err = 0.0;
+            for (int k = 2; k <= 23; ++k) {
+                double got   = dZ([&](int /*ii*/, int /*jj*/, int kk){ return std::sin(k2pi * kk * h); },
+                                  0, 0, k, h);
+                double exact = k2pi * std::cos(k2pi * k * h);
+                max_err = std::max(max_err, std::abs(got - exact));
+            }
+            if (prev_err_z > 0.0) {
+                double ratio = prev_err_z / max_err;
+                check("CellGrad<Z,2> O(h²) ratio >= 3.9", ratio >= 3.9, ratio, 3.9);
+            }
+            prev_err_z = max_err;
         }
-        check("CellGrad<Z,2> max_err < 5e-3", max_err < 5e-3, max_err, 5e-3);
     }
 }
 
@@ -483,9 +497,9 @@ static void t_dc_cell_div_order2() {
     double prev_err = -1.0;
     for (double h : {0.04, 0.02, 0.01}) {
         CellDiv<2> divOp;
-        auto Fx = [&](int i, int j, int k){ return std::sin(k2pi * i * h); };
-        auto Fy = [&](int i, int j, int k){ return std::sin(k2pi * j * h); };
-        auto Fz = [&](int i, int j, int k){ return std::sin(k2pi * k * h); };
+        auto Fx = [&](int i, int /*j*/, int /*k*/){ return std::sin(k2pi * i * h); };
+        auto Fy = [&](int /*i*/, int j, int /*k*/){ return std::sin(k2pi * j * h); };
+        auto Fz = [&](int /*i*/, int /*j*/, int k){ return std::sin(k2pi * k * h); };
         double max_err = 0.0;
         for (int i = 2; i <= 23; ++i)
         for (int j = 2; j <= 23; ++j)
