@@ -359,9 +359,9 @@ int main(int argc, char* argv[])
     // Boundary conditions
     {
         std::string bc_str = cfg.str("bc", "Periodic");
-        if      (bc_str == "Wall")     sc.bc = BCType::Wall;
-        else if (bc_str == "Open")     sc.bc = BCType::Open;
-        else                           sc.bc = BCType::Periodic;
+        if      (bc_str == "Wall")     sc.bc_variant = WallBC{};
+        else if (bc_str == "Open")     sc.bc_variant = OpenBC{};
+        else                           sc.bc_variant = PeriodicBC{};
     }
 
     // SGS model
