@@ -45,9 +45,9 @@ endif()
 add_library(linalg STATIC src/linalg.cpp)
 target_include_directories(linalg PUBLIC include)
 
-# amr_operators.cpp lives in libblock — block_tree.cpp calls fill_cf_ghosts()
-# directly and must not be compiled again in libns_solver (ODR violation).
-add_library(block STATIC src/block_tree.cpp src/amr_operators.cpp)
+# amr_operators.cpp and ghost_filler.cpp live in libblock — block_tree.cpp calls
+# fill_cf_ghosts() directly and must not be compiled again in libns_solver (ODR violation).
+add_library(block STATIC src/block_tree.cpp src/amr_operators.cpp src/ghost_filler.cpp)
 target_link_libraries(block PUBLIC linalg)
 
 find_package(OpenMP)
@@ -76,6 +76,8 @@ add_library(ns_solver STATIC
     src/vtk_writer.cpp
     src/live_streamer.cpp
     src/viewer_html.cpp
+    src/http_server.cpp          # R9-E1: POSIX socket / HTTP utilities
+    src/frame_packer.cpp         # R9-E1: wire-format frame serialisers
     src/solver_factory.cpp
 )
 target_link_libraries(ns_solver PUBLIC operators)
@@ -119,6 +121,7 @@ add_executable(test_step7     tests/test_step7.cpp)
 add_executable(test_config    tests/test_config.cpp)
 add_executable(test_imex      tests/test_imex.cpp)
 add_executable(test_sat       tests/test_sat.cpp)
+add_executable(test_ghost_fill tests/test_ghost_fill.cpp)  # R9-C
 
 target_link_libraries(test_linalg    PRIVATE linalg    m)
 target_link_libraries(test_block     PRIVATE block      m)
@@ -129,16 +132,18 @@ target_link_libraries(test_step7     PRIVATE ns_solver  m)
 target_link_libraries(test_config    PRIVATE ns_solver  m)
 target_link_libraries(test_imex      PRIVATE ns_solver  m)
 target_link_libraries(test_sat       PRIVATE ns_solver  m)
+target_link_libraries(test_ghost_fill PRIVATE block     m)  # R9-C: libblock only
 
-add_test(NAME linalg    COMMAND test_linalg)
-add_test(NAME block     COMMAND test_block)
-add_test(NAME operators COMMAND test_operators)
-add_test(NAME ns        COMMAND test_ns)
-add_test(NAME amr6      COMMAND test_amr6)
-add_test(NAME step7     COMMAND test_step7)
-add_test(NAME config    COMMAND test_config)
-add_test(NAME imex      COMMAND test_imex)
-add_test(NAME sat       COMMAND test_sat)
+add_test(NAME linalg     COMMAND test_linalg)
+add_test(NAME block      COMMAND test_block)
+add_test(NAME operators  COMMAND test_operators)
+add_test(NAME ns         COMMAND test_ns)
+add_test(NAME amr6       COMMAND test_amr6)
+add_test(NAME step7      COMMAND test_step7)
+add_test(NAME config     COMMAND test_config)
+add_test(NAME imex       COMMAND test_imex)
+add_test(NAME sat        COMMAND test_sat)
+add_test(NAME ghost_fill COMMAND test_ghost_fill)  # R9-C
 
 # =============================================================================
 # CUDA gate tests  (t5, t8, t19–t26)  — conditional on nvcc
@@ -176,6 +181,7 @@ if(NVCC)
                                 ${_S}/imex_advance.cpp ${_S}/flux_register.cpp
         ${_S}/sgs.cpp           ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
         ${_S}/live_streamer.cpp ${_S}/viewer_html.cpp
+        ${_S}/http_server.cpp   ${_S}/frame_packer.cpp
     )
     set(_LZ4 "$<$<BOOL:${LZ4_LIBRARY}>:-llz4>")
     set(_WNO -Xcompiler=-Wno-unused-variable)
@@ -216,6 +222,7 @@ if(NVCC)
              ${_S}/imex_advance.cpp ${_S}/flux_register.cpp
              ${_S}/sgs.cpp ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
              ${_S}/live_streamer.cpp ${_S}/viewer_html.cpp
+             ${_S}/http_server.cpp   ${_S}/frame_packer.cpp
     )
     add_nvcc_gate(TARGET t8  BIN t8_ghost_cluster  COMMENT "P4.3 TBC ghost exchange"
         SRCS ${_T}/test_ghost_cluster.cu ${_S}/cuda/gpu_ghost_cluster.cu
@@ -418,14 +425,20 @@ add_custom_target(sim
 # =============================================================================
 
 add_custom_target(b
-    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat
+    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill
     COMMENT "Build all targets (incremental)"
 )
 
 add_custom_target(ba
-    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat
+    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
+    USES_TERMINAL
+)
+
+add_custom_target(tgf DEPENDS test_ghost_fill
+    COMMAND $<TARGET_FILE:test_ghost_fill>
+    COMMENT "R9-C gate: GhostFiller + fill_cf_ghosts polynomial exactness"
     USES_TERMINAL
 )
 
@@ -436,5 +449,5 @@ add_custom_target(t4 DEPENDS test_ns        COMMAND $<TARGET_FILE:test_ns>      
 # t5 defined above in the CUDA block
 add_custom_target(t6 DEPENDS test_amr6      COMMAND $<TARGET_FILE:test_amr6>      COMMENT "Step 6 gate: test_amr6"      USES_TERMINAL)
 add_custom_target(t7 DEPENDS test_step7     COMMAND $<TARGET_FILE:test_step7>     COMMENT "Step 7 gate: test_step7"     USES_TERMINAL)
-add_custom_target(tconfig DEPENDS test_config COMMAND $<TARGET_FILE:test_config> COMMENT "R9-A4 gate: test_config" USES_TERMINAL)
-add_custom_target(timex   DEPENDS test_imex   COMMAND $<TARGET_FILE:test_imex>   COMMENT "R9-F1 gate: test_imex"   USES_TERMINAL)
+add_custom_target(tconfig DEPENDS test_config      COMMAND $<TARGET_FILE:test_config>      COMMENT "R9-A4 gate: test_config"      USES_TERMINAL)
+add_custom_target(timex   DEPENDS test_imex        COMMAND $<TARGET_FILE:test_imex>        COMMENT "R9-F1 gate: test_imex"        USES_TERMINAL)
