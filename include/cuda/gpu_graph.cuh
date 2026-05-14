@@ -25,9 +25,9 @@
 //   cudaGraphLaunch(graph_s3_, stream_)
 //   cudaStreamSynchronize(stream_)
 
-#include "../ns_solver.hpp"     // IGpuSolver interface (pure C++)
-#include "../cell_block.hpp"
-#include "../block_tree.hpp"
+#include "solver/ns_solver.hpp"     // IGpuSolver interface (pure C++)
+#include "mesh/cell_block.hpp"
+#include "mesh/block_tree.hpp"
 #include "gpu_ghost_fill.cuh"
 #include "gpu_rhs.cuh"
 #include "gpu_cfl.cuh"

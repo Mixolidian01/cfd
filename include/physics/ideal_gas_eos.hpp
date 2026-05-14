@@ -13,8 +13,8 @@
 #  endif
 #endif
 
-#include "cell_block.hpp"  // Prim, eos_cons_to_prim
-#include "concepts.hpp"    // EquationOfState concept
+#include "mesh/cell_block.hpp"  // Prim, eos_cons_to_prim
+#include "schemes/concepts.hpp"    // EquationOfState concept
 
 struct IdealGasEOS {
     __host__ __device__

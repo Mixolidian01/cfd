@@ -8,12 +8,12 @@
 //   A2: NSSolver GPU dispatch dt == CPU dt (relative tol 1e-10)
 //   A3: NSSolver GPU mass conservation over 20 steps (tol 1e-8)
 
-#include "../../include/cuda/gpu_graph.cuh"
-#include "../../include/cuda/gpu_check.cuh"
-#include "../../include/gpu_pool.hpp"
-#include "../../include/block_tree.hpp"
-#include "../../include/cell_block.hpp"
-#include "../../include/ns_solver.hpp"
+#include "cuda/gpu_graph.cuh"
+#include "cuda/gpu_check.cuh"
+#include "gpu_pool.hpp"
+#include "mesh/block_tree.hpp"
+#include "mesh/cell_block.hpp"
+#include "solver/ns_solver.hpp"
 #include <cstdio>
 #include <cmath>
 #include <cassert>

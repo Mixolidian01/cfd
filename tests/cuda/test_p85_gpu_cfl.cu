@@ -6,10 +6,10 @@
 //   C3: d_dt stays on device (pointer-dt pattern: read back without exec())
 //   C4: exec() twice in a row returns consistent dt (reset logic correct)
 
-#include "../../include/cuda/gpu_cfl.cuh"
-#include "../../include/gpu_pool.hpp"
-#include "../../include/block_tree.hpp"
-#include "../../include/cell_block.hpp"
+#include "cuda/gpu_cfl.cuh"
+#include "gpu_pool.hpp"
+#include "mesh/block_tree.hpp"
+#include "mesh/cell_block.hpp"
 #include <cstdio>
 #include <cmath>
 #include <vector>

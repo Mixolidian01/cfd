@@ -9,10 +9,10 @@
 // All comparisons are exact (double precision, same coefficients).
 // Tolerance: 1e-10 relative to max interior value (~1e5).
 
-#include "../../include/cuda/gpu_ghost_fill.cuh"
-#include "../../include/gpu_pool.hpp"
-#include "../../include/block_tree.hpp"
-#include "../../include/amr_operators.hpp"
+#include "cuda/gpu_ghost_fill.cuh"
+#include "gpu_pool.hpp"
+#include "mesh/block_tree.hpp"
+#include "mesh/amr_operators.hpp"
 #include <cstdio>
 #include <cmath>
 #include <vector>

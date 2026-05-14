@@ -15,10 +15,10 @@
 // never a captured graph node. This sidesteps the CUDA 13.x memset-in-graph
 // reliability issue observed with cudaStreamCaptureModeGlobal.
 
-#include "../../include/cuda/gpu_graph.cuh"
-#include "../../include/cuda/gpu_constants.cuh"
-#include "../../include/cuda/gpu_check.cuh"
-#include "../../include/cuda/gpu_meta_buffer.cuh"
+#include "cuda/gpu_graph.cuh"
+#include "cuda/gpu_constants.cuh"
+#include "cuda/gpu_check.cuh"
+#include "cuda/gpu_meta_buffer.cuh"
 #include <vector>
 
 // Verify GPU constants match CPU constants (both headers available here)

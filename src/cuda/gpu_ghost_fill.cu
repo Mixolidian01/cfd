@@ -7,8 +7,8 @@
 // CF coarse←fine: zero-gradient fallback — upgraded to conservative average in P8.4.
 // Edge/corner source: src = (ghost < NG) ? ghost+NB : ghost-NB  (always interior).
 
-#include "../../include/cuda/gpu_ghost_fill.cuh"
-#include "../../include/cuda/gpu_meta_buffer.cuh"
+#include "cuda/gpu_ghost_fill.cuh"
+#include "cuda/gpu_meta_buffer.cuh"
 #include <cassert>
 #include <stdexcept>
 #include <string>

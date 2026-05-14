@@ -6,10 +6,10 @@
 //   A3: prolong all 8 octants then restrict → identity (mass conservation)
 //   A4: all 8 octants prolong independently correct
 
-#include "../../include/cuda/gpu_amr.cuh"
-#include "../../include/gpu_pool.hpp"
-#include "../../include/cell_block.hpp"
-#include "../../include/amr_operators.hpp"
+#include "cuda/gpu_amr.cuh"
+#include "gpu_pool.hpp"
+#include "mesh/cell_block.hpp"
+#include "mesh/amr_operators.hpp"
 #include <cstdio>
 #include <cmath>
 #include <cassert>

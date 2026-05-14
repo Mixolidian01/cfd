@@ -1,6 +1,6 @@
 #pragma once
 #include <cmath>
-#include "axis.hpp"
+#include "mesh/axis.hpp"
 #include "log_mean.hpp"
 
 // Compatibility: __host__ and __device__ are empty in non-CUDA (GCC/Clang) TUs.

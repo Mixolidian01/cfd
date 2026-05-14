@@ -23,7 +23,7 @@
 // perform the same logical exchange through global memory and are
 // verified by the test suite on all hardware.
 
-#include "../../include/cuda/gpu_ghost_cluster.cuh"
+#include "cuda/gpu_ghost_cluster.cuh"
 #include <cooperative_groups.h>
 
 #define CUDA_CHECK(x) do { cudaError_t e=(x); \

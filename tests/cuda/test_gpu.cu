@@ -9,10 +9,10 @@
 //   T06  GPU TGV KE decays monotonically over 20 steps
 //   T07  GPU CFL bound respected every step
 
-#include "../../include/cuda/gpu_block.cuh"
+#include "cuda/gpu_block.cuh"
 #include "../../src/cuda/gpu_solver.cu"
-#include "../../include/ns_solver.hpp"
-#include "../../include/linalg.hpp"
+#include "solver/ns_solver.hpp"
+#include "linalg/linalg.hpp"
 #include <cstdio>
 #include <cmath>
 #include <vector>

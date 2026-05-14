@@ -61,11 +61,10 @@
 //   kelvin_helmholtz  — 2D shear layer (ic_du, ic_eps, ic_delta, ic_p0)
 //   isentropic_vortex — 2D analytical vortex (ic_mach, ic_rc)  quiet convergence test
 
-#include "../include/ns_solver.hpp"
-#include "../include/live_streamer.hpp"
-#include "../include/checkpoint.hpp"
-#include "../include/sgs.hpp"
-
+#include "solver/ns_solver.hpp"
+#include "io/live_streamer.hpp"
+#include "io/checkpoint.hpp"
+#include "models/sgs.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>

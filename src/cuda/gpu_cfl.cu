@@ -11,10 +11,10 @@
 //   d_dt_bits holds min(dt) as uint64; a second kernel writes it to d_dt
 //   (double) so pointer-dt RK3 kernels can dereference it without D→H copy.
 
-#include "../../include/cuda/gpu_cfl.cuh"
-#include "../../include/cuda/gpu_block.cuh"
-#include "../../include/cuda/gpu_check.cuh"
-#include "../../include/cuda/gpu_meta_buffer.cuh"
+#include "cuda/gpu_cfl.cuh"
+#include "cuda/gpu_block.cuh"
+#include "cuda/gpu_check.cuh"
+#include "cuda/gpu_meta_buffer.cuh"
 #include <cstring>
 #include <vector>
 #include <limits>

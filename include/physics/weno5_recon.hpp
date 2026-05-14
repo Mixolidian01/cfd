@@ -13,9 +13,9 @@
 // WENO5-Z reconstruction with Roe characteristic decomposition (Borges 2008).
 // __host__ __device__; template<Axis DIR>; no execution knowledge.
 
-#include "cell_block.hpp"           // Prim, NVAR, cell_idx, R_GAS
-#include "concepts.hpp"             // SpatialReconstruction concept
-#include "axis.hpp"                 // Axis
+#include "mesh/cell_block.hpp"           // Prim, NVAR, cell_idx, R_GAS
+#include "schemes/concepts.hpp"             // SpatialReconstruction concept
+#include "mesh/axis.hpp"                 // Axis
 #include "physics/weno5z_scalar.hpp"
 #include <cmath>
 

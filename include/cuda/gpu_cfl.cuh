@@ -20,9 +20,9 @@
 //   Each thread reduces one or more cells; warp-shuffle gives intra-warp min;
 //   shared-memory + first-warp pattern gives block min; atomicMin to d_dt_bits.
 
-#include "../cell_block.hpp"
-#include "../block_tree.hpp"
-#include "../gpu_pool.hpp"
+#include "mesh/cell_block.hpp"
+#include "mesh/block_tree.hpp"
+#include "gpu_pool.hpp"
 #include <cuda_runtime.h>
 #include <cstdint>
 

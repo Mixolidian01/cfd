@@ -11,13 +11,13 @@
 //   N3: 20-step GPU Q == 20-step CPU Q (max_phys_err < 1e-8)
 //   N4: GPU mass conserved to 1e-8 over 20 steps (same tolerance as CPU)
 
-#include "../../include/cuda/gpu_graph.cuh"
-#include "../../include/cuda/gpu_check.cuh"
-#include "../../include/gpu_pool.hpp"
-#include "../../include/block_tree.hpp"
-#include "../../include/cell_block.hpp"
-#include "../../include/ns_solver.hpp"
-#include "../../include/operators.hpp"
+#include "cuda/gpu_graph.cuh"
+#include "cuda/gpu_check.cuh"
+#include "gpu_pool.hpp"
+#include "mesh/block_tree.hpp"
+#include "mesh/cell_block.hpp"
+#include "solver/ns_solver.hpp"
+#include "schemes/operators.hpp"
 #include <cstdio>
 #include <cmath>
 #include <cassert>

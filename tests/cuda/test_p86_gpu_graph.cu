@@ -7,10 +7,10 @@
 //       second step is replay; result matches explicit reference
 //   G4: 20 graph-replay steps on periodic smooth flow: KE conserved < 1%
 
-#include "../../include/cuda/gpu_graph.cuh"
-#include "../../include/gpu_pool.hpp"
-#include "../../include/block_tree.hpp"
-#include "../../include/cell_block.hpp"
+#include "cuda/gpu_graph.cuh"
+#include "gpu_pool.hpp"
+#include "mesh/block_tree.hpp"
+#include "mesh/cell_block.hpp"
 #include <cstdio>
 #include <cmath>
 #include <cassert>

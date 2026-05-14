@@ -8,11 +8,11 @@
 // GpuRhsList::exec() zeros d_rhs_pool, launches the three kernels in order,
 // then returns.  download_rhs() DtoH-copies the RHS back to CellBlock::Q.
 
-#include "../../include/cuda/gpu_rhs.cuh"
-#include "../../include/cuda/gpu_hllc.cuh"
-#include "../../include/cuda/gpu_check.cuh"
-#include "../../include/cuda/gpu_meta_buffer.cuh"
-#include "../../include/physics/face_interp.hpp"
+#include "cuda/gpu_rhs.cuh"
+#include "cuda/gpu_hllc.cuh"
+#include "cuda/gpu_check.cuh"
+#include "cuda/gpu_meta_buffer.cuh"
+#include "physics/face_interp.hpp"
 #include <cstring>
 #include <vector>
 

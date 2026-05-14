@@ -28,7 +28,7 @@
 //                all kernel launches on stream_; fill_ghosts_device updated
 //                to accept stream argument.
 
-#include "../../include/cuda/gpu_block.cuh"
+#include "cuda/gpu_block.cuh"
 #include "gpu_rhs.cu"
 
 #include <cstdio>

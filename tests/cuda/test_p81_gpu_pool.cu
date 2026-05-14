@@ -9,8 +9,8 @@
 //   G2c: BlockTree::coarsen triggers on_block_alloc_ × 1 (parent)
 //   G2d: BlockTree::coarsen triggers on_block_free_  × 8 (children)
 
-#include "../../include/gpu_pool.hpp"
-#include "../../include/block_tree.hpp"
+#include "gpu_pool.hpp"
+#include "mesh/block_tree.hpp"
 #include <cstdio>
 #include <cmath>
 #include <cstring>

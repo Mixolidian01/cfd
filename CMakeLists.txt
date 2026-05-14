@@ -42,21 +42,21 @@ endif()
 # Libraries — one per layer
 # =============================================================================
 
-add_library(linalg STATIC src/linalg.cpp)
+add_library(linalg STATIC src/linalg/linalg.cpp)
 target_include_directories(linalg PUBLIC include)
 
 # amr_operators.cpp and ghost_filler.cpp live in libblock — block_tree.cpp calls
 # fill_cf_ghosts() directly and must not be compiled again in libns_solver (ODR violation).
-add_library(block STATIC src/block_tree.cpp src/amr_operators.cpp src/ghost_filler.cpp)
+add_library(block STATIC src/mesh/block_tree.cpp src/mesh/amr_operators.cpp src/mesh/ghost_filler.cpp)
 target_link_libraries(block PUBLIC linalg)
 
 find_package(OpenMP)
 add_library(operators STATIC
-    src/operators.cpp
-    src/convective_rhs.cpp          # R9-E3: convective kernel (convective_rhs_impl)
-    src/viscous_rhs.cpp             # R9-E3: viscous kernel (viscous_rhs_impl, undo_cf_viscous_energy)
-    src/rhs_sensors.cpp             # R9-E3: sensors & sources (fill_ducros_cache, phi_*, tree_sat_penalty)
-    src/instantiation_matrix.cpp   # R5: pre-compiled (Flux × Recon × EOS) matrix
+    src/schemes/operators.cpp
+    src/schemes/convective_rhs.cpp          # R9-E3: convective kernel (convective_rhs_impl)
+    src/schemes/viscous_rhs.cpp             # R9-E3: viscous kernel (viscous_rhs_impl, undo_cf_viscous_energy)
+    src/schemes/rhs_sensors.cpp             # R9-E3: sensors & sources (fill_ducros_cache, phi_*, tree_sat_penalty)
+    src/schemes/instantiation_matrix.cpp   # R5: pre-compiled (Flux × Recon × EOS) matrix
 )
 target_link_libraries(operators PUBLIC block)
 if(OpenMP_CXX_FOUND)
@@ -67,19 +67,19 @@ else()
 endif()
 
 add_library(ns_solver STATIC
-    src/ns_solver.cpp
-    src/cpu_rk3.cpp              # P10-A2: CpuRk3Integrator — CPU flat-tree SSP-RK3
-    src/lts_integrator.cpp       # P10-A2: LtsIntegrator — Berger-Oliger LTS
-    src/imex_advance.cpp         # R9-B: IMEX member function (advance_imex)
-    src/flux_register.cpp
-    src/sgs.cpp
-    src/checkpoint.cpp
-    src/vtk_writer.cpp
-    src/live_streamer.cpp
-    src/viewer_html.cpp
-    src/http_server.cpp          # R9-E1: POSIX socket / HTTP utilities
-    src/frame_packer.cpp         # R9-E1: wire-format frame serialisers
-    src/solver_factory.cpp
+    src/solver/ns_solver.cpp
+    src/solver/cpu_rk3.cpp              # P10-A2: CpuRk3Integrator — CPU flat-tree SSP-RK3
+    src/solver/lts_integrator.cpp       # P10-A2: LtsIntegrator — Berger-Oliger LTS
+    src/solver/imex_advance.cpp         # R9-B: IMEX member function (advance_imex)
+    src/mesh/flux_register.cpp
+    src/models/sgs.cpp
+    src/io/checkpoint.cpp
+    src/io/vtk_writer.cpp
+    src/io/live_streamer.cpp
+    src/io/viewer_html.cpp
+    src/io/http_server.cpp          # R9-E1: POSIX socket / HTTP utilities
+    src/io/frame_packer.cpp         # R9-E1: wire-format frame serialisers
+    src/solver/solver_factory.cpp
 )
 target_link_libraries(ns_solver PUBLIC operators)
 find_package(Threads REQUIRED)
@@ -97,7 +97,7 @@ else()
 endif()
 
 find_package(MPI QUIET)
-add_library(mpi_comm STATIC src/mpi_comm.cpp)
+add_library(mpi_comm STATIC src/mpi/mpi_comm.cpp)
 target_link_libraries(mpi_comm PUBLIC block)
 if(MPI_CXX_FOUND)
     target_link_libraries(mpi_comm PUBLIC MPI::MPI_CXX)
@@ -113,16 +113,16 @@ target_link_libraries(ns_solver PUBLIC mpi_comm)
 # =============================================================================
 enable_testing()
 
-add_executable(test_linalg    tests/test_linalg.cpp)
-add_executable(test_block     tests/test_block.cpp)
-add_executable(test_operators tests/test_operators.cpp)
-add_executable(test_ns        tests/test_ns.cpp)
-add_executable(test_amr6      tests/test_amr6.cpp)
-add_executable(test_step7     tests/test_step7.cpp)
-add_executable(test_config    tests/test_config.cpp)
-add_executable(test_imex      tests/test_imex.cpp)
-add_executable(test_sat       tests/test_sat.cpp)
-add_executable(test_ghost_fill tests/test_ghost_fill.cpp)  # R9-C
+add_executable(test_linalg    tests/linalg/test_linalg.cpp)
+add_executable(test_block     tests/mesh/test_block.cpp)
+add_executable(test_operators tests/schemes/test_operators.cpp)
+add_executable(test_ns        tests/solver/test_ns.cpp)
+add_executable(test_amr6      tests/mesh/test_amr6.cpp)
+add_executable(test_step7     tests/solver/test_step7.cpp)
+add_executable(test_config    tests/solver/test_config.cpp)
+add_executable(test_imex      tests/solver/test_imex.cpp)
+add_executable(test_sat       tests/schemes/test_sat.cpp)
+add_executable(test_ghost_fill tests/mesh/test_ghost_fill.cpp)  # R9-C
 
 target_link_libraries(test_linalg    PRIVATE linalg    m)
 target_link_libraries(test_block     PRIVATE block      m)
@@ -165,25 +165,25 @@ if(NVCC)
     set(_S ${CMAKE_SOURCE_DIR}/src)
     set(_T ${CMAKE_SOURCE_DIR}/tests/cuda)
 
-    set(_GPU_BASE  ${_S}/linalg.cpp ${_S}/block_tree.cpp
-                   ${_S}/amr_operators.cpp ${_S}/mpi_comm.cpp)
+    set(_GPU_BASE  ${_S}/linalg/linalg.cpp ${_S}/mesh/block_tree.cpp
+                   ${_S}/mesh/amr_operators.cpp ${_S}/mpi/mpi_comm.cpp)
     set(_GPU_POOL  ${_S}/cuda/gpu_pool.cu ${_GPU_BASE})
     set(_GPU_OPS                                        # R9-E3: operators split set
-        ${_S}/operators.cpp
-        ${_S}/convective_rhs.cpp
-        ${_S}/viscous_rhs.cpp
-        ${_S}/rhs_sensors.cpp
+        ${_S}/schemes/operators.cpp
+        ${_S}/schemes/convective_rhs.cpp
+        ${_S}/schemes/viscous_rhs.cpp
+        ${_S}/schemes/rhs_sensors.cpp
     )
     set(_GPU_NS                                         # full solver set (t25, t26)
         ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
         ${_S}/cuda/gpu_rhs.cu   ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
         ${_GPU_BASE}
-        ${_GPU_OPS}             ${_S}/ns_solver.cpp  ${_S}/cpu_rk3.cpp
-                                ${_S}/lts_integrator.cpp
-                                ${_S}/imex_advance.cpp ${_S}/flux_register.cpp
-        ${_S}/sgs.cpp           ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
-        ${_S}/live_streamer.cpp ${_S}/viewer_html.cpp
-        ${_S}/http_server.cpp   ${_S}/frame_packer.cpp
+        ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
+                                ${_S}/solver/lts_integrator.cpp
+                                ${_S}/solver/imex_advance.cpp ${_S}/mesh/flux_register.cpp
+        ${_S}/models/sgs.cpp    ${_S}/io/checkpoint.cpp ${_S}/io/vtk_writer.cpp
+        ${_S}/io/live_streamer.cpp ${_S}/io/viewer_html.cpp
+        ${_S}/io/http_server.cpp   ${_S}/io/frame_packer.cpp
     )
     set(_LZ4 "$<$<BOOL:${LZ4_LIBRARY}>:-llz4>")
     set(_WNO -Xcompiler=-Wno-unused-variable)
@@ -219,13 +219,13 @@ if(NVCC)
     add_nvcc_gate(TARGET t5  BIN t5_gpu   COMMENT "Step 5 GPU gate"
         EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_gpu.cu
-             ${_S}/linalg.cpp ${_S}/block_tree.cpp ${_S}/amr_operators.cpp
-             ${_GPU_OPS} ${_S}/ns_solver.cpp ${_S}/cpu_rk3.cpp
-             ${_S}/lts_integrator.cpp
-             ${_S}/imex_advance.cpp ${_S}/flux_register.cpp
-             ${_S}/sgs.cpp ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
-             ${_S}/live_streamer.cpp ${_S}/viewer_html.cpp
-             ${_S}/http_server.cpp   ${_S}/frame_packer.cpp
+             ${_S}/linalg/linalg.cpp ${_S}/mesh/block_tree.cpp ${_S}/mesh/amr_operators.cpp
+             ${_GPU_OPS} ${_S}/solver/ns_solver.cpp ${_S}/solver/cpu_rk3.cpp
+             ${_S}/solver/lts_integrator.cpp
+             ${_S}/solver/imex_advance.cpp ${_S}/mesh/flux_register.cpp
+             ${_S}/models/sgs.cpp ${_S}/io/checkpoint.cpp ${_S}/io/vtk_writer.cpp
+             ${_S}/io/live_streamer.cpp ${_S}/io/viewer_html.cpp
+             ${_S}/io/http_server.cpp   ${_S}/io/frame_packer.cpp
     )
     add_nvcc_gate(TARGET t8  BIN t8_ghost_cluster  COMMENT "P4.3 TBC ghost exchange"
         SRCS ${_T}/test_ghost_cluster.cu ${_S}/cuda/gpu_ghost_cluster.cu
@@ -274,9 +274,9 @@ endif()
 # =============================================================================
 
 # ── P4.4: Multiphase Baer-Nunziato / Allaire 5-equation (t9) ─────────────────
-add_library(bn_operators STATIC src/bn_operators.cpp)
+add_library(bn_operators STATIC src/models/bn_operators.cpp)
 target_include_directories(bn_operators PUBLIC include)
-add_executable(test_multiphase tests/test_multiphase.cpp)
+add_executable(test_multiphase tests/models/test_multiphase.cpp)
 target_link_libraries(test_multiphase PRIVATE bn_operators operators m)
 add_test(NAME multiphase COMMAND test_multiphase)
 add_custom_target(t9 DEPENDS test_multiphase
@@ -285,7 +285,7 @@ add_custom_target(t9 DEPENDS test_multiphase
 
 # ── P4.5: ZFP compressed checkpointing (t10) ─────────────────────────────────
 find_package(ZFP QUIET)
-add_library(checkpoint_zfp STATIC src/checkpoint_zfp.cpp)
+add_library(checkpoint_zfp STATIC src/io/checkpoint_zfp.cpp)
 target_include_directories(checkpoint_zfp PUBLIC include)
 target_link_libraries(checkpoint_zfp PUBLIC ns_solver)
 if(ZFP_FOUND)
@@ -295,7 +295,7 @@ if(ZFP_FOUND)
 else()
     message(STATUS "ZFP not found — float32 fallback only (install libzfp-dev for full support)")
 endif()
-add_executable(test_checkpoint_zfp tests/test_checkpoint_zfp.cpp)
+add_executable(test_checkpoint_zfp tests/io/test_checkpoint_zfp.cpp)
 target_link_libraries(test_checkpoint_zfp PRIVATE checkpoint_zfp m)
 add_test(NAME checkpoint_zfp COMMAND test_checkpoint_zfp)
 add_custom_target(t10 DEPENDS test_checkpoint_zfp
@@ -304,7 +304,7 @@ add_custom_target(t10 DEPENDS test_checkpoint_zfp
 
 # ── P4.6: Neural SGS closure (t11) ───────────────────────────────────────────
 find_package(onnxruntime QUIET)
-add_library(neural_sgs STATIC src/neural_sgs.cpp)
+add_library(neural_sgs STATIC src/models/neural_sgs.cpp)
 target_include_directories(neural_sgs PUBLIC include)
 target_link_libraries(neural_sgs PUBLIC ns_solver)
 if(onnxruntime_FOUND)
@@ -314,7 +314,7 @@ if(onnxruntime_FOUND)
 else()
     message(STATUS "ONNX Runtime not found — Vreman algebraic fallback only")
 endif()
-add_executable(test_neural_sgs tests/test_neural_sgs.cpp)
+add_executable(test_neural_sgs tests/models/test_neural_sgs.cpp)
 target_link_libraries(test_neural_sgs PRIVATE neural_sgs m)
 add_test(NAME neural_sgs COMMAND test_neural_sgs)
 add_custom_target(t11 DEPENDS test_neural_sgs
@@ -322,7 +322,7 @@ add_custom_target(t11 DEPENDS test_neural_sgs
     COMMENT "P4.6 gate: Neural SGS closure" USES_TERMINAL)
 
 # ── P6.5: In-situ browser live feed (t12) ────────────────────────────────────
-add_executable(test_streamer tests/test_streamer.cpp)
+add_executable(test_streamer tests/io/test_streamer.cpp)
 target_link_libraries(test_streamer PRIVATE ns_solver m)
 add_test(NAME streamer COMMAND test_streamer)
 add_custom_target(t12 DEPENDS test_streamer
@@ -330,7 +330,7 @@ add_custom_target(t12 DEPENDS test_streamer
     COMMENT "P6.5 gate: LiveStreamer 2D slice protocol" USES_TERMINAL)
 
 # ── P7.1: MPI domain decomposition (t13) ─────────────────────────────────────
-add_executable(test_mpi tests/test_mpi.cpp)
+add_executable(test_mpi tests/mpi/test_mpi.cpp)
 target_link_libraries(test_mpi PRIVATE ns_solver m)
 if(MPI_CXX_FOUND)
     target_link_libraries(test_mpi PRIVATE MPI::MPI_CXX)
@@ -341,41 +341,41 @@ add_custom_target(t13 DEPENDS test_mpi
     COMMENT "P7.1 gate: 2-rank Sod, global mass conserved to 1e-10" USES_TERMINAL)
 
 # ── P7.2: WENO5 C/F ghost fill (t14) ─────────────────────────────────────────
-add_executable(test_weno5_cf tests/test_weno5_cf.cpp)
+add_executable(test_weno5_cf tests/schemes/test_weno5_cf.cpp)
 target_link_libraries(test_weno5_cf PRIVATE ns_solver m)
 add_custom_target(t14 DEPENDS test_weno5_cf
     COMMAND $<TARGET_FILE:test_weno5_cf>
     COMMENT "P7.2 gate: 5th-order Lagrange C/F ghost fill accuracy" USES_TERMINAL)
 
 # ── P7.3: IBM ghost-cell immersed boundary (t15) ─────────────────────────────
-add_library(ibm STATIC src/ibm.cpp)
+add_library(ibm STATIC src/models/ibm.cpp)
 target_link_libraries(ibm PUBLIC ns_solver)
-add_executable(test_ibm tests/test_ibm.cpp)
+add_executable(test_ibm tests/models/test_ibm.cpp)
 target_link_libraries(test_ibm PRIVATE ibm m)
 add_custom_target(t15 DEPENDS test_ibm
     COMMAND $<TARGET_FILE:test_ibm>
     COMMENT "P7.3 gate: ghost-cell immersed boundary method" USES_TERMINAL)
 
 # ── P7.4: Multi-species Arrhenius chemistry (t16) ────────────────────────────
-add_library(chemistry STATIC src/chemistry.cpp)
+add_library(chemistry STATIC src/models/chemistry.cpp)
 target_link_libraries(chemistry PUBLIC ns_solver)
-add_executable(test_chemistry tests/test_chemistry.cpp)
+add_executable(test_chemistry tests/models/test_chemistry.cpp)
 target_link_libraries(test_chemistry PRIVATE chemistry m)
 add_custom_target(t16 DEPENDS test_chemistry
     COMMAND $<TARGET_FILE:test_chemistry>
     COMMENT "P7.4 gate: multi-species Arrhenius reactive flow" USES_TERMINAL)
 
 # ── P7.5: Quantitative DNS TGV Re=1600 (t17) ─────────────────────────────────
-add_executable(test_p75_dns_tgv tests/test_p75_dns_tgv.cpp)
+add_executable(test_p75_dns_tgv tests/bench/test_p75_dns_tgv.cpp)
 target_link_libraries(test_p75_dns_tgv PRIVATE ns_solver m)
 add_custom_target(t17 DEPENDS test_p75_dns_tgv
     COMMAND $<TARGET_FILE:test_p75_dns_tgv>
     COMMENT "P7.5 gate: Quantitative DNS TGV Re=1600 (32³ ILES, HiOCFD4 comparison)" USES_TERMINAL)
 
 # ── P7.6: Wall-modelled LES (t18) ────────────────────────────────────────────
-add_library(wall_model STATIC src/wall_model.cpp)
+add_library(wall_model STATIC src/models/wall_model.cpp)
 target_link_libraries(wall_model PUBLIC ns_solver)
-add_executable(test_wmles tests/test_wmles.cpp)
+add_executable(test_wmles tests/models/test_wmles.cpp)
 target_link_libraries(test_wmles PRIVATE wall_model m)
 add_custom_target(t18 DEPENDS test_wmles
     COMMAND $<TARGET_FILE:test_wmles>
@@ -387,7 +387,7 @@ add_custom_target(t18 DEPENDS test_wmles
 # add_bench_gate(GATE EXEC COMMENT [LIBS…])
 # CTest name is derived by stripping "test_" from EXEC (e.g. bench_b1).
 function(add_bench_gate GATE_NAME EXEC_NAME COMMENT_STR)
-    add_executable(${EXEC_NAME} tests/${EXEC_NAME}.cpp)
+    add_executable(${EXEC_NAME} tests/bench/${EXEC_NAME}.cpp)
     target_link_libraries(${EXEC_NAME} PRIVATE ${ARGN} m)
     string(REPLACE "test_" "" _tname "${EXEC_NAME}")
     add_test(NAME ${_tname} COMMAND ${EXEC_NAME})

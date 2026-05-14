@@ -11,10 +11,9 @@
 // Both kernels write only interior cells and leave ghost layers untouched;
 // ghost fill (same-level or C/F) must follow before the next RHS evaluation.
 
-#include "../../include/cuda/gpu_amr.cuh"
-#include "../../include/cuda/gpu_constants.cuh"
-#include "../../include/cuda/gpu_check.cuh"
-
+#include "cuda/gpu_amr.cuh"
+#include "cuda/gpu_constants.cuh"
+#include "cuda/gpu_check.cuh"
 // ─────────────────────────────────────────────────────────────────────────────
 // k_prolong
 // gridDim.x  = n_prolong pairs

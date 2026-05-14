@@ -10,11 +10,11 @@
 // CPU arithmetic are identical up to floating-point operation ordering.
 // Tolerance 1e-10 × max|RHS| for the comparison.
 
-#include "../../include/cuda/gpu_rhs.cuh"
-#include "../../include/cuda/gpu_ghost_fill.cuh"
-#include "../../include/gpu_pool.hpp"
-#include "../../include/block_tree.hpp"
-#include "../../include/operators.hpp"
+#include "cuda/gpu_rhs.cuh"
+#include "cuda/gpu_ghost_fill.cuh"
+#include "gpu_pool.hpp"
+#include "mesh/block_tree.hpp"
+#include "schemes/operators.hpp"
 #include <cstdio>
 #include <cmath>
 #include <vector>

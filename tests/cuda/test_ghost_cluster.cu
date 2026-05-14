@@ -11,8 +11,8 @@
 //
 // Gate: GC01–GC03 each with L∞ < 1e-14.
 
-#include "../../include/cuda/gpu_ghost_cluster.cuh"
-#include "../../include/cuda/gpu_constants.cuh"
+#include "cuda/gpu_ghost_cluster.cuh"
+#include "cuda/gpu_constants.cuh"
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>

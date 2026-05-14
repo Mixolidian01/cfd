@@ -19,9 +19,9 @@
 //
 // BCType encoding:  0=periodic  1=wall  2=open  (must match ns_solver.hpp)
 
-#include "../cell_block.hpp"
-#include "../block_tree.hpp"
-#include "../gpu_pool.hpp"
+#include "mesh/cell_block.hpp"
+#include "mesh/block_tree.hpp"
+#include "gpu_pool.hpp"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>

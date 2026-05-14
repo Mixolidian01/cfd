@@ -20,9 +20,9 @@
 // d_RHS is flat SoA (same layout as d_Q): d_RHS[v*NCELL + flat]
 // Only interior cells [ilo..ihi]³ are written; ghost cells are untouched.
 
-#include "../cell_block.hpp"
-#include "../block_tree.hpp"
-#include "../gpu_pool.hpp"
+#include "mesh/cell_block.hpp"
+#include "mesh/block_tree.hpp"
+#include "gpu_pool.hpp"
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <vector>

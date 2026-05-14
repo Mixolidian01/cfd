@@ -16,7 +16,7 @@
 // Octant bit layout: bit0=x-high, bit1=y-high, bit2=z-high.
 // Matches BlockTree convention in block_tree.hpp.
 
-#include "../cell_block.hpp"
+#include "mesh/cell_block.hpp"
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <vector>

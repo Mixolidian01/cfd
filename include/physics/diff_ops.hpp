@@ -11,7 +11,7 @@
 // Layer P — Differential operator functors (R7)
 // All structs are empty, trivially copyable, __host__ __device__ safe.
 // Field: any callable double(int,int,int).
-#include "axis.hpp"
+#include "mesh/axis.hpp"
 
 // ── CellGrad<DIR, Order> ─────────────────────────────────────────────────────
 // Cell-centred ∂f/∂x_DIR at (i,j,k).

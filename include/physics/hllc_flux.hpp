@@ -12,9 +12,9 @@
 #endif
 // __host__ __device__; template<Axis DIR>; no execution knowledge.
 
-#include "cell_block.hpp"   // Prim, NVAR
-#include "concepts.hpp"     // RiemannFlux concept, is_entropy_stable
-#include "axis.hpp"         // Axis
+#include "mesh/cell_block.hpp"   // Prim, NVAR
+#include "schemes/concepts.hpp"     // RiemannFlux concept, is_entropy_stable
+#include "mesh/axis.hpp"         // Axis
 #include "physics/log_mean.hpp"
 #include <array>
 #include <cmath>

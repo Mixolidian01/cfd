@@ -9,7 +9,7 @@
 // The staging buffer is 69,120 bytes (5 * 1728 * 8). thread_local avoids
 // contention when multiple CPU threads drive concurrent blocks.
 
-#include "../../include/gpu_pool.hpp"
+#include "gpu_pool.hpp"
 #include <cuda_runtime.h>
 #include <cassert>
 #include <stdexcept>

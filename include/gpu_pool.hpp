@@ -16,7 +16,7 @@
 // This header compiles under both g++ and nvcc.
 // CUDA API calls live entirely in src/cuda/gpu_pool.cu.
 
-#include "cell_block.hpp"
+#include "mesh/cell_block.hpp"
 #include <unordered_map>
 #include <vector>
 #include <cstddef>
