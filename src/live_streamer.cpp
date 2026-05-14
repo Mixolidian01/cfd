@@ -6,6 +6,8 @@
 
 #include "../include/live_streamer.hpp"
 #include "../include/cell_block.hpp"
+#include "../include/http_server.hpp"    // http_safe_send, http_read_request, …
+#include "../include/frame_packer.hpp"   // serialize_frame, serialize_volume
 
 #include <algorithm>
 #include <cassert>
@@ -22,83 +24,6 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
-// LZ4 block compression (P6.8) — optional, guarded by HAVE_LZ4
-#ifdef HAVE_LZ4
-#include <lz4.h>
-#endif
-
-// =============================================================================
-// Internal helpers
-// =============================================================================
-
-static bool safe_send(int fd, const void* data, size_t len) {
-    const char* p = static_cast<const char*>(data);
-    while (len > 0) {
-        ssize_t n = ::send(fd, p, len, MSG_NOSIGNAL);
-        if (n <= 0) return false;
-        p   += n;
-        len -= static_cast<size_t>(n);
-    }
-    return true;
-}
-
-// Write one 4-byte LE uint32 into a byte buffer.
-static void push_u32(std::vector<uint8_t>& v, uint32_t x) {
-    v.push_back(static_cast<uint8_t>(x));
-    v.push_back(static_cast<uint8_t>(x >>  8));
-    v.push_back(static_cast<uint8_t>(x >> 16));
-    v.push_back(static_cast<uint8_t>(x >> 24));
-}
-static void push_i32(std::vector<uint8_t>& v, int32_t x) {
-    push_u32(v, static_cast<uint32_t>(x));
-}
-static void push_f32(std::vector<uint8_t>& v, float x) {
-    uint32_t u; std::memcpy(&u, &x, 4); push_u32(v, u);
-}
-static void push_f64(std::vector<uint8_t>& v, double x) {
-    uint64_t u; std::memcpy(&u, &x, 8);
-    for (int i = 0; i < 8; ++i) v.push_back(static_cast<uint8_t>(u >> (i*8)));
-}
-
-// Parse first integer after "key": in a JSON string (enough for our simple config body).
-static bool json_int(const std::string& s, const std::string& key, int& out) {
-    auto p = s.find('"' + key + '"');
-    if (p == std::string::npos) return false;
-    p = s.find(':', p);
-    if (p == std::string::npos) return false;
-    try { out = std::stoi(s.substr(p + 1)); return true; }
-    catch (...) { return false; }
-}
-static bool json_double(const std::string& s, const std::string& key, double& out) {
-    auto p = s.find('"' + key + '"');
-    if (p == std::string::npos) return false;
-    p = s.find(':', p);
-    if (p == std::string::npos) return false;
-    try { out = std::stod(s.substr(p + 1)); return true; }
-    catch (...) { return false; }
-}
-
-// Read from fd until \r\n\r\n (or fd closes / 8 KB limit).
-static std::string read_http_request(int fd) {
-    std::string req;
-    req.reserve(512);
-    char buf[256];
-    while (req.find("\r\n\r\n") == std::string::npos && req.size() < 8192) {
-        ssize_t n = ::recv(fd, buf, sizeof(buf), 0);
-        if (n <= 0) break;
-        req.append(buf, static_cast<size_t>(n));
-    }
-    return req;
-}
-
-static int http_content_length(const std::string& req) {
-    auto p = req.find("Content-Length:");
-    if (p == std::string::npos) p = req.find("content-length:");
-    if (p == std::string::npos) return 0;
-    try { return std::stoi(req.substr(p + 15)); }
-    catch (...) { return 0; }
-}
 
 // =============================================================================
 // Embedded HTML viewer (Phase A — 2D slice, viridis colormap, canvas API)
@@ -207,73 +132,12 @@ void LiveStreamer::build_volume(const BlockTree& tree, int step, double t,
     fb.g_vmax = g_vmax;
 }
 
-// Serialise FrameBuffer3D → length-prefixed binary blob (same encoding as 2-D).
+// Serialise FrameBuffer3D → length-prefixed binary blob.
+// Implementation delegated to frame_packer.cpp (R9-E1).
 void LiveStreamer::serialize_volume(const FrameBuffer3D& fb,
                                     std::vector<uint8_t>& out)
 {
-    out.clear();
-    const int N       = static_cast<int>(fb.nx);   // nx==ny==nz
-    const int n_vox   = N * N * N;
-
-    std::vector<uint8_t> body;
-    body.reserve(40u + static_cast<size_t>(n_vox) * 4u);
-
-    // ── Header (40 bytes) ────────────────────────────────────────────────────
-    push_u32(body, 0xCFD00003u);            //  0-3  magic (3D frame)
-    push_i32(body, fb.step);               //  4-7  step
-    push_f64(body, fb.sim_time);           //  8-15 sim_time
-    // 16-17 nx, 18-19 ny, 20-21 nz, 22-23 pad
-    body.push_back(static_cast<uint8_t>(N));        body.push_back(static_cast<uint8_t>(N>>8));
-    body.push_back(static_cast<uint8_t>(N));        body.push_back(static_cast<uint8_t>(N>>8));
-    body.push_back(static_cast<uint8_t>(N));        body.push_back(static_cast<uint8_t>(N>>8));
-    body.push_back(0); body.push_back(0);   // pad
-    push_f32(body, fb.g_vmin);             // 24-27 g_vmin
-    push_f32(body, fb.g_vmax);             // 28-31 g_vmax
-    push_f32(body, fb.domain_L);           // 32-35 domain_L
-    body.push_back(fb.var_id);             // 36    var_id
-    body.push_back(0);                     // 37    compressed (patched below)
-    const size_t compressed_off = body.size() - 1;
-    body.push_back(0); body.push_back(0);  // 38-39 pad
-    // total header = 40 bytes ✓
-
-    // ── Data section ─────────────────────────────────────────────────────────
-#ifdef HAVE_LZ4
-    const float rng_inv = (fb.g_vmax > fb.g_vmin)
-                          ? 1.0f / (fb.g_vmax - fb.g_vmin) : 1.0f;
-
-    std::vector<uint8_t> u16(static_cast<size_t>(n_vox) * 2u);
-    for (int i = 0; i < n_vox; ++i) {
-        float t = std::max(0.f, std::min(1.f,
-                    (fb.data[i] - fb.g_vmin) * rng_inv));
-        uint16_t q = static_cast<uint16_t>(std::lround(t * 65535.f));
-        u16[i*2]   = static_cast<uint8_t>(q);
-        u16[i*2+1] = static_cast<uint8_t>(q >> 8);
-    }
-    const int src_bytes = static_cast<int>(u16.size());
-    const int max_dst   = LZ4_compressBound(src_bytes);
-    std::vector<char> lz4_out(static_cast<size_t>(max_dst));
-    const int cmp_bytes = LZ4_compress_default(
-        reinterpret_cast<const char*>(u16.data()),
-        lz4_out.data(), src_bytes, max_dst);
-
-    if (cmp_bytes > 0) {
-        body[compressed_off] = 1;
-        push_u32(body, static_cast<uint32_t>(src_bytes));
-        body.insert(body.end(),
-                    reinterpret_cast<const uint8_t*>(lz4_out.data()),
-                    reinterpret_cast<const uint8_t*>(lz4_out.data()) + cmp_bytes);
-    } else {
-        for (int i = 0; i < n_vox; ++i) push_f32(body, fb.data[i]);
-    }
-#else
-    for (int i = 0; i < n_vox; ++i) push_f32(body, fb.data[i]);
-#endif
-
-    const uint32_t body_len = static_cast<uint32_t>(body.size());
-    out.resize(4u + body.size());
-    out[0] = body_len & 0xffu; out[1] = (body_len >>  8) & 0xffu;
-    out[2] = (body_len >> 16) & 0xffu; out[3] = (body_len >> 24) & 0xffu;
-    std::memcpy(out.data() + 4, body.data(), body.size());
+    ::serialize_volume(fb, out);
 }
 
 // =============================================================================
@@ -511,93 +375,11 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
 
 // =============================================================================
 // LiveStreamer::serialize_frame — pack FrameBuffer into a length-prefixed blob
-//
-// Wire format:
-//   [4]  uint32  frame body length (everything after these 4 bytes)
-//   [32] header  magic/step/time/n_blocks/axis/var_id/compressed/vmin/vmax/domainL
-//   [n×16] block descriptors (uncompressed, always)
-//   data section — one of:
-//     compressed=0 : n×NB×NB × float32
-//     compressed=1 : [4] uint32 uncompressed_byte_count
-//                    [?] LZ4 raw-block of (n×NB×NB × uint16 LE)
-//                    uint16 q = round((val-vmin)/(vmax-vmin) * 65535)
+// Implementation delegated to frame_packer.cpp (R9-E1).
 // =============================================================================
 
 void LiveStreamer::serialize_frame(const FrameBuffer& fb, std::vector<uint8_t>& out) {
-    out.clear();
-    const uint8_t n        = fb.n_blocks;
-    const int     n_pixels = static_cast<int>(n) * NB * NB;
-
-    // Build body separately so we can prepend the correct length at the end.
-    std::vector<uint8_t> body;
-    body.reserve(32u + static_cast<uint32_t>(n) * 16u + n_pixels * 4u);
-
-    // ── Header (32 bytes) ────────────────────────────────────────────────────
-    push_u32(body, 0xCFD00001u);    //  0-3  magic
-    push_i32(body, fb.step);        //  4-7  step
-    push_f64(body, fb.sim_time);    //  8-15 time
-    body.push_back(n);              // 16    n_blocks
-    body.push_back(fb.axis);        // 17    slice_axis
-    body.push_back(fb.var_id);      // 18    var_id
-    body.push_back(0);              // 19    compressed flag (patched below)
-    const size_t compressed_off = body.size() - 1;
-    push_f32(body, fb.g_vmin);      // 20-23 vmin
-    push_f32(body, fb.g_vmax);      // 24-27 vmax
-    push_f32(body, fb.domain_L);    // 28-31 domain_L
-    // total header = 32 bytes ✓
-
-    // ── Block descriptors (n × 16 bytes, always uncompressed) ────────────────
-    for (uint8_t b = 0; b < n; ++b) {
-        const BlockDesc2D& d = fb.descs[b];
-        push_f32(body, d.ox2d);
-        push_f32(body, d.oy2d);
-        push_f32(body, d.h);
-        body.push_back(d.level);
-        body.push_back(0); body.push_back(0); body.push_back(0);
-    }
-
-    // ── Data section ─────────────────────────────────────────────────────────
-#ifdef HAVE_LZ4
-    // uint16 quantisation → LZ4 block compression
-    const float rng_inv = (fb.g_vmax > fb.g_vmin)
-                          ? 1.0f / (fb.g_vmax - fb.g_vmin) : 1.0f;
-
-    std::vector<uint8_t> u16(static_cast<size_t>(n_pixels) * 2u);
-    for (int i = 0; i < n_pixels; ++i) {
-        float t = std::max(0.0f, std::min(1.0f,
-                      (fb.data[i] - fb.g_vmin) * rng_inv));
-        uint16_t q = static_cast<uint16_t>(std::lround(t * 65535.0f));
-        u16[i*2]   = static_cast<uint8_t>(q);
-        u16[i*2+1] = static_cast<uint8_t>(q >> 8);
-    }
-
-    const int src_bytes = static_cast<int>(u16.size());
-    const int max_dst   = LZ4_compressBound(src_bytes);
-    std::vector<char> lz4_out(static_cast<size_t>(max_dst));
-    const int cmp_bytes = LZ4_compress_default(
-        reinterpret_cast<const char*>(u16.data()),
-        lz4_out.data(), src_bytes, max_dst);
-
-    if (cmp_bytes > 0) {
-        body[compressed_off] = 1;                              // mark compressed
-        push_u32(body, static_cast<uint32_t>(src_bytes));     // decompressed size hint
-        body.insert(body.end(),
-                    reinterpret_cast<const uint8_t*>(lz4_out.data()),
-                    reinterpret_cast<const uint8_t*>(lz4_out.data()) + cmp_bytes);
-    } else {
-        // LZ4 failed (extremely rare) — fall through to raw float32
-        for (int i = 0; i < n_pixels; ++i) push_f32(body, fb.data[i]);
-    }
-#else
-    for (int i = 0; i < n_pixels; ++i) push_f32(body, fb.data[i]);
-#endif
-
-    // Prepend 4-byte length prefix
-    const uint32_t body_len = static_cast<uint32_t>(body.size());
-    out.resize(4u + body.size());
-    out[0] = body_len & 0xffu; out[1] = (body_len >> 8) & 0xffu;
-    out[2] = (body_len >> 16) & 0xffu; out[3] = (body_len >> 24) & 0xffu;
-    std::memcpy(out.data() + 4, body.data(), body.size());
+    ::serialize_frame(fb, out);
 }
 
 // =============================================================================
@@ -626,9 +408,9 @@ void LiveStreamer::run_stream() {
         char hdr[24];
         int  hlen = std::snprintf(hdr, sizeof(hdr), "%zx\r\n", frame_bytes.size());
 
-        if (!safe_send(fd, hdr, static_cast<size_t>(hlen)) ||
-            !safe_send(fd, frame_bytes.data(), frame_bytes.size()) ||
-            !safe_send(fd, "\r\n", 2))
+        if (!http_safe_send(fd, hdr, static_cast<size_t>(hlen)) ||
+            !http_safe_send(fd, frame_bytes.data(), frame_bytes.size()) ||
+            !http_safe_send(fd, "\r\n", 2))
         {
             // Client disconnected — clear socket; accept thread will set a new one
             int expected = fd;
@@ -662,9 +444,9 @@ void LiveStreamer::run_stream3d() {
 
         char hdr[24];
         int  hlen = std::snprintf(hdr, sizeof(hdr), "%zx\r\n", frame_bytes.size());
-        if (!safe_send(fd, hdr, static_cast<size_t>(hlen)) ||
-            !safe_send(fd, frame_bytes.data(), frame_bytes.size()) ||
-            !safe_send(fd, "\r\n", 2))
+        if (!http_safe_send(fd, hdr, static_cast<size_t>(hlen)) ||
+            !http_safe_send(fd, frame_bytes.data(), frame_bytes.size()) ||
+            !http_safe_send(fd, "\r\n", 2))
         {
             int expected = fd;
             vol_stream_fd_.compare_exchange_strong(expected, -1,
@@ -724,7 +506,7 @@ void LiveStreamer::run_accept() {
 // =============================================================================
 
 void LiveStreamer::handle_connection(int cfd) {
-    std::string req = read_http_request(cfd);
+    std::string req = http_read_request(cfd);
     if (req.empty()) { ::close(cfd); return; }
 
     const bool is_get_root      = (req.rfind("GET / ",    0) == 0) ||
@@ -758,7 +540,7 @@ void LiveStreamer::handle_connection(int cfd) {
         const char* r404 =
             "HTTP/1.1 404 Not Found\r\n"
             "Content-Length: 0\r\n\r\n";
-        safe_send(cfd, r404, std::strlen(r404));
+        http_safe_send(cfd, r404, std::strlen(r404));
         ::close(cfd);
     }
 }
@@ -778,8 +560,8 @@ void LiveStreamer::handle_get_root(int cfd) {
         "Content-Length: %zu\r\n"
         "Connection: close\r\n\r\n", len);
 
-    safe_send(cfd, hdr, static_cast<size_t>(hlen));
-    safe_send(cfd, html, len);
+    http_safe_send(cfd, hdr, static_cast<size_t>(hlen));
+    http_safe_send(cfd, html, len);
 }
 
 void LiveStreamer::handle_get_stream(int cfd) {
@@ -790,7 +572,7 @@ void LiveStreamer::handle_get_stream(int cfd) {
         "Cache-Control: no-cache\r\n"
         "Connection: keep-alive\r\n\r\n";
 
-    if (!safe_send(cfd, hdr, std::strlen(hdr))) {
+    if (!http_safe_send(cfd, hdr, std::strlen(hdr))) {
         ::close(cfd);
         return;
     }
@@ -808,8 +590,8 @@ void LiveStreamer::handle_get_volume(int cfd) {
         "Content-Type: text/html; charset=utf-8\r\n"
         "Content-Length: %zu\r\n"
         "Connection: close\r\n\r\n", html.size());
-    safe_send(cfd, hdr, static_cast<size_t>(hlen));
-    safe_send(cfd, html.c_str(), html.size());
+    http_safe_send(cfd, hdr, static_cast<size_t>(hlen));
+    http_safe_send(cfd, html.c_str(), html.size());
 }
 
 void LiveStreamer::handle_get_vol_stream(int cfd) {
@@ -819,7 +601,7 @@ void LiveStreamer::handle_get_vol_stream(int cfd) {
         "Transfer-Encoding: chunked\r\n"
         "Cache-Control: no-cache\r\n"
         "Connection: keep-alive\r\n\r\n";
-    if (!safe_send(cfd, hdr, std::strlen(hdr))) { ::close(cfd); return; }
+    if (!http_safe_send(cfd, hdr, std::strlen(hdr))) { ::close(cfd); return; }
 
     int old = vol_stream_fd_.exchange(cfd, std::memory_order_acq_rel);
     if (old >= 0 && old != cfd) ::close(old);
@@ -965,7 +747,7 @@ void LiveStreamer::handle_post_config(int cfd, const std::string& req_with_body)
         "HTTP/1.1 200 OK\r\n"
         "Content-Length: 0\r\n"
         "Access-Control-Allow-Origin: *\r\n\r\n";
-    safe_send(cfd, r200, std::strlen(r200));
+    http_safe_send(cfd, r200, std::strlen(r200));
 }
 
 // =============================================================================
