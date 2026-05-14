@@ -117,6 +117,8 @@ add_executable(test_ns        tests/test_ns.cpp)
 add_executable(test_amr6      tests/test_amr6.cpp)
 add_executable(test_step7     tests/test_step7.cpp)
 add_executable(test_config    tests/test_config.cpp)
+add_executable(test_imex      tests/test_imex.cpp)
+add_executable(test_sat       tests/test_sat.cpp)
 
 target_link_libraries(test_linalg    PRIVATE linalg    m)
 target_link_libraries(test_block     PRIVATE block      m)
@@ -125,6 +127,8 @@ target_link_libraries(test_ns        PRIVATE ns_solver  m)
 target_link_libraries(test_amr6      PRIVATE ns_solver  m)
 target_link_libraries(test_step7     PRIVATE ns_solver  m)
 target_link_libraries(test_config    PRIVATE ns_solver  m)
+target_link_libraries(test_imex      PRIVATE ns_solver  m)
+target_link_libraries(test_sat       PRIVATE ns_solver  m)
 
 add_test(NAME linalg    COMMAND test_linalg)
 add_test(NAME block     COMMAND test_block)
@@ -133,6 +137,8 @@ add_test(NAME ns        COMMAND test_ns)
 add_test(NAME amr6      COMMAND test_amr6)
 add_test(NAME step7     COMMAND test_step7)
 add_test(NAME config    COMMAND test_config)
+add_test(NAME imex      COMMAND test_imex)
+add_test(NAME sat       COMMAND test_sat)
 
 # =============================================================================
 # CUDA gate tests  (t5, t8, t19–t26)  — conditional on nvcc
@@ -412,12 +418,12 @@ add_custom_target(sim
 # =============================================================================
 
 add_custom_target(b
-    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config
+    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat
     COMMENT "Build all targets (incremental)"
 )
 
 add_custom_target(ba
-    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config
+    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
@@ -431,3 +437,4 @@ add_custom_target(t4 DEPENDS test_ns        COMMAND $<TARGET_FILE:test_ns>      
 add_custom_target(t6 DEPENDS test_amr6      COMMAND $<TARGET_FILE:test_amr6>      COMMENT "Step 6 gate: test_amr6"      USES_TERMINAL)
 add_custom_target(t7 DEPENDS test_step7     COMMAND $<TARGET_FILE:test_step7>     COMMENT "Step 7 gate: test_step7"     USES_TERMINAL)
 add_custom_target(tconfig DEPENDS test_config COMMAND $<TARGET_FILE:test_config> COMMENT "R9-A4 gate: test_config" USES_TERMINAL)
+add_custom_target(timex   DEPENDS test_imex   COMMAND $<TARGET_FILE:test_imex>   COMMENT "R9-F1 gate: test_imex"   USES_TERMINAL)
