@@ -111,7 +111,7 @@ static void a03_regrid_conserves_mass() {
         q.T=q.p/(q.rho*R_GAS); q.c=sqrt(GAMMA*q.p/q.rho); return q;
     };
     NSSolver s;
-    s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose=false;
+    s.cfg.bc.variant = PeriodicBC{}; s.cfg.io.verbose=false;
     s.init(1.0, ic);
     double m0 = global_mass(s);
 
@@ -152,8 +152,8 @@ static void a04_advance_conserves_mass() {
         q.T=q.p/(q.rho*R_GAS); q.c=sqrt(GAMMA*q.p/q.rho); return q;
     };
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose=false;
-    s.cfg.regrid_interval=0; // no regrid
+    s.cfg.time.cfl=0.5; s.cfg.bc.variant = PeriodicBC{}; s.cfg.io.verbose=false;
+    s.cfg.amr.regrid_interval=0; // no regrid
     s.init(1.0, ic);
     double m0 = global_mass(s);
     for (int i=0;i<20;++i) s.advance();
@@ -171,8 +171,8 @@ static void a05_regrid_step_conserves_mass() {
         q.T=q.p/(q.rho*R_GAS); q.c=sqrt(GAMMA*q.p/q.rho); return q;
     };
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.bc_variant = PeriodicBC{}; s.cfg.verbose=false;
-    s.cfg.regrid_interval=5; s.cfg.max_level=2;
+    s.cfg.time.cfl=0.5; s.cfg.bc.variant = PeriodicBC{}; s.cfg.io.verbose=false;
+    s.cfg.amr.regrid_interval=5; s.cfg.amr.max_level=2;
     s.init(1.0, ic);
     double m0 = global_mass(s);
     double err_max = 0;

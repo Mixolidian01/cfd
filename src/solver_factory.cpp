@@ -17,7 +17,7 @@ struct CpuSolverWrapper : ISolver {
 
 std::unique_ptr<ISolver> make_solver(SolverConfig cfg,
                                      double /*domain_L*/, int /*n_blocks*/) {
-    if (cfg.backend == SolverConfig::ExecutionBackend::GPU)
+    if (cfg.exec.backend == SolverConfig::ExecutionBackend::GPU)
         throw std::runtime_error("GPU backend: use NSSolver + set_gpu_solver() directly (R4 placeholder)");
 
     auto s = std::make_unique<CpuSolverWrapper>();

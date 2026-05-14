@@ -41,15 +41,15 @@ static void check(const char* name, bool cond, double got = -1, double thr = -1)
 static void test_sat_energy_balance() {
     // ── Build a 2-level tree ──────────────────────────────────────────────────
     NSSolver s;
-    s.cfg.cfl             = 0.3;
-    s.cfg.max_steps       = 1;        // minimal — we only need tree setup, not time-stepping
-    s.cfg.t_end           = 1e30;
-    s.cfg.bc_variant      = PeriodicBC{};
-    s.cfg.verbose         = false;
-    s.cfg.diag_interval   = 1000;
-    s.cfg.regrid_interval = 0;
-    s.cfg.max_level       = 1;
-    s.cfg.sat_tau         = 0.5;
+    s.cfg.time.cfl             = 0.3;
+    s.cfg.time.max_steps       = 1;        // minimal — we only need tree setup, not time-stepping
+    s.cfg.time.t_end           = 1e30;
+    s.cfg.bc.variant      = PeriodicBC{};
+    s.cfg.io.verbose         = false;
+    s.cfg.io.diag_interval   = 1000;
+    s.cfg.amr.regrid_interval = 0;
+    s.cfg.amr.max_level       = 1;
+    s.cfg.numerics.sat_tau         = 0.5;
 
     // Smooth IC: uniform flow with a small sinusoidal density perturbation so
     // that ghost values differ from interior values and penalties are non-zero.
@@ -96,7 +96,7 @@ static void test_sat_energy_balance() {
     }
 
     // ── Apply SAT penalty ─────────────────────────────────────────────────────
-    tree_sat_penalty(s.tree, rhs_blocks, s.cfg.sat_tau);
+    tree_sat_penalty(s.tree, rhs_blocks, s.cfg.numerics.sat_tau);
 
     // ── Compute volume-weighted RHS sum for each conserved variable ───────────
     // delta_Q[v] = sum_{leaves} sum_{interior cells} rhs[v][i,j,k] * h^3

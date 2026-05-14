@@ -110,11 +110,11 @@ static void b5_woodward_colella()
     };
 
     NSSolver s;
-    s.cfg.bc_variant = WallBC{};
-    s.cfg.cfl             = 0.4;
-    s.cfg.regrid_interval = 0;
-    s.cfg.max_level       = 0;
-    s.cfg.verbose         = false;
+    s.cfg.bc.variant = WallBC{};
+    s.cfg.time.cfl             = 0.4;
+    s.cfg.amr.regrid_interval = 0;
+    s.cfg.amr.max_level       = 0;
+    s.cfg.io.verbose         = false;
     s.init(L, wc_ic);
 
     // Level-3 uniform refinement → 64 interior cells in x, h ≈ 0.015625
@@ -137,8 +137,8 @@ static void b5_woodward_colella()
             mass0 += blk.Q[0][cell_idx(i,j,k)] * h3;
     }
 
-    s.cfg.t_end    = 0.038;
-    s.cfg.max_steps = 100000;
+    s.cfg.time.t_end    = 0.038;
+    s.cfg.time.max_steps = 100000;
     s.run();
 
     auto prof = x_profile(s);

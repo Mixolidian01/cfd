@@ -154,13 +154,13 @@ int main() {
         };
 
         SolverConfig cfg;
-        cfg.cfl = 0.4;
-        cfg.t_end = 1e30;
-        cfg.max_steps = 20;
-        cfg.bc_variant = PeriodicBC{};
-        cfg.verbose = false;
-        cfg.regrid_interval = 5;
-        cfg.max_level = 2;
+        cfg.time.cfl = 0.4;
+        cfg.time.t_end = 1e30;
+        cfg.time.max_steps = 20;
+        cfg.bc.variant = PeriodicBC{};
+        cfg.io.verbose = false;
+        cfg.amr.regrid_interval = 5;
+        cfg.amr.max_level = 2;
 
         NSSolver solver;
         solver.cfg = cfg;

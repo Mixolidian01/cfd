@@ -115,10 +115,10 @@ static double total_mass(const BlockTree& tree) {
 static QSnap run_cpu(int nstep, double cfl, std::vector<double>* dts = nullptr) {
     NSSolver solver;
     SolverConfig cfg;
-    cfg.cfl            = cfl;
-    cfg.bc_variant = PeriodicBC{};
-    cfg.regrid_interval = 0;
-    cfg.verbose        = false;
+    cfg.time.cfl            = cfl;
+    cfg.bc.variant = PeriodicBC{};
+    cfg.amr.regrid_interval = 0;
+    cfg.io.verbose        = false;
     solver.cfg = cfg;
     solver.init(1.0, sod_ic);
 

@@ -125,11 +125,11 @@ static void b2_shu_osher()
     };
 
     NSSolver s;
-    s.cfg.bc_variant = OpenBC{};   // transmissive: no wall reflections
-    s.cfg.cfl             = 0.4;
-    s.cfg.regrid_interval = 0;
-    s.cfg.max_level       = 0;
-    s.cfg.verbose         = false;
+    s.cfg.bc.variant = OpenBC{};   // transmissive: no wall reflections
+    s.cfg.time.cfl             = 0.4;
+    s.cfg.amr.regrid_interval = 0;
+    s.cfg.amr.max_level       = 0;
+    s.cfg.io.verbose         = false;
     s.init(L, shu_ic);
 
     // Level-3 uniform refinement → 64 cells in x, h ≈ 0.156
@@ -141,8 +141,8 @@ static void b2_shu_osher()
     fill_leaves(s, shu_ic);
     s.alloc_scratch();
 
-    s.cfg.t_end    = 1.8;
-    s.cfg.max_steps = 20000;
+    s.cfg.time.t_end    = 1.8;
+    s.cfg.time.max_steps = 20000;
     s.run();
     double t_final = s.t;
 

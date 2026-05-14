@@ -107,11 +107,11 @@ static void p75_dns_tgv()
     const double ek_exact = M_PI*M_PI*M_PI / V;
 
     NSSolver s;
-    s.cfg.bc_variant = PeriodicBC{};
-    s.cfg.cfl             = 0.50;
-    s.cfg.regrid_interval = 0;
-    s.cfg.max_level       = 0;
-    s.cfg.verbose         = false;
+    s.cfg.bc.variant = PeriodicBC{};
+    s.cfg.time.cfl             = 0.50;
+    s.cfg.amr.regrid_interval = 0;
+    s.cfg.amr.max_level       = 0;
+    s.cfg.io.verbose         = false;
 
     auto tgv_ic = [&](double /*x*/, double /*y*/, double /*z*/) -> Prim {
         Prim q{};
@@ -144,9 +144,9 @@ static void p75_dns_tgv()
            ek0, ek_exact, 100.0*std::fabs(ek0-ek_exact)/ek_exact);
 
     // Run to t=18 with diagnostic history
-    s.cfg.t_end         = 18.0;
-    s.cfg.max_steps     = 1000000;
-    s.cfg.diag_interval = 30;
+    s.cfg.time.t_end         = 18.0;
+    s.cfg.time.max_steps     = 1000000;
+    s.cfg.io.diag_interval = 30;
     s.run();
 
     // Compute ε(t) from history

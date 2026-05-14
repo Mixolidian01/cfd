@@ -345,23 +345,23 @@ int main(int argc, char* argv[])
     NSSolver solver;
     auto& sc = solver.cfg;
 
-    sc.cfl             = cfg.d("cfl",             0.8);
-    sc.t_end           = cfg.d("t_end",           1.0);
-    sc.max_steps       = cfg.i("max_steps",       1000000);
-    sc.diag_interval   = cfg.i("diag_interval",   10);
-    sc.verbose         = cfg.b("verbose",         true);
-    sc.regrid_interval = cfg.i("regrid_interval", 0);
-    sc.max_level       = cfg.i("max_level",       2);
-    sc.use_lts         = cfg.b("use_lts",         false);
-    sc.lts_ratio       = cfg.i("lts_ratio",       2);
-    sc.use_imex        = cfg.b("use_imex",        false);
+    sc.time.cfl             = cfg.d("cfl",             0.8);
+    sc.time.t_end           = cfg.d("t_end",           1.0);
+    sc.time.max_steps       = cfg.i("max_steps",       1000000);
+    sc.io.diag_interval   = cfg.i("diag_interval",   10);
+    sc.io.verbose         = cfg.b("verbose",         true);
+    sc.amr.regrid_interval = cfg.i("regrid_interval", 0);
+    sc.amr.max_level       = cfg.i("max_level",       2);
+    sc.amr.use_lts         = cfg.b("use_lts",         false);
+    sc.amr.lts_ratio       = cfg.i("lts_ratio",       2);
+    sc.physics.use_imex        = cfg.b("use_imex",        false);
 
     // Boundary conditions
     {
         std::string bc_str = cfg.str("bc", "Periodic");
-        if      (bc_str == "Wall")     sc.bc_variant = WallBC{};
-        else if (bc_str == "Open")     sc.bc_variant = OpenBC{};
-        else                           sc.bc_variant = PeriodicBC{};
+        if      (bc_str == "Wall")     sc.bc.variant = WallBC{};
+        else if (bc_str == "Open")     sc.bc.variant = OpenBC{};
+        else                           sc.bc.variant = PeriodicBC{};
     }
 
     // SGS model
@@ -370,11 +370,11 @@ int main(int argc, char* argv[])
         double cs  = cfg.d("sgs_cs",  0.16);
         double prt = cfg.d("sgs_prt", 0.9);
         if (sgs_str == "Smagorinsky")
-            sc.sgs = std::make_shared<SmagorinskyModel>(cs, prt);
+            sc.physics.sgs = std::make_shared<SmagorinskyModel>(cs, prt);
         else if (sgs_str == "Dynamic")
-            sc.sgs = std::make_shared<DynamicSmagorinskyModel>(prt);
+            sc.physics.sgs = std::make_shared<DynamicSmagorinskyModel>(prt);
         else
-            sc.sgs = nullptr;
+            sc.physics.sgs = nullptr;
     }
 
     double domain_L      = cfg.d("domain_L",      1.0);
@@ -443,11 +443,11 @@ int main(int argc, char* argv[])
 
     // ── Time integration ───────────────────────────────────────────────────────
     printf("simulate: running  t_end=%.4g  max_steps=%d  cfl=%.3g  sgs=%s\n",
-           sc.t_end, sc.max_steps, sc.cfl, sc.sgs ? sc.sgs->name() : "none");
+           sc.time.t_end, sc.time.max_steps, sc.time.cfl, sc.physics.sgs ? sc.physics.sgs->name() : "none");
 
     if (ckpt_intvl > 0 && !ckpt_save.empty()) {
         // Manual step loop with periodic checkpoint saves
-        while (solver.t < sc.t_end && solver.step < sc.max_steps) {
+        while (solver.t < sc.time.t_end && solver.step < sc.time.max_steps) {
             solver.advance();
             if (solver.step % ckpt_intvl == 0) {
                 std::string path = ckpt_save;

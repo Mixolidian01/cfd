@@ -59,39 +59,39 @@ static double block_kinetic_energy(const CellBlock& b) {
 // SolverConfig::validate
 // =============================================================================
 void SolverConfig::validate() const {
-    if (cfl <= 0.0 || cfl > 1.0)
+    if (time.cfl <= 0.0 || time.cfl > 1.0)
         throw std::invalid_argument("SolverConfig: cfl must be in (0, 1]");
-    if (t_end <= 0.0)
+    if (time.t_end <= 0.0)
         throw std::invalid_argument("SolverConfig: t_end must be > 0");
-    if (max_steps <= 0)
+    if (time.max_steps <= 0)
         throw std::invalid_argument("SolverConfig: max_steps must be > 0");
-    if (max_level < 0 || max_level > 6)
+    if (amr.max_level < 0 || amr.max_level > 6)
         throw std::invalid_argument("SolverConfig: max_level must be in [0, 6]");
-    if (lts_ratio != 1 && lts_ratio != 2 && lts_ratio != 4)
+    if (amr.lts_ratio != 1 && amr.lts_ratio != 2 && amr.lts_ratio != 4)
         throw std::invalid_argument("SolverConfig: lts_ratio must be 1, 2, or 4");
-    if (acdi_ceps < 0.0)
+    if (acdi.acdi_ceps < 0.0)
         throw std::invalid_argument("SolverConfig: acdi_ceps must be >= 0");
-    if (sat_tau < 0.0)
+    if (numerics.sat_tau < 0.0)
         throw std::invalid_argument("SolverConfig: sat_tau must be >= 0");
-    if (ducros_p_threshold < 0.0 || ducros_p_threshold > 1.0)
+    if (numerics.ducros_p_threshold < 0.0 || numerics.ducros_p_threshold > 1.0)
         throw std::invalid_argument("SolverConfig: ducros_p_threshold must be in [0, 1]");
-    if (ducros_blend_width < 0.0)
+    if (numerics.ducros_blend_width < 0.0)
         throw std::invalid_argument("SolverConfig: ducros_blend_width must be >= 0");
     // Note: ducros_blend_width == 0.0 is coerced to 1e-30 in fill_ducros_cache,
     // producing a step function rather than a ramp — set >= 1e-30 for a smooth blend.
     // wall_T == 0.0 is the adiabatic sentinel; any positive value is an
     // isothermal temperature.  Negative values are always invalid.
-    if (wall_T < 0.0)
+    if (bc.wall_T < 0.0)
         throw std::invalid_argument("SolverConfig: wall_T must be >= 0 (0 = adiabatic)");
-    if (gamma_a <= 1.0)
+    if (acdi.gamma_a <= 1.0)
         throw std::invalid_argument("SolverConfig: gamma_a must be > 1");
-    if (gamma_b <= 1.0)
+    if (acdi.gamma_b <= 1.0)
         throw std::invalid_argument("SolverConfig: gamma_b must be > 1");
-    if (p_inf_a < 0.0)
+    if (acdi.p_inf_a < 0.0)
         throw std::invalid_argument("SolverConfig: p_inf_a must be >= 0");
-    if (p_inf_b < 0.0)
+    if (acdi.p_inf_b < 0.0)
         throw std::invalid_argument("SolverConfig: p_inf_b must be >= 0");
-    if (mg_levels < 1 || mg_levels > 8)
+    if (physics.mg_levels < 1 || physics.mg_levels > 8)
         throw std::invalid_argument("SolverConfig: mg_levels must be in [1, 8]");
 }
 
@@ -105,7 +105,7 @@ void NSSolver::init(double domain_L,
     // P4.1-fix: set periodic flag BEFORE tree.init() so that every subsequent
     // rebuild_neighbours() call (triggered by refine/balance) wraps domain-boundary
     // C/F faces into the periodic neighbour table.
-    tree.set_periodic(bc_is_periodic(cfg.bc_variant));
+    tree.set_periodic(bc_is_periodic(cfg.bc.variant));
     tree.init(domain_L);
     t = 0.0; step = 0;
     history.clear();
@@ -124,7 +124,7 @@ void NSSolver::init(double domain_L,
         eos_prim_to_cons(p, blk.Q[0][idx], blk.Q[1][idx],
                             blk.Q[2][idx], blk.Q[3][idx], blk.Q[4][idx]);
         // P14.1: initialise phase field (interior + ghost; ghost overwritten at first fill)
-        if (phi_ic && cfg.use_acdi)
+        if (phi_ic && cfg.acdi.use_acdi)
             blk.phi_data_[idx] = (*phi_ic)(x, y, z);
     }
 
@@ -180,24 +180,24 @@ void NSSolver::save_Qn() { copy_tree_to_stage(Qn_); }
 // =============================================================================
 double NSSolver::advance() {
     // Populate BCRuntimeConfig before any ghost-fill (including in advance_imex/lts regrid).
-    tree.bc_cfg.wall_T = cfg.wall_T;
-    if (auto* ob = std::get_if<OpenBC>(&cfg.bc_variant))
+    tree.bc_cfg.wall_T = cfg.bc.wall_T;
+    if (auto* ob = std::get_if<OpenBC>(&cfg.bc.variant))
         tree.bc_cfg.open_bc_p = ob->far_field_pressure;
     else
         tree.bc_cfg.open_bc_p = 0.0;
     {
         double ca_cos = 0.0;
-        if (auto* ca = std::get_if<ContactAngleBC>(&cfg.bc_variant); ca && cfg.use_acdi)
+        if (auto* ca = std::get_if<ContactAngleBC>(&cfg.bc.variant); ca && cfg.acdi.use_acdi)
             ca_cos = std::cos(ca->contact_angle_deg * (M_PI / 180.0));
         tree.bc_cfg.wall_ca_cos  = ca_cos;
-        tree.bc_cfg.wall_ca_ceps = cfg.acdi_ceps;
+        tree.bc_cfg.wall_ca_ceps = cfg.acdi.acdi_ceps;
     }
 
     // P3.5: IMEX path.
-    if (cfg.use_imex) return advance_imex();
+    if (cfg.physics.use_imex) return advance_imex();
     // P4.1: LTS path — only if tree has more than one level.
-    if (cfg.use_lts && tree.max_leaf_level() > 0) {
-        const double dt = lts_integrator_->step(tree, cfg.cfl);
+    if (cfg.amr.use_lts && tree.max_leaf_level() > 0) {
+        const double dt = lts_integrator_->step(tree, cfg.time.cfl);
         last_dt_ = dt;
         t    += dt;
         step += 1;
@@ -207,8 +207,8 @@ double NSSolver::advance() {
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
     // topology is immutable during zero_regs → stages → apply_correction.
     // step > 0 guard: skip at step 0 (initial IC, no dynamics yet).
-    if (cfg.regrid_interval > 0 && step > 0 &&
-        step % cfg.regrid_interval == 0)
+    if (cfg.amr.regrid_interval > 0 && step > 0 &&
+        step % cfg.amr.regrid_interval == 0)
         regrid();
 
     // P11.8: GPU path — flat tree only.
@@ -223,8 +223,8 @@ double NSSolver::advance() {
         if (tree.max_leaf_level() == 0) {
             // Flat tree: full GPU path (no flux correction needed).
             // NOTE: gpu_rhs.cu hardcodes ducros p_threshold=0.1 and blend_width=0.1;
-            // cfg.ducros_p_threshold/blend_width have no effect on this path (R9-D).
-            const double dt = gpu_solver_->advance(tree, cfg.cfl);
+            // cfg.numerics.ducros_p_threshold/blend_width have no effect on this path (R9-D).
+            const double dt = gpu_solver_->advance(tree, cfg.time.cfl);
             gpu_solver_->download_q(tree);
             last_dt_ = dt;
             t    += dt;
@@ -236,7 +236,7 @@ double NSSolver::advance() {
     }
 
     // P10-A2: CPU flat-tree SSP-RK3 via CpuRk3Integrator.
-    const double dt = integrator_->step(tree, cfg.cfl);
+    const double dt = integrator_->step(tree, cfg.time.cfl);
 
     last_dt_ = dt;
     t    += dt;
@@ -245,19 +245,19 @@ double NSSolver::advance() {
     // S07/S08/S03-fix: refresh ghost cells before SGS operator-split.
     // After copy_stage_to_tree() the interior holds Q^{n+1} but ghosts
     // still carry Q^{(2)} from Stage 3's fill_ghosts call inside tree_rhs().
-    if (cfg.sgs) {
+    if (cfg.physics.sgs) {
         std::visit(overloaded{
             [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
             [&](const OpenBC&)          { tree.fill_ghosts_open(); },
             [&](const WallBC&)          { tree.fill_ghosts_wall(); },
             [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-        }, cfg.bc_variant);
+        }, cfg.bc.variant);
         for (int li : tree.leaf_indices())
-            cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
+            cfg.physics.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
     }
 
     // P12.1/P12.3/P12.4: compute per-step diagnostics.
-    if (cfg.verbose_json || streamer_) {
+    if (cfg.io.verbose_json || streamer_) {
         MetricsSnapshot ms;
         ms.step = step;
         ms.t    = t;
@@ -298,7 +298,7 @@ double NSSolver::advance() {
         ms.mass_error     = std::abs(ms.mass - mass0_)     / (std::abs(mass0_)   + 1e-300);
         ms.momentum_error = std::abs(mtm - mtm0_)          / (std::abs(mtm0_)    + 1e-300);
         ms.energy_error   = std::abs(etot  - energy0_)     / (std::abs(energy0_) + 1e-300);
-        if (cfg.verbose_json) {
+        if (cfg.io.verbose_json) {
             std::fprintf(stdout,
                 "{\"step\":%d,\"t\":%.6e,\"dt\":%.6e,\"cfl\":%.4f,"
                 "\"ke\":%.6e,\"mass\":%.6e,\"leaves\":%d}\n",
@@ -320,16 +320,16 @@ double NSSolver::advance() {
 // run
 // =============================================================================
 void NSSolver::run() {
-    if (cfg.verbose)
+    if (cfg.io.verbose)
         printf("%-8s %-12s %-12s %-14s %-14s\n",
                "step","t","dt","mass","KE");
 
-    while (t < cfg.t_end && step < cfg.max_steps) {
+    while (t < cfg.time.t_end && step < cfg.time.max_steps) {
         double dt = advance();
-        if (step % cfg.diag_interval == 0 || t >= cfg.t_end) {
+        if (step % cfg.io.diag_interval == 0 || t >= cfg.time.t_end) {
             auto d = compute_diag();
             history.push_back(d);
-            if (cfg.verbose) print_diag(d);
+            if (cfg.io.verbose) print_diag(d);
         }
         (void)dt;
     }
@@ -398,7 +398,7 @@ void NSSolver::regrid() {
         std::vector<int> to_refine;
         for (int li : tree.leaf_indices()) {
             auto& node = tree.nodes[li];
-            if (node.level >= cfg.max_level) continue;
+            if (node.level >= cfg.amr.max_level) continue;
             if (should_refine(*node.block, node.block->h))
                 to_refine.push_back(li);
         }
@@ -421,7 +421,7 @@ void NSSolver::regrid() {
             [&](const OpenBC&)          { tree.fill_ghosts_open(); },
             [&](const WallBC&)          { tree.fill_ghosts_wall(); },
             [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-        }, cfg.bc_variant);
+        }, cfg.bc.variant);
     }
 
     // ── Pass 2: coarsening ────────────────────────────────────────────────
@@ -467,7 +467,7 @@ void NSSolver::regrid() {
         [&](const OpenBC&)          { tree.fill_ghosts_open(); },
         [&](const WallBC&)          { tree.fill_ghosts_wall(); },
         [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-    }, cfg.bc_variant);
+    }, cfg.bc.variant);
 
     scratch_leaf_count_ = -1;
     alloc_scratch();
@@ -475,5 +475,5 @@ void NSSolver::regrid() {
     // A3: rebuild GPU lists after topology change (new d_Q pointers; stale
     // CUDA graphs from the previous build would reference freed memory).
     if (gpu_solver_)
-        gpu_solver_->build(tree, *gpu_pool_, bc_to_int(cfg.bc_variant));
+        gpu_solver_->build(tree, *gpu_pool_, bc_to_int(cfg.bc.variant));
 }

@@ -222,9 +222,9 @@ static void test_NN03() {
 
     // Can inject into SolverConfig
     SolverConfig cfg;
-    cfg.sgs = sgs;
-    cfg.cfl = 0.4;
-    check("NN03c  injected into SolverConfig", cfg.sgs.get() == sgs.get());
+    cfg.physics.sgs = sgs;
+    cfg.time.cfl = 0.4;
+    check("NN03c  injected into SolverConfig", cfg.physics.sgs.get() == sgs.get());
 }
 
 // =============================================================================
@@ -234,11 +234,11 @@ static void test_NN04() {
     printf("\n-- NN04  Full advance() with NeuralSGSModel --\n");
 
     NSSolver s = make_tg_solver();
-    s.cfg.cfl = 0.3;
-    s.cfg.sgs = make_neural_sgs();
-    s.cfg.max_steps = 1;
-    s.cfg.t_end     = 1e100;
-    s.cfg.verbose   = false;
+    s.cfg.time.cfl = 0.3;
+    s.cfg.physics.sgs = make_neural_sgs();
+    s.cfg.time.max_steps = 1;
+    s.cfg.time.t_end     = 1e100;
+    s.cfg.io.verbose   = false;
 
     bool ok = true;
     try {

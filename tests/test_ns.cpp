@@ -33,8 +33,8 @@ static void check(const char* name, bool cond, double got=-1, double thr=-1) {
 // ─────────────────────────────────────────────────────────────────────────────
 static void t01_mass_conservation() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.max_steps=100; s.cfg.t_end=1e30;
-    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=100;
+    s.cfg.time.cfl=0.5; s.cfg.time.max_steps=100; s.cfg.time.t_end=1e30;
+    s.cfg.bc.variant=PeriodicBC{}; s.cfg.io.verbose=false; s.cfg.io.diag_interval=100;
     double pi = std::acos(-1.0);
     s.init(1.0, [&](double x, double y, double z) {
         (void)z;
@@ -55,8 +55,8 @@ static void t01_mass_conservation() {
 // ─────────────────────────────────────────────────────────────────────────────
 static void t02_momentum_conservation() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.max_steps=50; s.cfg.t_end=1e30;
-    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=50;
+    s.cfg.time.cfl=0.5; s.cfg.time.max_steps=50; s.cfg.time.t_end=1e30;
+    s.cfg.bc.variant=PeriodicBC{}; s.cfg.io.verbose=false; s.cfg.io.diag_interval=50;
     s.init(1.0, [](double,double,double) {
         Prim q; q.rho=1.225; q.u=10.0; q.v=0.0; q.w=0.0;
         q.p=101325.0; q.T=q.p/(q.rho*R_GAS); q.c=std::sqrt(GAMMA*q.p/q.rho);
@@ -105,8 +105,8 @@ static void t03_rk3_order() {
 // ─────────────────────────────────────────────────────────────────────────────
 static void t04_total_energy_conservation() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.max_steps=100; s.cfg.t_end=1e30;
-    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=100;
+    s.cfg.time.cfl=0.5; s.cfg.time.max_steps=100; s.cfg.time.t_end=1e30;
+    s.cfg.bc.variant=PeriodicBC{}; s.cfg.io.verbose=false; s.cfg.io.diag_interval=100;
     double pi = std::acos(-1.0);
     s.init(1.0, [&](double x, double y, double) {
         Prim q;
@@ -130,8 +130,8 @@ static void t04_total_energy_conservation() {
 // ─────────────────────────────────────────────────────────────────────────────
 static void t05_ke_conservation() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.max_steps=20; s.cfg.t_end=1e30;
-    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=20;
+    s.cfg.time.cfl=0.5; s.cfg.time.max_steps=20; s.cfg.time.t_end=1e30;
+    s.cfg.bc.variant=PeriodicBC{}; s.cfg.io.verbose=false; s.cfg.io.diag_interval=20;
     double pi=std::acos(-1.0);
     s.init(1.0, [&](double x, double y, double) {
         Prim q; q.rho=1.225;
@@ -153,8 +153,8 @@ static void t05_ke_conservation() {
 // ─────────────────────────────────────────────────────────────────────────────
 static void t06_tgv_ke_decay() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.max_steps=20; s.cfg.t_end=1e30;
-    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=1;
+    s.cfg.time.cfl=0.5; s.cfg.time.max_steps=20; s.cfg.time.t_end=1e30;
+    s.cfg.bc.variant=PeriodicBC{}; s.cfg.io.verbose=false; s.cfg.io.diag_interval=1;
     double pi=std::acos(-1.0);
     double L=2.0*pi;
     s.init(L, [&](double x, double y, double) {
@@ -183,8 +183,8 @@ static void t06_tgv_ke_decay() {
 // ─────────────────────────────────────────────────────────────────────────────
 static void t07_cfl_bound() {
     NSSolver s;
-    s.cfg.cfl=0.8; s.cfg.max_steps=30; s.cfg.t_end=1e30;
-    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=30;
+    s.cfg.time.cfl=0.8; s.cfg.time.max_steps=30; s.cfg.time.t_end=1e30;
+    s.cfg.bc.variant=PeriodicBC{}; s.cfg.io.verbose=false; s.cfg.io.diag_interval=30;
     s.init(1.0, [](double,double,double){
         Prim q; q.rho=1.225; q.u=50.0; q.v=0; q.w=0;
         q.p=101325.0; q.T=q.p/(q.rho*R_GAS); q.c=std::sqrt(GAMMA*q.p/q.rho);
@@ -192,7 +192,7 @@ static void t07_cfl_bound() {
     });
     bool ok=true;
     for (int i=0; i<30; ++i) {
-        double dt_cfl = tree_cfl_dt(s.tree, s.cfg.cfl);
+        double dt_cfl = tree_cfl_dt(s.tree, s.cfg.time.cfl);
         double dt_used = s.advance();
         if (dt_used > dt_cfl * 1.001) { ok=false; break; }
     }
@@ -204,8 +204,8 @@ static void t07_cfl_bound() {
 // ─────────────────────────────────────────────────────────────────────────────
 static void t08_diagnostics() {
     NSSolver s;
-    s.cfg.cfl=0.5; s.cfg.max_steps=50; s.cfg.t_end=1e30;
-    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=10;
+    s.cfg.time.cfl=0.5; s.cfg.time.max_steps=50; s.cfg.time.t_end=1e30;
+    s.cfg.bc.variant=PeriodicBC{}; s.cfg.io.verbose=false; s.cfg.io.diag_interval=10;
     s.init(1.0,[](double,double,double){
         Prim q; q.rho=1.225; q.u=0; q.v=0; q.w=0;
         q.p=101325.0; q.T=q.p/(q.rho*R_GAS); q.c=std::sqrt(GAMMA*q.p/q.rho);
@@ -225,9 +225,9 @@ static void t08_diagnostics() {
 // ─────────────────────────────────────────────────────────────────────────────
 static void t09_imex_mass_conservation() {
     NSSolver s;
-    s.cfg.cfl=0.3; s.cfg.max_steps=20; s.cfg.t_end=1e30;
-    s.cfg.bc_variant=PeriodicBC{}; s.cfg.verbose=false; s.cfg.diag_interval=20;
-    s.cfg.use_imex=true; s.cfg.mg_levels=3;
+    s.cfg.time.cfl=0.3; s.cfg.time.max_steps=20; s.cfg.time.t_end=1e30;
+    s.cfg.bc.variant=PeriodicBC{}; s.cfg.io.verbose=false; s.cfg.io.diag_interval=20;
+    s.cfg.physics.use_imex=true; s.cfg.physics.mg_levels=3;
     double pi = std::acos(-1.0);
     s.init(1.0, [&](double x, double y, double z) {
         (void)z;
@@ -268,16 +268,16 @@ static void t10_lts_mass_energy() {
     };
 
     NSSolver s;
-    s.cfg.cfl             = 0.3;
-    s.cfg.max_steps       = 10;
-    s.cfg.t_end           = 1e30;
-    s.cfg.bc_variant = PeriodicBC{};
-    s.cfg.verbose         = false;
-    s.cfg.diag_interval   = 100;
-    s.cfg.regrid_interval = 0;   // manual refine below; no auto-regrid during run
-    s.cfg.max_level       = 2;
-    s.cfg.use_lts         = true;
-    s.cfg.lts_ratio       = 2;
+    s.cfg.time.cfl             = 0.3;
+    s.cfg.time.max_steps       = 10;
+    s.cfg.time.t_end           = 1e30;
+    s.cfg.bc.variant = PeriodicBC{};
+    s.cfg.io.verbose         = false;
+    s.cfg.io.diag_interval   = 100;
+    s.cfg.amr.regrid_interval = 0;   // manual refine below; no auto-regrid during run
+    s.cfg.amr.max_level       = 2;
+    s.cfg.amr.use_lts         = true;
+    s.cfg.amr.lts_ratio       = 2;
     s.init(1.0, ic);
 
     // Build a 2-leaf-level tree: refine root → 8 level-1 leaves,
@@ -332,15 +332,15 @@ static void t11_sat_penalty() {
 
     auto run_amr = [&](double sat_tau) -> double {
         NSSolver s;
-        s.cfg.cfl             = 0.3;
-        s.cfg.max_steps       = 5;
-        s.cfg.t_end           = 1e30;
-        s.cfg.bc_variant = PeriodicBC{};
-        s.cfg.verbose         = false;
-        s.cfg.diag_interval   = 100;
-        s.cfg.regrid_interval = 0;
-        s.cfg.max_level       = 1;
-        s.cfg.sat_tau         = sat_tau;
+        s.cfg.time.cfl             = 0.3;
+        s.cfg.time.max_steps       = 5;
+        s.cfg.time.t_end           = 1e30;
+        s.cfg.bc.variant = PeriodicBC{};
+        s.cfg.io.verbose         = false;
+        s.cfg.io.diag_interval   = 100;
+        s.cfg.amr.regrid_interval = 0;
+        s.cfg.amr.max_level       = 1;
+        s.cfg.numerics.sat_tau         = sat_tau;
         s.init(1.0, amr_ic);
 
         s.tree.refine(s.tree.root());
@@ -367,7 +367,7 @@ static void t11_sat_penalty() {
 //
 // Setup: single-block periodic domain, uniform flow u=(1,0,0).
 //        Initial φ = step function (φ=1 in left half, 0 in right half).
-//        cfg.use_acdi = true.
+//        cfg.acdi.use_acdi = true.
 //
 // Gate criteria:
 //   T12a: ∫φ dV conserved over 5 steps (error < 1e-8 relative)
@@ -379,13 +379,13 @@ static void t11_sat_penalty() {
 // =============================================================================
 static void t12_phi_advection() {
     NSSolver s;
-    s.cfg.cfl           = 0.3;
-    s.cfg.max_steps     = 5;
-    s.cfg.t_end         = 1e30;
-    s.cfg.bc_variant = PeriodicBC{};
-    s.cfg.verbose       = false;
-    s.cfg.diag_interval = 100;
-    s.cfg.use_acdi      = true;
+    s.cfg.time.cfl           = 0.3;
+    s.cfg.time.max_steps     = 5;
+    s.cfg.time.t_end         = 1e30;
+    s.cfg.bc.variant = PeriodicBC{};
+    s.cfg.io.verbose       = false;
+    s.cfg.io.diag_interval = 100;
+    s.cfg.acdi.use_acdi      = true;
 
     // Uniform flow IC (Ma ~ 0.15, no waves — isolates advection)
     auto flow_ic = [](double /*x*/, double /*y*/, double /*z*/) {
@@ -456,14 +456,14 @@ static void t12_phi_advection() {
 // =============================================================================
 static void t13_phi_compression() {
     NSSolver s;
-    s.cfg.cfl           = 0.3;
-    s.cfg.max_steps     = 5;
-    s.cfg.t_end         = 1e30;
-    s.cfg.bc_variant = PeriodicBC{};
-    s.cfg.verbose       = false;
-    s.cfg.diag_interval = 100;
-    s.cfg.use_acdi      = true;
-    s.cfg.acdi_ceps     = 0.5;
+    s.cfg.time.cfl           = 0.3;
+    s.cfg.time.max_steps     = 5;
+    s.cfg.time.t_end         = 1e30;
+    s.cfg.bc.variant = PeriodicBC{};
+    s.cfg.io.verbose       = false;
+    s.cfg.io.diag_interval = 100;
+    s.cfg.acdi.use_acdi      = true;
+    s.cfg.acdi.acdi_ceps     = 0.5;
 
     auto flow_ic = [](double, double, double) {
         Prim q; q.rho=1.225; q.u=50.0; q.v=0; q.w=0;
@@ -513,15 +513,15 @@ static void t13_phi_compression() {
 // =============================================================================
 static void t14_phi_amr() {
     NSSolver s;
-    s.cfg.cfl             = 0.3;
-    s.cfg.max_steps       = 5;
-    s.cfg.t_end           = 1e30;
-    s.cfg.bc_variant = PeriodicBC{};
-    s.cfg.verbose         = false;
-    s.cfg.diag_interval   = 100;
-    s.cfg.regrid_interval = 0;
-    s.cfg.max_level       = 1;
-    s.cfg.use_acdi        = true;
+    s.cfg.time.cfl             = 0.3;
+    s.cfg.time.max_steps       = 5;
+    s.cfg.time.t_end           = 1e30;
+    s.cfg.bc.variant = PeriodicBC{};
+    s.cfg.io.verbose         = false;
+    s.cfg.io.diag_interval   = 100;
+    s.cfg.amr.regrid_interval = 0;
+    s.cfg.amr.max_level       = 1;
+    s.cfg.acdi.use_acdi        = true;
 
     auto flow_ic = [](double, double, double) {
         Prim q; q.rho=1.225; q.u=50.0; q.v=0; q.w=0;
@@ -596,17 +596,17 @@ static void t14_phi_amr() {
 // =============================================================================
 static void t15_sg_eos_pressure_equilibrium() {
     NSSolver s;
-    s.cfg.cfl           = 0.3;
-    s.cfg.max_steps     = 5;
-    s.cfg.t_end         = 1e30;
-    s.cfg.bc_variant = PeriodicBC{};
-    s.cfg.verbose       = false;
-    s.cfg.diag_interval = 100;
-    s.cfg.use_acdi      = true;
-    s.cfg.gamma_a       = 3.0;
-    s.cfg.gamma_b       = 1.4;
-    s.cfg.p_inf_a       = 1e5;   // stiffened-gas p∞ for fluid A [Pa]
-    s.cfg.p_inf_b       = 0.0;
+    s.cfg.time.cfl           = 0.3;
+    s.cfg.time.max_steps     = 5;
+    s.cfg.time.t_end         = 1e30;
+    s.cfg.bc.variant = PeriodicBC{};
+    s.cfg.io.verbose       = false;
+    s.cfg.io.diag_interval = 100;
+    s.cfg.acdi.use_acdi      = true;
+    s.cfg.acdi.gamma_a       = 3.0;
+    s.cfg.acdi.gamma_b       = 1.4;
+    s.cfg.acdi.p_inf_a       = 1e5;   // stiffened-gas p∞ for fluid A [Pa]
+    s.cfg.acdi.p_inf_b       = 0.0;
 
     // φ=1 everywhere → pure fluid A (stiffened gas)
     std::function<double(double,double,double)> phi_ic =
@@ -621,8 +621,8 @@ static void t15_sg_eos_pressure_equilibrium() {
         q.rho     = rho0;
         q.u = u0; q.v = 0.0; q.w = 0.0;
         q.p       = p0;
-        q.gamma_m = s.cfg.gamma_a;
-        q.p_inf_m = s.cfg.p_inf_a;
+        q.gamma_m = s.cfg.acdi.gamma_a;
+        q.p_inf_m = s.cfg.acdi.p_inf_a;
         q.T = (q.p + q.p_inf_m) / (q.rho * R_GAS);
         q.c = std::sqrt(q.gamma_m * (q.p + q.p_inf_m) / q.rho);
         return q;
@@ -670,7 +670,7 @@ static void t15_sg_eos_pressure_equilibrium() {
             const int f = cell_idx(i,j,k);
             const double phi = blk.phi_data_[f];
             double gm, pim;
-            mix_eos(phi, s.cfg.gamma_a, s.cfg.gamma_b, s.cfg.p_inf_a, s.cfg.p_inf_b, gm, pim);
+            mix_eos(phi, s.cfg.acdi.gamma_a, s.cfg.acdi.gamma_b, s.cfg.acdi.p_inf_a, s.cfg.acdi.p_inf_b, gm, pim);
             const double rho = blk.Q[0][f];
             const double u   = blk.Q[1][f] / rho;
             const double v   = blk.Q[2][f] / rho;
@@ -699,14 +699,14 @@ static void t16_wall_contact_angle() {
     // Helper: build a static wall solver with phi=phi0 uniform, no flow
     auto make_solver = [](double phi0, double theta_deg, double ceps) {
         NSSolver s;
-        s.cfg.cfl                = 0.3;
-        s.cfg.max_steps          = 5;
-        s.cfg.t_end              = 1e30;
-        s.cfg.bc_variant         = ContactAngleBC{theta_deg};
-        s.cfg.verbose            = false;
-        s.cfg.diag_interval      = 100;
-        s.cfg.use_acdi           = true;
-        s.cfg.acdi_ceps          = ceps;
+        s.cfg.time.cfl                = 0.3;
+        s.cfg.time.max_steps          = 5;
+        s.cfg.time.t_end              = 1e30;
+        s.cfg.bc.variant         = ContactAngleBC{theta_deg};
+        s.cfg.io.verbose            = false;
+        s.cfg.io.diag_interval      = 100;
+        s.cfg.acdi.use_acdi           = true;
+        s.cfg.acdi.acdi_ceps          = ceps;
 
         const double rho0 = 1.225, p0 = 101325.0;
         std::function<double(double,double,double)> phi_ic =

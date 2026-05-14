@@ -81,14 +81,14 @@ static bool all_finite(const NSSolver& s)
 static NSSolver make_acoustic_solver(bool use_imex)
 {
     NSSolver s;
-    s.cfg.cfl           = 0.3;
-    s.cfg.max_steps     = 10;
-    s.cfg.t_end         = 1e30;
-    s.cfg.bc_variant    = PeriodicBC{};
-    s.cfg.verbose       = false;
-    s.cfg.diag_interval = 10;
-    s.cfg.use_imex      = use_imex;
-    s.cfg.mg_levels     = 3;
+    s.cfg.time.cfl           = 0.3;
+    s.cfg.time.max_steps     = 10;
+    s.cfg.time.t_end         = 1e30;
+    s.cfg.bc.variant    = PeriodicBC{};
+    s.cfg.io.verbose       = false;
+    s.cfg.io.diag_interval = 10;
+    s.cfg.physics.use_imex      = use_imex;
+    s.cfg.physics.mg_levels     = 3;
 
     const double pi     = std::acos(-1.0);
     const double rho_bg = 1.225;

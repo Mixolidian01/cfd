@@ -91,12 +91,12 @@ int main() {
     LiveStreamer streamer(scfg);
 
     NSSolver solver;
-    solver.cfg.t_end         = 1e30;   // run until max_steps
-    solver.cfg.max_steps     = 50;
-    solver.cfg.cfl           = 0.4;
-    solver.cfg.bc_variant = PeriodicBC{};
-    solver.cfg.verbose       = false;
-    solver.cfg.diag_interval = 999;
+    solver.cfg.time.t_end         = 1e30;   // run until max_steps
+    solver.cfg.time.max_steps     = 50;
+    solver.cfg.time.cfl           = 0.4;
+    solver.cfg.bc.variant = PeriodicBC{};
+    solver.cfg.io.verbose       = false;
+    solver.cfg.io.diag_interval = 999;
     solver.set_streamer(&streamer);
 
     solver.init(1.0, [](double x, double y, double z) -> Prim {

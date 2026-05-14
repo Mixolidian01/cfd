@@ -291,9 +291,9 @@ static void t05_gpu_cpu_match() {
 
     // Init CPU from IC
     NSSolver cpu;
-    cpu.cfg.cfl = 0.5; cpu.cfg.t_end = 1e30;
-    cpu.cfg.bc_variant = PeriodicBC{}; cpu.cfg.verbose = false;
-    cpu.cfg.diag_interval = 10000;
+    cpu.cfg.time.cfl = 0.5; cpu.cfg.time.t_end = 1e30;
+    cpu.cfg.bc.variant = PeriodicBC{}; cpu.cfg.io.verbose = false;
+    cpu.cfg.io.diag_interval = 10000;
     cpu.init(1.0, ic);
 
     int NL = 1; double h = 0.125;

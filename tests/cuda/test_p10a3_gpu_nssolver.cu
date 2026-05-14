@@ -85,10 +85,10 @@ static double total_mass(const BlockTree& tree) {
 
 static SolverConfig make_cfg(double cfl) {
     SolverConfig cfg;
-    cfg.cfl             = cfl;
-    cfg.bc_variant = PeriodicBC{};
-    cfg.regrid_interval = 0;
-    cfg.verbose         = false;
+    cfg.time.cfl             = cfl;
+    cfg.bc.variant = PeriodicBC{};
+    cfg.amr.regrid_interval = 0;
+    cfg.io.verbose         = false;
     return cfg;
 }
 
@@ -113,7 +113,7 @@ static void test_a1_a2() {
     // ── GPU-dispatched NSSolver path ─────────────────────────────────────────
     NSSolver gpu_solver;
     gpu_solver.cfg = make_cfg(cfl);
-    gpu_solver.cfg.use_gpu = true;
+    gpu_solver.cfg.exec.use_gpu = true;
     gpu_solver.init(1.0, flat_ic);
 
     GpuPool pool;
@@ -166,7 +166,7 @@ static void test_a3() {
 
     NSSolver solver;
     solver.cfg = make_cfg(cfl);
-    solver.cfg.use_gpu = true;
+    solver.cfg.exec.use_gpu = true;
     solver.init(1.0, flat_ic);
 
     GpuPool pool;
@@ -216,8 +216,8 @@ static void test_a4() {
     // ── Pure CPU solver with AMR (reference) ─────────────────────────────────
     NSSolver cpu_solver;
     cpu_solver.cfg = make_cfg(cfl);
-    cpu_solver.cfg.regrid_interval = 1;
-    cpu_solver.cfg.max_level       = 1;
+    cpu_solver.cfg.amr.regrid_interval = 1;
+    cpu_solver.cfg.amr.max_level       = 1;
     cpu_solver.init(1.0, amr_ic);
 
     const double m0_cpu = total_mass(cpu_solver.tree);
@@ -227,9 +227,9 @@ static void test_a4() {
     // ── GPU-dispatched solver with AMR ────────────────────────────────────────
     NSSolver gpu_solver;
     gpu_solver.cfg = make_cfg(cfl);
-    gpu_solver.cfg.regrid_interval = 1;
-    gpu_solver.cfg.max_level       = 1;
-    gpu_solver.cfg.use_gpu         = true;
+    gpu_solver.cfg.amr.regrid_interval = 1;
+    gpu_solver.cfg.amr.max_level       = 1;
+    gpu_solver.cfg.exec.use_gpu         = true;
     gpu_solver.init(1.0, amr_ic);
 
     GpuPool pool;

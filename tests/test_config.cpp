@@ -9,33 +9,33 @@ static void test_valid_config_passes() {
 
 static void test_bad_cfl_throws() {
     SolverConfig cfg;
-    cfg.cfl = 1.5;
+    cfg.time.cfl = 1.5;
     try { cfg.validate(); assert(false && "should have thrown"); }
     catch (const std::invalid_argument&) {}
 
     SolverConfig cfg2;
-    cfg2.cfl = 0.0;
+    cfg2.time.cfl = 0.0;
     try { cfg2.validate(); assert(false && "should have thrown"); }
     catch (const std::invalid_argument&) {}
 }
 
 static void test_bad_max_level_throws() {
     SolverConfig cfg;
-    cfg.max_level = -1;
+    cfg.amr.max_level = -1;
     try { cfg.validate(); assert(false && "should have thrown"); }
     catch (const std::invalid_argument&) {}
 }
 
 static void test_bad_gamma_throws() {
     SolverConfig cfg;
-    cfg.gamma_a = 0.5;
+    cfg.acdi.gamma_a = 0.5;
     try { cfg.validate(); assert(false && "should have thrown"); }
     catch (const std::invalid_argument&) {}
 }
 
 static void test_bad_lts_ratio_throws() {
     SolverConfig cfg;
-    cfg.lts_ratio = 3;  // must be 1, 2, or 4
+    cfg.amr.lts_ratio = 3;  // must be 1, 2, or 4
     try { cfg.validate(); assert(false && "should have thrown"); }
     catch (const std::invalid_argument&) {}
 }

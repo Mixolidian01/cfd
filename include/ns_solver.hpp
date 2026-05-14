@@ -69,92 +69,104 @@ struct StepDiag {
 
 // ── Solver configuration ─────────────────────────────────────────────────────────────────────────────
 //
-// Fields are grouped into seven logical sections.  All defaults produce a
-// valid single-phase periodic-BC CPU run.  Call validate() after any change.
+// Fields are decomposed into eight typed sub-structs.  All defaults produce
+// a valid single-phase periodic-BC CPU run.  Call validate() after any change.
 //
 struct SolverConfig {
-
-    // ── 1. Execution backend ──────────────────────────────────────────────
     // R4: Backend tag dispatch and flux scheme.
     enum class ExecutionBackend { CPU, GPU };
     enum class FluxScheme       { HLLC, HLLC_ES };
 
-    ExecutionBackend backend     = ExecutionBackend::CPU;
-    FluxScheme       flux_scheme = FluxScheme::HLLC_ES;
-    bool             use_gpu     = false;  // P8.1: GPU memory pool path
+    // ── 1. Execution backend ──────────────────────────────────────────────
+    struct ExecConfig {
+        ExecutionBackend backend     = ExecutionBackend::CPU;
+        FluxScheme       flux_scheme = FluxScheme::HLLC_ES;
+        bool             use_gpu     = false;  // P8.1: GPU memory pool path
+    } exec;
 
     // ── 2. Time integration ───────────────────────────────────────────────
-    double cfl           = 0.8;       // CFL number ∈ (0, 1]
-    double t_end         = 1.0;       // stop time
-    int    max_steps     = 1000000;   // hard step cap
+    struct TimeConfig {
+        double cfl       = 0.8;       // CFL number ∈ (0, 1]
+        double t_end     = 1.0;       // stop time
+        int    max_steps = 1000000;   // hard step cap
+    } time;
 
     // ── 3. Boundary conditions ────────────────────────────────────────────
-    BCVariant bc_variant = PeriodicBC{};
+    struct BcConfig {
+        BCVariant variant = PeriodicBC{};
 
-    // P13.4: wall temperature for isothermal no-slip walls (WallBC/ContactAngleBC).
-    // 0.0 (default) → adiabatic wall (∂T/∂n = 0).
-    // > 0 → isothermal: ghost E enforces T_ghost = 2*wall_T − T_interior.
-    double wall_T = 0.0;
+        // P13.4: wall temperature for isothermal no-slip walls (WallBC/ContactAngleBC).
+        // 0.0 (default) → adiabatic wall (∂T/∂n = 0).
+        // > 0 → isothermal: ghost E enforces T_ghost = 2*wall_T − T_interior.
+        double wall_T = 0.0;
+    } bc;
 
     // ── 4. AMR + local time stepping ──────────────────────────────────────
-    int  max_level        = 2;   // max refinement depth (0 = flat tree)
-    int  regrid_interval  = 0;   // steps between regrid (0 = disabled)
+    struct AmrConfig {
+        int  max_level       = 2;   // max refinement depth (0 = flat tree)
+        int  regrid_interval = 0;   // steps between regrid (0 = disabled)
 
-    // P4.1: Berger-Oliger local time stepping.
-    // advance() dispatches to advance_lts() when use_lts=true and the tree
-    // has more than one level.  Fine level takes lts_ratio sub-steps per
-    // coarse step.
-    bool use_lts   = false;
-    int  lts_ratio = 2;   // refinement ratio (must match tree's geometric ratio)
+        // P4.1: Berger-Oliger local time stepping.
+        bool use_lts   = false;
+        int  lts_ratio = 2;   // refinement ratio (must match tree's geometric ratio)
+    } amr;
 
-    // ── 5. SGS turbulence + IMEX ──────────────────────────────────────────
-    std::shared_ptr<SGSModel> sgs = nullptr;
+    // ── 5. Physics: SGS turbulence + IMEX ────────────────────────────────
+    struct PhysicsConfig {
+        std::shared_ptr<SGSModel> sgs = nullptr;
 
-    // P3.5: IMEX-ARK implicit viscous solve.
-    bool use_imex  = false;
-    int  mg_levels = 3;
+        // P3.5: IMEX-ARK implicit viscous solve.
+        bool use_imex  = false;
+        int  mg_levels = 3;
+    } physics;
 
     // ── 6. Numerical sensors ──────────────────────────────────────────────
-    // P11.6: Ducros pressure-ratio sensor (controls WENO5 → central switch).
-    // ducros_p_threshold: |Δp|/p below this → central scheme.
-    // ducros_blend_width: ramp width above threshold (endpoint = thr + width → 1).
-    // For DNS/LES without shocks, raise threshold (e.g. 0.5) to avoid HLLC-ES.
-    double ducros_p_threshold = 0.1;
-    double ducros_blend_width = 0.1;
+    struct NumericsConfig {
+        // P11.6: Ducros pressure-ratio sensor (controls WENO5 → central switch).
+        // ducros_p_threshold: |Δp|/p below this → central scheme.
+        // ducros_blend_width: ramp width above threshold (endpoint = thr + width → 1).
+        // For DNS/LES without shocks, raise threshold (e.g. 0.5) to avoid HLLC-ES.
+        double ducros_p_threshold = 0.1;
+        double ducros_blend_width = 0.1;
 
-    // P13.5: SBP-SAT penalty at AMR C/F interfaces.
-    // 0.0 (default) → pure Berger-Colella correction.
-    // > 0 → add σ = (tau/h_f)·(Q_ghost − Q_interior) penalty each RK3 stage.
-    //        Recommended: tau = 0.5 (minimal energy-stable penalty).
-    double sat_tau = 0.0;
+        // P13.5: SBP-SAT penalty at AMR C/F interfaces.
+        // 0.0 (default) → pure Berger-Colella correction.
+        // > 0 → add σ = (tau/h_f)·(Q_ghost − Q_interior) penalty each RK3 stage.
+        //        Recommended: tau = 0.5 (minimal energy-stable penalty).
+        double sat_tau = 0.0;
+    } numerics;
 
     // ── 7. ACDI compressible multiphase ───────────────────────────────────
-    // P14.1: Accurate Conservative Diffuse Interface.
-    // false → single-phase mode (phi field inactive, zero overhead).
-    // true  → φ ∈ [0,1] advected alongside Q; set IC via NSSolver::init().
-    bool   use_acdi  = false;
+    struct AcdiConfig {
+        // P14.1: Accurate Conservative Diffuse Interface.
+        // false → single-phase mode (phi field inactive, zero overhead).
+        // true  → φ ∈ [0,1] advected alongside Q; set IC via NSSolver::init().
+        bool   use_acdi  = false;
 
-    // P14.1b: compression coefficient Cε; interface thickness ε = Cε·h.
-    // 0.0 → pure advection; >0 → adds sharpening source to each RK3 stage.
-    double acdi_ceps = 0.0;
+        // P14.1b: compression coefficient Cε; interface thickness ε = Cε·h.
+        // 0.0 → pure advection; >0 → adds sharpening source to each RK3 stage.
+        double acdi_ceps = 0.0;
 
-    // P14.1c: Stiffened-gas EOS.  Allaire (2002) mixture rule:
-    //   1/(γ_m−1) = φ/(γ_A−1) + (1−φ)/(γ_B−1).
-    // Defaults reproduce ideal gas (γ=1.4, p∞=0) for identical fluids.
-    // Active only when use_acdi=true AND fluids differ.
-    double gamma_a = GAMMA;   // γ for fluid A (φ=1), e.g. 6.12 for liquid water
-    double gamma_b = GAMMA;   // γ for fluid B (φ=0), e.g. 1.4  for air
-    double p_inf_a = 0.0;     // p∞ [Pa] for fluid A, e.g. 3.43e8 for liquid water
-    double p_inf_b = 0.0;     // p∞ [Pa] for fluid B (0 = ideal gas)
+        // P14.1c: Stiffened-gas EOS.  Allaire (2002) mixture rule:
+        //   1/(γ_m−1) = φ/(γ_A−1) + (1−φ)/(γ_B−1).
+        // Defaults reproduce ideal gas (γ=1.4, p∞=0) for identical fluids.
+        // Active only when use_acdi=true AND fluids differ.
+        double gamma_a = GAMMA;   // γ for fluid A (φ=1), e.g. 6.12 for liquid water
+        double gamma_b = GAMMA;   // γ for fluid B (φ=0), e.g. 1.4  for air
+        double p_inf_a = 0.0;     // p∞ [Pa] for fluid A, e.g. 3.43e8 for liquid water
+        double p_inf_b = 0.0;     // p∞ [Pa] for fluid B (0 = ideal gas)
 
-    // P14.2: static contact angle θ_w [deg] at wall (ContactAngleBC + use_acdi).
-    // 90° (default) → ∂φ/∂n=0 (neutral).  0° → fully wetting.  180° → non-wetting.
-    // Activate via bc_variant = ContactAngleBC{theta_deg}; requires acdi_ceps > 0.
+        // P14.2: static contact angle θ_w [deg] at wall (ContactAngleBC + use_acdi).
+        // 90° (default) → ∂φ/∂n=0 (neutral).  0° → fully wetting.  180° → non-wetting.
+        // Activate via bc.variant = ContactAngleBC{theta_deg}; requires acdi_ceps > 0.
+    } acdi;
 
     // ── 8. I/O ────────────────────────────────────────────────────────────
-    bool verbose       = true;
-    bool verbose_json  = false;
-    int  diag_interval = 10;
+    struct IoConfig {
+        bool verbose      = true;
+        bool verbose_json = false;
+        int  diag_interval = 10;
+    } io;
 
     void validate() const;
 };

@@ -34,16 +34,16 @@ static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
 double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     const SolverConfig& cfg = solver.cfg;
 
-    const bool periodic = bc_is_periodic(cfg.bc_variant);
-    const bool open_bc  = bc_is_open(cfg.bc_variant);
-    const DucrosConfig ducros{ cfg.ducros_p_threshold, cfg.ducros_blend_width };
+    const bool periodic = bc_is_periodic(cfg.bc.variant);
+    const bool open_bc  = bc_is_open(cfg.bc.variant);
+    const DucrosConfig ducros{ cfg.numerics.ducros_p_threshold, cfg.numerics.ducros_blend_width };
 
     // P14.1c: activate stiffened-gas mixture EOS when ACDI is on and fluids differ.
     {
-        const bool sg = cfg.use_acdi &&
-                        (cfg.gamma_a != cfg.gamma_b ||
-                         cfg.p_inf_a != 0.0 || cfg.p_inf_b != 0.0);
-        CellBlock::set_sg_eos(sg, cfg.gamma_a, cfg.gamma_b, cfg.p_inf_a, cfg.p_inf_b);
+        const bool sg = cfg.acdi.use_acdi &&
+                        (cfg.acdi.gamma_a != cfg.acdi.gamma_b ||
+                         cfg.acdi.p_inf_a != 0.0 || cfg.acdi.p_inf_b != 0.0);
+        CellBlock::set_sg_eos(sg, cfg.acdi.gamma_a, cfg.acdi.gamma_b, cfg.acdi.p_inf_a, cfg.acdi.p_inf_b);
     }
 
     double dt = tree_cfl_dt(tree, cfl);
@@ -56,8 +56,8 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
 
     tree.zero_flux_registers();
 
-    const bool use_sat  = (cfg.sat_tau > 0.0) && (tree.max_leaf_level() > 0);
-    const bool use_acdi = cfg.use_acdi;
+    const bool use_sat  = (cfg.numerics.sat_tau > 0.0) && (tree.max_leaf_level() > 0);
+    const bool use_acdi = cfg.acdi.use_acdi;
 
     // P14.1: phi SSP-RK3 helper — fills phi rhs and applies one stage update.
     // alpha < 0 → stage 1 (ps = pn + dt*L).
@@ -69,8 +69,8 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
             const CellBlock& blk = *tree.nodes[leaves[ii]].block;
             std::fill(solver.rhs_[ii].phi_data_, solver.rhs_[ii].phi_data_ + NCELL, 0.0);
             phi_rhs(blk, solver.rhs_[ii]);
-            if (cfg.acdi_ceps > 0.0)
-                phi_compression_rhs(blk, solver.rhs_[ii], cfg.acdi_ceps);
+            if (cfg.acdi.acdi_ceps > 0.0)
+                phi_compression_rhs(blk, solver.rhs_[ii], cfg.acdi.acdi_ceps);
             const double* pn = solver.Qn_[ii].phi_data_;
             double*       ps = solver.Qs_[ii].phi_data_;
             const double* pr = solver.rhs_[ii].phi_data_;
@@ -88,7 +88,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
     if (solver.mpi_) mpi_exchange_halos(tree, *solver.mpi_);
     tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
-    if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.sat_tau);
+    if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -106,7 +106,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
     if (solver.mpi_) mpi_exchange_halos(tree, *solver.mpi_);
     tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
-    if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.sat_tau);
+    if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -124,7 +124,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
     if (solver.mpi_) mpi_exchange_halos(tree, *solver.mpi_);
     tree_rhs(tree, solver.rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
-    if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.sat_tau);
+    if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {

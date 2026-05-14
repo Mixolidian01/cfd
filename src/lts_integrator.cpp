@@ -44,10 +44,10 @@ void LtsIntegrator::copy_stage_to_tree_level(const std::vector<CellBlock>& stage
 // =============================================================================
 void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
                                double sub_weight, bool coarse_mode) {
-    bool periodic = bc_is_periodic(solver.cfg.bc_variant);
-    bool open_bc  = bc_is_open(solver.cfg.bc_variant);
-    const DucrosConfig ducros{ solver.cfg.ducros_p_threshold,
-                                solver.cfg.ducros_blend_width };
+    bool periodic = bc_is_periodic(solver.cfg.bc.variant);
+    bool open_bc  = bc_is_open(solver.cfg.bc.variant);
+    const DucrosConfig ducros{ solver.cfg.numerics.ducros_p_threshold,
+                                solver.cfg.numerics.ducros_blend_width };
     const auto& leaves = tree.leaf_indices();
     const int NL = (int)leaves.size();
 
@@ -111,15 +111,15 @@ void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
 // in advance() that bypasses advance()'s own regrid block.
 // =============================================================================
 double LtsIntegrator::step(BlockTree& tree, double cfl) {
-    if (solver.cfg.regrid_interval > 0 && solver.step > 0 &&
-        solver.step % solver.cfg.regrid_interval == 0)
+    if (solver.cfg.amr.regrid_interval > 0 && solver.step > 0 &&
+        solver.step % solver.cfg.amr.regrid_interval == 0)
         solver.regrid();
 
     const int L_min = tree.min_leaf_level();
     const int L_max = tree.max_leaf_level();
     assert(L_max > L_min);  // advance() dispatches here only when max_leaf_level > 0
 
-    const int r = solver.cfg.lts_ratio;
+    const int r = solver.cfg.amr.lts_ratio;
 
     double dt_f_cfl = level_cfl_dt(tree, L_max, cfl);
     double dt_c_cfl = level_cfl_dt(tree, L_min, cfl);

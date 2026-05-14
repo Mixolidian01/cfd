@@ -61,16 +61,16 @@ static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
 // NSSolver::advance_imex — P3.5 IMEX-Euler operator splitting
 // =============================================================================
 double NSSolver::advance_imex() {
-    bool periodic = bc_is_periodic(cfg.bc_variant);
-    bool open_bc  = bc_is_open(cfg.bc_variant);
-    const DucrosConfig ducros{ cfg.ducros_p_threshold, cfg.ducros_blend_width };
+    bool periodic = bc_is_periodic(cfg.bc.variant);
+    bool open_bc  = bc_is_open(cfg.bc.variant);
+    const DucrosConfig ducros{ cfg.numerics.ducros_p_threshold, cfg.numerics.ducros_blend_width };
 
     // ── Step 1: same regrid + SSP-RK3 as advance() ───────────────────────
-    if (cfg.regrid_interval > 0 && step > 0 &&
-        step % cfg.regrid_interval == 0)
+    if (cfg.amr.regrid_interval > 0 && step > 0 &&
+        step % cfg.amr.regrid_interval == 0)
         regrid();
 
-    double dt = tree_cfl_dt(tree, cfg.cfl);
+    double dt = tree_cfl_dt(tree, cfg.time.cfl);
     save_Qn();
 
     const auto& leaves = tree.leaf_indices();
@@ -136,7 +136,7 @@ double NSSolver::advance_imex() {
         [&](const OpenBC&)          { tree.fill_ghosts_open(); },
         [&](const WallBC&)          { tree.fill_ghosts_wall(); },
         [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-    }, cfg.bc_variant);
+    }, cfg.bc.variant);
 
     // Per-call NB³ scratch (thread_local avoids repeated heap allocation).
     static thread_local std::vector<double> uf(NB*NB*NB);
@@ -166,7 +166,7 @@ double NSSolver::advance_imex() {
         if (alpha <= 0.0) continue;
 
         MGSolver mg;
-        mg.build(NB, h, cfg.mg_levels);
+        mg.build(NB, h, cfg.physics.mg_levels);
 
         // Extract all three post-RK3 velocity components (ghost-free NB³).
         // Flat index: (i-NG)*NB² + (j-NG)*NB + (k-NG)
@@ -212,15 +212,15 @@ double NSSolver::advance_imex() {
     }
 
     // SGS operator split (same as advance()).
-    if (cfg.sgs) {
+    if (cfg.physics.sgs) {
         std::visit(overloaded{
             [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
             [&](const OpenBC&)          { tree.fill_ghosts_open(); },
             [&](const WallBC&)          { tree.fill_ghosts_wall(); },
             [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-        }, cfg.bc_variant);
+        }, cfg.bc.variant);
         for (int li : tree.leaf_indices())
-            cfg.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
+            cfg.physics.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
     }
 
     return dt;

@@ -95,11 +95,11 @@ static void b3_tgv()
     };
 
     NSSolver s;
-    s.cfg.bc_variant = PeriodicBC{};
-    s.cfg.cfl             = 0.4;
-    s.cfg.regrid_interval = 0;
-    s.cfg.max_level       = 0;
-    s.cfg.verbose         = false;
+    s.cfg.bc.variant = PeriodicBC{};
+    s.cfg.time.cfl             = 0.4;
+    s.cfg.amr.regrid_interval = 0;
+    s.cfg.amr.max_level       = 0;
+    s.cfg.io.verbose         = false;
     s.init(L_code, tgv_ic);
 
     // Level-3 refinement → 64³ cells (512 blocks), h ≈ 0.098
@@ -116,9 +116,9 @@ static void b3_tgv()
     double ke0 = s.compute_diag().kinetic_energy;
 
     // Run to t* = 18 with frequent diagnostics to track KE(t*)
-    s.cfg.t_end         = 18.0;
-    s.cfg.max_steps     = 200000;
-    s.cfg.diag_interval = 20;
+    s.cfg.time.t_end         = 18.0;
+    s.cfg.time.max_steps     = 200000;
+    s.cfg.io.diag_interval = 20;
     s.run();
 
     // ── Find peak KE dissipation rate from history ────────────────────────────

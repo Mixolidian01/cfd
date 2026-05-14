@@ -56,13 +56,13 @@ int main(int argc, char** argv) {
 
     // ── Build solver (all ranks build the same full tree) ─────────────────────
     SolverConfig cfg;
-    cfg.cfl            = 0.4;
-    cfg.t_end          = 1e30;   // we control step count manually
-    cfg.max_steps      = 20;
-    cfg.bc_variant = PeriodicBC{};
-    cfg.verbose        = false;
-    cfg.regrid_interval = 0;
-    cfg.max_level      = 1;
+    cfg.time.cfl            = 0.4;
+    cfg.time.t_end          = 1e30;   // we control step count manually
+    cfg.time.max_steps      = 20;
+    cfg.bc.variant = PeriodicBC{};
+    cfg.io.verbose        = false;
+    cfg.amr.regrid_interval = 0;
+    cfg.amr.max_level      = 1;
 
     NSSolver solver;
     solver.cfg = cfg;

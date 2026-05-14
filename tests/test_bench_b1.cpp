@@ -218,11 +218,11 @@ static void b1_sod_shock_tube()
     };
 
     NSSolver s;
-    s.cfg.bc_variant = WallBC{};   // reflecting walls; waves don't reach
-    s.cfg.cfl            = 0.4;            // boundaries by t=0.2 so no reflection
-    s.cfg.regrid_interval = 0;             // fixed mesh during run
-    s.cfg.max_level      = 0;
-    s.cfg.verbose        = false;
+    s.cfg.bc.variant = WallBC{};   // reflecting walls; waves don't reach
+    s.cfg.time.cfl            = 0.4;            // boundaries by t=0.2 so no reflection
+    s.cfg.amr.regrid_interval = 0;             // fixed mesh during run
+    s.cfg.amr.max_level      = 0;
+    s.cfg.io.verbose        = false;
     s.init(L, sod_ic);
 
     // Uniform level-2 refinement → 32 interior cells in each direction
@@ -245,8 +245,8 @@ static void b1_sod_shock_tube()
             mass0 += blk.Q[0][cell_idx(i,j,k)] * h3;
     }
 
-    s.cfg.t_end    = T_END;
-    s.cfg.max_steps = 2000;
+    s.cfg.time.t_end    = T_END;
+    s.cfg.time.max_steps = 2000;
     s.run();
     double t_final = s.t;
 

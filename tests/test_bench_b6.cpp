@@ -101,11 +101,11 @@ static void b6_kelvin_helmholtz()
     };
 
     NSSolver s;
-    s.cfg.bc_variant = PeriodicBC{};
-    s.cfg.cfl             = 0.4;
-    s.cfg.regrid_interval = 0;
-    s.cfg.max_level       = 0;
-    s.cfg.verbose         = false;
+    s.cfg.bc.variant = PeriodicBC{};
+    s.cfg.time.cfl             = 0.4;
+    s.cfg.amr.regrid_interval = 0;
+    s.cfg.amr.max_level       = 0;
+    s.cfg.io.verbose         = false;
     s.init(L, kh_ic);
 
     // Level-2 uniform refinement → 32³ cells in [0,1]³, h≈0.03125
