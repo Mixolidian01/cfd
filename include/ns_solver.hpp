@@ -29,9 +29,9 @@ struct GpuPool;
 // P10-A2: TimeIntegrator — common interface for all SSP-RK3 implementations.
 //
 // Implementations:
-//   CpuRk3Integrator  (src/cpu_rk3.cpp)  — CPU flat-tree SSP-RK3
-//   LtsRk3            (src/lts_advance.cpp) — TODO: extract to LtsIntegrator
-//   GpuGraphSolver    (src/cuda/gpu_graph.cu) — IGpuSolver : TimeIntegrator
+//   CpuRk3Integrator  (src/cpu_rk3.cpp)         — CPU flat-tree SSP-RK3
+//   LtsIntegrator     (src/lts_integrator.cpp)  — Berger-Oliger local time stepping
+//   GpuGraphSolver    (src/cuda/gpu_graph.cu)   — IGpuSolver : TimeIntegrator
 //
 // NSSolver::advance() dispatches to integrator_->step(tree, cfg.cfl) after
 // handling early-exit paths (IMEX, LTS, GPU flat-tree).
@@ -40,8 +40,9 @@ struct TimeIntegrator {
     virtual ~TimeIntegrator() = default;
 };
 
-// Forward declaration — CpuRk3Integrator is defined in include/cpu_rk3.hpp.
+// Forward declarations — full definitions in include/cpu_rk3.hpp and include/lts_integrator.hpp.
 struct CpuRk3Integrator;
+struct LtsIntegrator;
 
 // IGpuSolver extends TimeIntegrator with GPU lifecycle (build, download_q, upload_q).
 // Implemented by GpuGraphSolver in src/cuda/gpu_graph.cu (CUDA TU only).
@@ -212,8 +213,10 @@ struct NSSolver {
 
 private:
     friend struct CpuRk3Integrator;  // P10-A2: needs rhs_, Qn_, Qs_, save_Qn()
+    friend struct LtsIntegrator;     // P10-A2: needs rhs_, Qn_, Qs_
 
-    std::unique_ptr<TimeIntegrator> integrator_;  // P10-A2: CPU SSP-RK3 integrator
+    std::unique_ptr<TimeIntegrator> integrator_;      // P10-A2: CPU SSP-RK3 integrator
+    std::unique_ptr<TimeIntegrator> lts_integrator_;  // P10-A2: Berger-Oliger LTS integrator
 
     std::vector<CellBlock> rhs_;
     std::vector<CellBlock> Qn_;
@@ -235,19 +238,6 @@ private:
     void copy_stage_to_tree(const std::vector<CellBlock>& stage);
     void copy_tree_to_stage(std::vector<CellBlock>& stage);
 
-    // Level-filtered copy helpers for LTS (only touch leaves at `level`).
-    void copy_tree_to_stage_level(std::vector<CellBlock>& stage, int level);
-    void copy_stage_to_tree_level(const std::vector<CellBlock>& stage, int level);
-
     // P3.5: IMEX advance — implicit viscous Helmholtz correction after RK3.
     double advance_imex();
-
-    // P4.1: Berger-Oliger LTS.
-    // lts_rk3_level runs one full SSP-RK3 step for leaves at `level`.
-    //   sub_weight: 1/r for fine levels (r sub-steps), 1.0 for the coarse level.
-    //   Flux accumulation weight = sub_weight × {1/6, 1/6, 2/3} per stage.
-    // advance_lts is the entry point dispatched from advance() when use_lts=true.
-    // coarse_mode=true: C/F coarse ghosts use zero-gradient fill (LTS coarse step only).
-    void   lts_rk3_level(int level, double dt, double sub_weight, bool coarse_mode = false);
-    double advance_lts();
 };

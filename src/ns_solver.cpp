@@ -23,6 +23,7 @@
 #include "../include/amr_operators.hpp"
 #include "../include/ns_solver.hpp"
 #include "../include/cpu_rk3.hpp"
+#include "../include/lts_integrator.hpp"
 #include "../include/operators.hpp"
 #include "../include/linalg.hpp"
 #include <algorithm>
@@ -128,9 +129,10 @@ void NSSolver::init(double domain_L,
     }
 
     alloc_scratch();
-    // P10-A2: create the CPU integrator.  GPU solver (if any) is injected by the
+    // P10-A2: create the CPU integrators.  GPU solver (if any) is injected by the
     // application TU after init() returns — see set_gpu_solver().
-    integrator_ = std::make_unique<CpuRk3Integrator>(*this);
+    integrator_     = std::make_unique<CpuRk3Integrator>(*this);
+    lts_integrator_ = std::make_unique<LtsIntegrator>(*this);
     // P8.1: GPU pool wiring (alloc+upload of IC, tree callbacks) is performed
     // by the application TU after init() returns — see gpu_pool.hpp.
     // NSSolver only stores the gpu_pool_ pointer; direct CUDA calls are in .cu TUs.
@@ -194,7 +196,13 @@ double NSSolver::advance() {
     // P3.5: IMEX path.
     if (cfg.use_imex) return advance_imex();
     // P4.1: LTS path — only if tree has more than one level.
-    if (cfg.use_lts && tree.max_leaf_level() > 0) return advance_lts();
+    if (cfg.use_lts && tree.max_leaf_level() > 0) {
+        const double dt = lts_integrator_->step(tree, cfg.cfl);
+        last_dt_ = dt;
+        t    += dt;
+        step += 1;
+        return dt;
+    }
 
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
     // topology is immutable during zero_regs → stages → apply_correction.
@@ -358,7 +366,7 @@ void NSSolver::print_diag(const StepDiag& d) const {
 }
 
 // advance_lts / lts_rk3_level / copy_{tree,stage}_to_{stage,tree}_level
-// — moved to src/lts_advance.cpp (R9-B)
+// — extracted to LtsIntegrator in src/lts_integrator.cpp (P10-A2)
 
 // =============================================================================
 // alloc_scratch
