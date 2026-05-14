@@ -28,23 +28,26 @@ struct GpuPool;
 
 // P10-A2: TimeIntegrator — common interface for all SSP-RK3 implementations.
 //
-// Three implementations exist:
-//   CpuRk3 (inline in NSSolver::advance)  — TODO: extract to CpuRk3Integrator
-//   LtsRk3 (inline in advance_lts/lts_rk3_level) — TODO: extract to LtsIntegrator
-//   GpuRk3 (GpuGraphSolver, CUDA TU)      — already implements IGpuSolver : TimeIntegrator
+// Implementations:
+//   CpuRk3Integrator  (src/cpu_rk3.cpp)  — CPU flat-tree SSP-RK3
+//   LtsRk3            (src/lts_advance.cpp) — TODO: extract to LtsIntegrator
+//   GpuGraphSolver    (src/cuda/gpu_graph.cu) — IGpuSolver : TimeIntegrator
 //
-// When all three are extracted, NSSolver::advance() collapses to:
-//   return integrator_->step(tree, cfg.cfl);
+// NSSolver::advance() dispatches to integrator_->step(tree, cfg.cfl) after
+// handling early-exit paths (IMEX, LTS, GPU flat-tree).
 struct TimeIntegrator {
-    virtual double step(const BlockTree& tree, double cfl) = 0;
+    virtual double step(BlockTree& tree, double cfl) = 0;
     virtual ~TimeIntegrator() = default;
 };
+
+// Forward declaration — CpuRk3Integrator is defined in include/cpu_rk3.hpp.
+struct CpuRk3Integrator;
 
 // IGpuSolver extends TimeIntegrator with GPU lifecycle (build, download_q, upload_q).
 // Implemented by GpuGraphSolver in src/cuda/gpu_graph.cu (CUDA TU only).
 struct IGpuSolver : TimeIntegrator {
     // Bridge: TimeIntegrator::step() delegates to the GPU-named advance().
-    double step(const BlockTree& tree, double cfl) final { return advance(tree, cfl); }
+    double step(BlockTree& tree, double cfl) final { return advance(tree, cfl); }
     virtual double advance(const BlockTree& tree, double cfl)                      = 0;
     virtual void   download_q(const BlockTree& tree)                         const = 0;
     // P11.8: re-upload CPU Q → GPU after CPU fallback steps (AMR path).
@@ -64,85 +67,93 @@ struct StepDiag {
 };
 
 // ── Solver configuration ─────────────────────────────────────────────────────────────────────────────
+//
+// Fields are grouped into seven logical sections.  All defaults produce a
+// valid single-phase periodic-BC CPU run.  Call validate() after any change.
+//
 struct SolverConfig {
-    // R4: Backend dispatch and flux scheme selection
+
+    // ── 1. Execution backend ──────────────────────────────────────────────
+    // R4: Backend tag dispatch and flux scheme.
     enum class ExecutionBackend { CPU, GPU };
     enum class FluxScheme       { HLLC, HLLC_ES };
 
-    double cfl           = 0.8;
-    double t_end         = 1.0;
-    int    max_steps     = 1000000;
-    int    diag_interval = 10;
-    BCVariant bc_variant = PeriodicBC{};
-    bool   verbose       = true;
     ExecutionBackend backend     = ExecutionBackend::CPU;
     FluxScheme       flux_scheme = FluxScheme::HLLC_ES;
-    int    regrid_interval = 0;
-    int    max_level       = 2;
-    std::shared_ptr<SGSModel> sgs = nullptr;
-    bool verbose_json = false;
+    bool             use_gpu     = false;  // P8.1: GPU memory pool path
 
-    // P3.5: IMEX-ARK implicit viscous solve
-    bool use_imex  = false;
-    int  mg_levels = 3;
+    // ── 2. Time integration ───────────────────────────────────────────────
+    double cfl           = 0.8;       // CFL number ∈ (0, 1]
+    double t_end         = 1.0;       // stop time
+    int    max_steps     = 1000000;   // hard step cap
+
+    // ── 3. Boundary conditions ────────────────────────────────────────────
+    BCVariant bc_variant = PeriodicBC{};
+
+    // P13.4: wall temperature for isothermal no-slip walls (WallBC/ContactAngleBC).
+    // 0.0 (default) → adiabatic wall (∂T/∂n = 0).
+    // > 0 → isothermal: ghost E enforces T_ghost = 2*wall_T − T_interior.
+    double wall_T = 0.0;
+
+    // ── 4. AMR + local time stepping ──────────────────────────────────────
+    int  max_level        = 2;   // max refinement depth (0 = flat tree)
+    int  regrid_interval  = 0;   // steps between regrid (0 = disabled)
 
     // P4.1: Berger-Oliger local time stepping.
-    // When use_lts == true and the tree has more than one refinement level,
-    // advance() dispatches to advance_lts().  The fine level takes lts_ratio
-    // sub-steps of dt_c/lts_ratio per coarse step.  Two levels are supported;
-    // deeper trees recursively apply the same principle.
+    // advance() dispatches to advance_lts() when use_lts=true and the tree
+    // has more than one level.  Fine level takes lts_ratio sub-steps per
+    // coarse step.
     bool use_lts   = false;
     int  lts_ratio = 2;   // refinement ratio (must match tree's geometric ratio)
 
-    // P8.1: run with GPU memory pool — all leaf blocks reside on device.
-    bool use_gpu = false;
+    // ── 5. SGS turbulence + IMEX ──────────────────────────────────────────
+    std::shared_ptr<SGSModel> sgs = nullptr;
 
-    // P11.6: Ducros pressure-ratio sensor thresholds.
-    // ducros_p_threshold: |Δp|/p below this → Ducros pressure term = 0 (no WENO5 switch).
-    // ducros_blend_width: linear ramp width above the threshold (endpoint = threshold + width → 1).
-    // For DNS/LES without shocks, raise threshold (e.g. 0.5) to suppress spurious HLLC-ES.
+    // P3.5: IMEX-ARK implicit viscous solve.
+    bool use_imex  = false;
+    int  mg_levels = 3;
+
+    // ── 6. Numerical sensors ──────────────────────────────────────────────
+    // P11.6: Ducros pressure-ratio sensor (controls WENO5 → central switch).
+    // ducros_p_threshold: |Δp|/p below this → central scheme.
+    // ducros_blend_width: ramp width above threshold (endpoint = thr + width → 1).
+    // For DNS/LES without shocks, raise threshold (e.g. 0.5) to avoid HLLC-ES.
     double ducros_p_threshold = 0.1;
     double ducros_blend_width = 0.1;
 
-    // P13.4: wall temperature for isothermal no-slip walls (WallBC/ContactAngleBC only).
-    // 0.0 (default) → adiabatic wall (∂T/∂n = 0, current behaviour).
-    // > 0 → isothermal: ghost E is set to enforce T_ghost = 2*wall_T - T_interior.
-    double wall_T = 0.0;
-
-    // P13.5: SBP-SAT penalty coefficient at AMR C/F interfaces.
-    // 0.0 (default) → disabled (pure Berger-Colella correction).
-    // > 0 → add σ=(tau/h_f) * (Q_ghost − Q_interior) penalty to boundary cells at each
-    //        RK3 stage; conservative paired correction applied to coarse neighbor.
+    // P13.5: SBP-SAT penalty at AMR C/F interfaces.
+    // 0.0 (default) → pure Berger-Colella correction.
+    // > 0 → add σ = (tau/h_f)·(Q_ghost − Q_interior) penalty each RK3 stage.
     //        Recommended: tau = 0.5 (minimal energy-stable penalty).
     double sat_tau = 0.0;
 
-    // P14.1: ACDI compressible multiphase — Accurate Conservative Diffuse Interface.
-    // false (default) → single-phase mode (phi field inactive, zero overhead).
-    // true  → φ ∈ [0,1] scalar advected alongside Q; set initial φ via
-    //          NSSolver::init() phi_ic argument (or leave null for φ≡0).
-    bool use_acdi = false;
+    // ── 7. ACDI compressible multiphase ───────────────────────────────────
+    // P14.1: Accurate Conservative Diffuse Interface.
+    // false → single-phase mode (phi field inactive, zero overhead).
+    // true  → φ ∈ [0,1] advected alongside Q; set IC via NSSolver::init().
+    bool   use_acdi  = false;
 
-    // P14.1b: ACDI compression coefficient Cε (dimensionless).
-    // Interface thickness ε = Cε·h.  Recommended: 0.5–1.0.
-    // 0.0 (default) → pure advection only (no interface sharpening).
-    // >0 → adds ε·∇·(∇φ − φ(1−φ)·n̂) compression source to each RK3 stage.
+    // P14.1b: compression coefficient Cε; interface thickness ε = Cε·h.
+    // 0.0 → pure advection; >0 → adds sharpening source to each RK3 stage.
     double acdi_ceps = 0.0;
 
-    // P14.1c: Stiffened-gas EOS for fluid A (φ=1) and fluid B (φ=0).
-    // Allaire (2002) mixture rule: 1/(γ_m-1) = φ/(γ_A-1) + (1-φ)/(γ_B-1).
-    // Defaults reproduce ideal gas (γ=1.4, p∞=0) when both fluids are identical.
-    // Only active when use_acdi=true AND (gamma_a != gamma_b OR p_inf_a != 0 OR p_inf_b != 0).
+    // P14.1c: Stiffened-gas EOS.  Allaire (2002) mixture rule:
+    //   1/(γ_m−1) = φ/(γ_A−1) + (1−φ)/(γ_B−1).
+    // Defaults reproduce ideal gas (γ=1.4, p∞=0) for identical fluids.
+    // Active only when use_acdi=true AND fluids differ.
     double gamma_a = GAMMA;   // γ for fluid A (φ=1), e.g. 6.12 for liquid water
     double gamma_b = GAMMA;   // γ for fluid B (φ=0), e.g. 1.4  for air
     double p_inf_a = 0.0;     // p∞ [Pa] for fluid A, e.g. 3.43e8 for liquid water
     double p_inf_b = 0.0;     // p∞ [Pa] for fluid B (0 = ideal gas)
 
-    // P14.2: static contact angle for phase-field at wall (ContactAngleBC + use_acdi).
-    // Set bc_variant = ContactAngleBC{theta_deg} to activate.
-    // θ_w in degrees: 90° (default) → ∂φ/∂n=0 (neutral, same as Neumann);
-    //   0° → fully wetting (fluid A prefers wall); 180° → fully non-wetting.
-    // Ghost BC: φ_ghost = φ_int − dist·cos(θ_w)/(acdi_ceps)·g'(φ_int),
-    //   g'(φ)=φ(1-φ)(1-2φ)/2.  Requires acdi_ceps > 0 and bc_variant=ContactAngleBC.
+    // P14.2: static contact angle θ_w [deg] at wall (ContactAngleBC + use_acdi).
+    // 90° (default) → ∂φ/∂n=0 (neutral).  0° → fully wetting.  180° → non-wetting.
+    // Activate via bc_variant = ContactAngleBC{theta_deg}; requires acdi_ceps > 0.
+
+    // ── 8. I/O ────────────────────────────────────────────────────────────
+    bool verbose       = true;
+    bool verbose_json  = false;
+    int  diag_interval = 10;
 
     void validate() const;
 };
@@ -193,8 +204,6 @@ struct NSSolver {
     // Caller creates a GpuGraphSolver (CUDA TU) and injects it here before advance().
     // When set, advance() dispatches the SSP-RK3 loop to the GPU via gpu_solver_->step().
     // NSSolver::regrid() calls build() after every topology change.
-    // TODO P10-A2: also wrap CPU path in CpuRk3Integrator:TimeIntegrator so advance()
-    //   collapses to integrator_->step(tree, cfg.cfl) for both CPU and GPU.
     IGpuSolver* gpu_solver_ = nullptr;
     void set_gpu_solver(IGpuSolver* s) noexcept { gpu_solver_ = s; }
 
@@ -202,6 +211,10 @@ struct NSSolver {
     void alloc_scratch();
 
 private:
+    friend struct CpuRk3Integrator;  // P10-A2: needs rhs_, Qn_, Qs_, save_Qn()
+
+    std::unique_ptr<TimeIntegrator> integrator_;  // P10-A2: CPU SSP-RK3 integrator
+
     std::vector<CellBlock> rhs_;
     std::vector<CellBlock> Qn_;
     std::vector<CellBlock> Qs_;
