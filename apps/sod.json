@@ -1,0 +1,31 @@
+{
+    // 1D Sod shock tube — validates the HLLC Riemann solver
+    // Shock reaches x≈0.850, contact x≈0.685 at t=0.2 (Sod 1978)
+    "domain_L"          : 1.0,
+    "ic"                : "sod",
+    "ic_rho_l"          : 1.0,
+    "ic_p_l"            : 1.0,
+    "ic_rho_r"          : 0.125,
+    "ic_p_r"            : 0.1,
+    "ic_x0"             : 0.5,
+
+    "cfl"               : 0.4,
+    "t_end"             : 0.2,
+    "max_steps"         : 100000,
+    "bc"                : "Open",
+    "verbose"           : true,
+    "diag_interval"     : 50,
+    "regrid_interval"   : 4,
+    "max_level"         : 3,
+    "refine_levels"     : 0,
+    "sgs"               : "none",
+
+    "stream_port"       : 8080,   // set to 0 to disable browser viewer
+    "stream_var"        : "rho",
+    "stream_axis"       : 2,
+    "stream_pos"        : 0.5,
+    "stream_stride"     : 2,
+
+    "checkpoint_save"   : "",
+    "checkpoint_interval": 0
+}

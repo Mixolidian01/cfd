@@ -1,5 +1,6 @@
 #pragma once
 // DESIGN.md reference: Layer 3 — Time Loop
+// P8.1: GpuPool forward-declared so ns_solver.hpp compiles without CUDA headers.
 //
 // NSSolver owns the BlockTree and drives the SSP-RK3 time integration.
 // It knows nothing about linear algebra (Layer 0) directly.
@@ -12,13 +13,44 @@
 // Each stage: fill ghosts → compute rhs → update Q.
 // dt is recomputed from CFL at the start of each step.
 
-#include <memory>      
-#include "sgs.hpp" 
+#include <memory>
+#include "sgs.hpp"
 #include "operators.hpp"
+#include "live_streamer.hpp"
+#include "mpi_comm.hpp"
 #include <functional>
 #include <string>
 
-// ── Diagnostics written every `diag_interval` steps ──────────────────────────
+// Forward declaration — full definition in gpu_pool.hpp (CUDA TU only).
+struct GpuPool;
+
+// P10-A2: TimeIntegrator — common interface for all SSP-RK3 implementations.
+//
+// Three implementations exist:
+//   CpuRk3 (inline in NSSolver::advance)  — TODO: extract to CpuRk3Integrator
+//   LtsRk3 (inline in advance_lts/lts_rk3_level) — TODO: extract to LtsIntegrator
+//   GpuRk3 (GpuGraphSolver, CUDA TU)      — already implements IGpuSolver : TimeIntegrator
+//
+// When all three are extracted, NSSolver::advance() collapses to:
+//   return integrator_->step(tree, cfg.cfl);
+struct TimeIntegrator {
+    virtual double step(const BlockTree& tree, double cfl) = 0;
+    virtual ~TimeIntegrator() = default;
+};
+
+// IGpuSolver extends TimeIntegrator with GPU lifecycle (build, download_q, upload_q).
+// Implemented by GpuGraphSolver in src/cuda/gpu_graph.cu (CUDA TU only).
+struct IGpuSolver : TimeIntegrator {
+    // Bridge: TimeIntegrator::step() delegates to the GPU-named advance().
+    double step(const BlockTree& tree, double cfl) final { return advance(tree, cfl); }
+    virtual double advance(const BlockTree& tree, double cfl)                      = 0;
+    virtual void   download_q(const BlockTree& tree)                         const = 0;
+    // P11.8: re-upload CPU Q → GPU after CPU fallback steps (AMR path).
+    virtual void   upload_q()                                                 const = 0;
+    virtual void   build(const BlockTree& tree, const GpuPool& pool, int bc_type) = 0;
+};
+
+// ── Diagnostics written every `diag_interval` steps ───────────────────────────────────
 struct StepDiag {
     int    step;
     double t;
@@ -29,63 +61,183 @@ struct StepDiag {
     double total_energy;
 };
 
-// ── Boundary condition selector ───────────────────────────────────────────────
-enum class BCType { Periodic, Wall };
-
-// ── Solver configuration ──────────────────────────────────────────────────────
-struct SolverConfig {
-    double cfl          = 0.8;
-    double t_end        = 1.0;
-    int    max_steps    = 1000000;
-    int    diag_interval = 10;        // print diagnostics every N steps
-    BCType bc           = BCType::Periodic;
-    bool   verbose      = true;
-    int    regrid_interval = 0;   // 0 = disabled; call regrid() every N steps
-    int    max_level       = 2;   // max AMR refinement depth
-    std::shared_ptr<SGSModel> sgs = nullptr;
-    bool verbose_json = false;   // emit one JSON line per step to stdout
+// ── Boundary condition selector ───────────────────────────────────────────────────────────────
+enum class BCType {
+    Periodic,   // wrap-around in all directions
+    Wall,       // reflecting slip wall (velocity reflected, p/ρ copied)
+    Open        // zero-gradient transmissive (extrapolate from interior — no reflection)
 };
 
-// ── NSSolver ──────────────────────────────────────────────────────────────────
+// ── Solver configuration ─────────────────────────────────────────────────────────────────────────────
+struct SolverConfig {
+    double cfl           = 0.8;
+    double t_end         = 1.0;
+    int    max_steps     = 1000000;
+    int    diag_interval = 10;
+    BCType bc            = BCType::Periodic;
+    bool   verbose       = true;
+    int    regrid_interval = 0;
+    int    max_level       = 2;
+    std::shared_ptr<SGSModel> sgs = nullptr;
+    bool verbose_json = false;
+
+    // P3.5: IMEX-ARK implicit viscous solve
+    bool use_imex  = false;
+    int  mg_levels = 3;
+
+    // P4.1: Berger-Oliger local time stepping.
+    // When use_lts == true and the tree has more than one refinement level,
+    // advance() dispatches to advance_lts().  The fine level takes lts_ratio
+    // sub-steps of dt_c/lts_ratio per coarse step.  Two levels are supported;
+    // deeper trees recursively apply the same principle.
+    bool use_lts   = false;
+    int  lts_ratio = 2;   // refinement ratio (must match tree's geometric ratio)
+
+    // P8.1: run with GPU memory pool — all leaf blocks reside on device.
+    bool use_gpu = false;
+
+    // P11.6: Ducros pressure-ratio sensor thresholds.
+    // ducros_p_threshold: |Δp|/p below this → Ducros pressure term = 0 (no WENO5 switch).
+    // ducros_blend_width: linear ramp width above the threshold (endpoint = threshold + width → 1).
+    // For DNS/LES without shocks, raise threshold (e.g. 0.5) to suppress spurious HLLC-ES.
+    double ducros_p_threshold = 0.1;
+    double ducros_blend_width = 0.1;
+
+    // P13.4: wall temperature for isothermal no-slip walls (BCType::Wall only).
+    // 0.0 (default) → adiabatic wall (∂T/∂n = 0, current behaviour).
+    // > 0 → isothermal: ghost E is set to enforce T_ghost = 2*wall_T - T_interior.
+    double wall_T = 0.0;
+
+    // P13.3: far-field pressure for entropy-stable open BCs (BCType::Open only).
+    // 0.0 (default) → zero-gradient transmissive (current behaviour).
+    // > 0 → characteristic BC: ghost pressure = open_bc_p; isentropic density +
+    //        Riemann-invariant normal velocity enforce subsonic non-reflecting outflow.
+    double open_bc_p = 0.0;
+
+    // P13.5: SBP-SAT penalty coefficient at AMR C/F interfaces.
+    // 0.0 (default) → disabled (pure Berger-Colella correction).
+    // > 0 → add σ=(tau/h_f) * (Q_ghost − Q_interior) penalty to boundary cells at each
+    //        RK3 stage; conservative paired correction applied to coarse neighbor.
+    //        Recommended: tau = 0.5 (minimal energy-stable penalty).
+    double sat_tau = 0.0;
+
+    // P14.1: ACDI compressible multiphase — Accurate Conservative Diffuse Interface.
+    // false (default) → single-phase mode (phi field inactive, zero overhead).
+    // true  → φ ∈ [0,1] scalar advected alongside Q; set initial φ via
+    //          NSSolver::init() phi_ic argument (or leave null for φ≡0).
+    bool use_acdi = false;
+
+    // P14.1b: ACDI compression coefficient Cε (dimensionless).
+    // Interface thickness ε = Cε·h.  Recommended: 0.5–1.0.
+    // 0.0 (default) → pure advection only (no interface sharpening).
+    // >0 → adds ε·∇·(∇φ − φ(1−φ)·n̂) compression source to each RK3 stage.
+    double acdi_ceps = 0.0;
+
+    // P14.1c: Stiffened-gas EOS for fluid A (φ=1) and fluid B (φ=0).
+    // Allaire (2002) mixture rule: 1/(γ_m-1) = φ/(γ_A-1) + (1-φ)/(γ_B-1).
+    // Defaults reproduce ideal gas (γ=1.4, p∞=0) when both fluids are identical.
+    // Only active when use_acdi=true AND (gamma_a != gamma_b OR p_inf_a != 0 OR p_inf_b != 0).
+    double gamma_a = GAMMA;   // γ for fluid A (φ=1), e.g. 6.12 for liquid water
+    double gamma_b = GAMMA;   // γ for fluid B (φ=0), e.g. 1.4  for air
+    double p_inf_a = 0.0;     // p∞ [Pa] for fluid A, e.g. 3.43e8 for liquid water
+    double p_inf_b = 0.0;     // p∞ [Pa] for fluid B (0 = ideal gas)
+
+    // P14.2: static contact angle for phase-field at wall (BCType::Wall + use_acdi).
+    // θ_w in degrees: 90° (default) → ∂φ/∂n=0 (neutral, same as Neumann);
+    //   0° → fully wetting (fluid A prefers wall); 180° → fully non-wetting.
+    // Ghost BC: φ_ghost = φ_int − dist·cos(θ_w)/(acdi_ceps)·g'(φ_int),
+    //   g'(φ)=φ(1-φ)(1-2φ)/2.  Requires acdi_ceps > 0 and bc == BCType::Wall.
+    double contact_angle_wall = 90.0;   // [degrees]
+};
+
+// ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────
 struct NSSolver {
     BlockTree    tree;
     SolverConfig cfg;
     double       t    = 0.0;
     int          step = 0;
 
-    std::vector<StepDiag> history;   // all recorded diagnostics
+    std::vector<StepDiag> history;
 
-    // ── Initialise from a user-supplied IC function ───────────────────────────
-    // ic(x, y, z) returns a Prim at that location.
-    // Fills ALL cells (interior + ghost) so that ghost fill on step 0 is clean.
+    // P14.1: phi_ic (optional) sets the initial phase-field φ(x,y,z) ∈ [0,1].
+    // Pass nullptr (or omit) for single-phase runs (φ≡0).
     void init(double domain_L,
-              const std::function<Prim(double,double,double)>& ic);
-
-    // ── Run until t >= t_end or step >= max_steps ────────────────────────────
+              const std::function<Prim(double,double,double)>& ic,
+              const std::function<double(double,double,double)>* phi_ic = nullptr);
     void run();
-
-    // ── Single SSP-RK3 step ───────────────────────────────────────────────────
-    // Returns the dt used.
     double advance();
-    void regrid(); 
+    void regrid();
 
-    // ── Diagnostics ──────────────────────────────────────────────────────────
     StepDiag compute_diag() const;
-    void      print_diag(const StepDiag& d) const;
-    
+    void     print_diag(const StepDiag& d) const;
+
+    // Phase 6: optional in-situ browser live feed.
+    // Set via set_streamer() before run()/advance().  Null = disabled.
+    LiveStreamer* streamer_ = nullptr;
+    void set_streamer(LiveStreamer* s) noexcept { streamer_ = s; }
+
+    // P7.1: optional MPI partition.  When set, advance() calls mpi_exchange_halos()
+    // before each RK stage's ghost fill, and uses MPI_Allreduce for CFL and diagnostics.
+    MpiPartition* mpi_ = nullptr;
+    void set_mpi(MpiPartition* p) noexcept {
+        mpi_ = p;
+        tree.set_mpi(p);
+    }
+
+    // P8.1: optional GPU memory pool.  When cfg.use_gpu=true, init() creates the
+    // pool and wires BlockTree lifecycle callbacks.  All leaf blocks are uploaded
+    // to GPU after IC application.  Caller may also inject an external pool via
+    // set_gpu_pool() before init() to share a pool across solvers.
+    GpuPool* gpu_pool_ = nullptr;
+    void set_gpu_pool(GpuPool* p) noexcept { gpu_pool_ = p; }
+
+    // P10-A2: optional GPU time integrator (flat-tree runs).
+    // IGpuSolver implements TimeIntegrator::step() via advance() + build() + download_q().
+    // Caller creates a GpuGraphSolver (CUDA TU) and injects it here before advance().
+    // When set, advance() dispatches the SSP-RK3 loop to the GPU via gpu_solver_->step().
+    // NSSolver::regrid() calls build() after every topology change.
+    // TODO P10-A2: also wrap CPU path in CpuRk3Integrator:TimeIntegrator so advance()
+    //   collapses to integrator_->step(tree, cfg.cfl) for both CPU and GPU.
+    IGpuSolver* gpu_solver_ = nullptr;
+    void set_gpu_solver(IGpuSolver* s) noexcept { gpu_solver_ = s; }
+
     int  scratch_leaf_count_ = -1;  ///< FIX P5: tracks last alloc size
     void alloc_scratch();
 
 private:
-    // Scratch storage: one RHS block per leaf (reused across stages)
     std::vector<CellBlock> rhs_;
-    // Q^n storage: one block per leaf (for SSP-RK3 multi-stage)
     std::vector<CellBlock> Qn_;
-    // Q^s storage: one block per leaf (intermediate stage)
     std::vector<CellBlock> Qs_;
 
-    
+    // FIX P0.6: was a static local inside advance(); promoted to member so
+    // that multiple NSSolver instances do not share state, and so that
+    // reset on init() is explicit. Sentinel -1.0 → first step residual=0.
+    double ke_prev_  = -1.0;
+    double last_dt_  = 0.0;   // B4: populated by advance(), exposed via compute_diag()
+    // P12.3: step-0 conservation baselines (sentinel -1 = uninitialized)
+    double mass0_    = -1.0;
+    double mtm0_     = -1.0;  // |total momentum| = sqrt(px²+py²+pz²)
+    // P11.8: CPU path was used last step → GPU Q is stale; re-upload before next GPU step.
+    bool gpu_q_stale_ = false;
+    double energy0_  = -1.0;
+
     void save_Qn();
     void copy_stage_to_tree(const std::vector<CellBlock>& stage);
     void copy_tree_to_stage(std::vector<CellBlock>& stage);
+
+    // Level-filtered copy helpers for LTS (only touch leaves at `level`).
+    void copy_tree_to_stage_level(std::vector<CellBlock>& stage, int level);
+    void copy_stage_to_tree_level(const std::vector<CellBlock>& stage, int level);
+
+    // P3.5: IMEX advance — implicit viscous Helmholtz correction after RK3.
+    double advance_imex();
+
+    // P4.1: Berger-Oliger LTS.
+    // lts_rk3_level runs one full SSP-RK3 step for leaves at `level`.
+    //   sub_weight: 1/r for fine levels (r sub-steps), 1.0 for the coarse level.
+    //   Flux accumulation weight = sub_weight × {1/6, 1/6, 2/3} per stage.
+    // advance_lts is the entry point dispatched from advance() when use_lts=true.
+    // coarse_mode=true: C/F coarse ghosts use zero-gradient fill (LTS coarse step only).
+    void   lts_rk3_level(int level, double dt, double sub_weight, bool coarse_mode = false);
+    double advance_lts();
 };

@@ -20,11 +20,34 @@
 #include "block_tree.hpp"
 #include <array>
 
+// ── P13.1: compile-time axis tag ─────────────────────────────────────────────
+// Enables template<Axis DIR> flux specialisations; eliminates 3-way if/else
+// axis dispatch and asymmetric-bug surface. Underlying value matches int axis
+// convention (0=X, 1=Y, 2=Z) for backward compat with existing callers.
+enum class Axis : int { X = 0, Y = 1, Z = 2 };
+
 // ── Single-face HLLC flux (5 conserved variables) ────────────────────────────
 // Returns F_hllc at the interface between state L (left) and R (right).
 // Both states are given as primitive variables (rho,u,v,w,p).
-// face_vel = velocity component normal to the face (u for x-face, etc.)
 std::array<double,5> hllc_flux(const Prim& L, const Prim& R, int axis) noexcept;
+
+// ── P3.3 — Entropy-stable HLLC-ES flux (Chandrashekar 2013) ─────────────────
+// Entropy-conservative (EC) base using log-mean ρ_ln, β_ln (β=ρ/2p) +
+// Lax-Friedrichs scalar dissipation λ_max/2 * ΔQ.
+// Satisfies the entropy inequality ∂η/∂t + ∂F_η/∂x ≤ 0 pointwise.
+std::array<double,5> hllc_es_flux(const Prim& L, const Prim& R, int axis) noexcept;
+
+// ── P13.1 — compile-time-axis variants (DIR known at compile time) ────────────
+// Delegates to the runtime versions until full axis-template refactor is done.
+// Usage: auto f = hllc_es_flux_t<Axis::X>(L, R);
+template<Axis DIR>
+inline std::array<double,5> hllc_es_flux_t(const Prim& L, const Prim& R) noexcept {
+    return hllc_es_flux(L, R, static_cast<int>(DIR));
+}
+template<Axis DIR>
+inline std::array<double,5> hllc_flux_t(const Prim& L, const Prim& R) noexcept {
+    return hllc_flux(L, R, static_cast<int>(DIR));
+}
 
 // ── Per-block convective RHS  dQ/dt|_conv = -(1/h)(dF/dx + dG/dy + dH/dz) ──
 // Ghost cells must be filled.  rhs is added to (not overwritten).
@@ -35,6 +58,11 @@ void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 // mu from Sutherland, Pr = 0.72, kappa = mu*cp/Pr.
 void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 
+// ── Ducros sensor configuration (P11.6) ──────────────────────────────────────
+// Set before the first tree_rhs() call each step.  Thread-safe (values are
+// only read by compute_rhs, never written during a concurrent step).
+void set_ducros_thresholds(double p_threshold, double blend_width) noexcept;
+
 // ── Full RHS: convective + viscous ───────────────────────────────────────────
 // rhs_blk.Q is zeroed then filled with convective + viscous contributions.
 void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
@@ -42,9 +70,59 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
 // ── Tree-level RHS (loops over all leaves) ───────────────────────────────────
 // Fills ghost cells, then calls compute_rhs for every leaf block.
 // rhs_blocks must have same size and order as tree.leaf_indices().
+//
+// A05-fix4: stage_weight is the SSP-RK3 quadrature weight for this sub-step:
+//   stage 1: 1/6,  stage 2: 1/6,  stage 3: 2/3
+// The caller must zero flux registers once before stage 1 and must NOT zero
+// them between stages.  apply_flux_correction(dt) is called after stage 3.
+// stage_weight: SSP-RK3 quadrature weight (1/6, 1/6, 2/3) for Berger-Colella flux.
+// level_filter: when >= 0, only leaves at that refinement level participate in
+//   compute_rhs/undo_cf/accumulate_fine steps.  Pass -1 for all levels (default).
+//   Ghost fill is always global (all leaves) regardless of the filter.
+// cf_coarse_zero_grad: when true, coarse C/F ghost cells are filled with zero-gradient
+//   extrapolation (ghost = interior) rather than fine cell averages.  Used by the
+//   LTS coarse step so that viscous flux at C/F interfaces is exactly zero, allowing
+//   total-energy conservation after Berger-Colella correction.
 void tree_rhs(BlockTree& tree,
               std::vector<CellBlock>& rhs_blocks,
-              bool periodic) noexcept;
+              bool periodic,
+              double stage_weight        = 1.0,
+              int    level_filter        = -1,
+              bool   cf_coarse_zero_grad = false,
+              bool   open_bc             = false) noexcept;
 
-// ── CFL time step over entire tree ───────────────────────────────────────────
+// ── P14.1: Stiffened-gas mixture EOS activation ──────────────────────────────
+// Call once per advance() before tree_rhs() when use_acdi && gamma_a != gamma_b.
+// active=false resets to ideal-gas EOS (p∞=0, γ=GAMMA).
+// Parameters: ga/gb = γ for fluid A/B, pia/pib = p∞ for A/B.
+void set_sg_eos(bool active, double ga, double gb, double pia, double pib) noexcept;
+
+// ── P14.1: ACDI phase-field advection RHS ────────────────────────────────────
+// Conservative 1st-order upwind: ∂φ/∂t = -∇·(φu).
+// Ghost phi must be filled (via fill_ghosts_periodic or equivalent) before call.
+// Adds (does not zero) the advective flux divergence to rhs_blk.phi_data_.
+void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
+
+// ── P14.1b: ACDI interface-compression source ─────────────────────────────────
+// Adds ε·∇·(∇φ − φ(1−φ)·n̂) to rhs_blk.phi_data_ where ε = ceps·h.
+// n̂ = ∇φ / |∇φ| is the interface unit normal (regularised by eps_sq=1e-10/h²).
+// Requires NG ≥ 2 (both gradient and divergence use 1-cell stencils from ghost layer).
+// Ghost phi must be filled at least 2 layers deep before call.
+void phi_compression_rhs(const CellBlock& blk, CellBlock& rhs_blk,
+                          double ceps) noexcept;
+
+// ── CFL time step ─────────────────────────────────────────────────────────────
+// tree_cfl_dt: global minimum over all leaves.
+// level_cfl_dt: minimum over leaves at a specific refinement level (P4.1 LTS).
 double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept;
+double level_cfl_dt(const BlockTree& tree, int level, double cfl) noexcept;
+
+// ── P13.5: SBP-SAT interface penalty at AMR C/F boundaries ───────────────────
+// Adds σ·(Q_coarse_ghost − Q_fine_interior)/h_f to fine boundary cells and
+// −σ·avg_patch/h_c to the corresponding coarse boundary cell (conservative).
+// Ghost cells must be filled BEFORE calling this.
+// tau: penalty coefficient (>= 0.5 for semi-discrete energy stability).
+// Typical usage: after each tree_rhs() stage in the RK3 loop.
+void tree_sat_penalty(BlockTree& tree,
+                      std::vector<CellBlock>& rhs_blocks,
+                      double tau = 0.5) noexcept;

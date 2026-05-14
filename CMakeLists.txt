@@ -2,7 +2,7 @@
 # CFD Solver — CMakeLists.txt
 #
 # One-time setup:
-#   cmake -S ~/cfd -B ~/cfd/build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+#   cmake -S $(pwd) -B $(pwd)/build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 #
 # Daily use:
 #   cmake --build build -t b     # incremental build (all targets)
@@ -17,7 +17,7 @@
 # =============================================================================
 
 cmake_minimum_required(VERSION 3.18)
-project(cfd CXX)
+project(cfd CXX C)   # C required by zfp-config.cmake's find_package(OpenMP COMPONENTS C)
 
 set(CMAKE_CXX_STANDARD          17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -50,24 +50,68 @@ endif()
 add_library(linalg STATIC src/linalg.cpp)
 target_include_directories(linalg PUBLIC include)
 
-# Layer 1: block tree, Morton encoding, AMR structure
-add_library(block STATIC src/block_tree.cpp)
+# Layer 1: block tree, Morton encoding, AMR structure.
+# amr_operators.cpp is included here because block_tree.cpp calls
+# fill_cf_ghosts() directly (coarse/fine ghost fill at CF interfaces).
+add_library(block STATIC
+    src/block_tree.cpp
+    src/amr_operators.cpp
+)
 target_link_libraries(block PUBLIC linalg)
+
+# ── OpenMP (optional — silently degrades to serial if not found) ──────────────
+find_package(OpenMP)
 
 # Layer 2: HLLC Riemann solver, viscous RHS, operators
 add_library(operators STATIC src/operators.cpp)
 target_link_libraries(operators PUBLIC block)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(operators PUBLIC OpenMP::OpenMP_CXX)
+    message(STATUS "OpenMP found — leaf loop will be parallelised")
+else()
+    message(STATUS "OpenMP not found — leaf loop runs serially")
+endif()
 
-# Layer 3: SSP-RK3 time loop, AMR operators, SGS plug-in, I/O
+# Layer 3: SSP-RK3 time loop, SGS plug-in, I/O, in-situ live streamer
+# amr_operators.cpp is already compiled in libblock; omit it here to
+# avoid duplicate-symbol ODR violations at link time.
 add_library(ns_solver STATIC
     src/ns_solver.cpp
-    src/amr_operators.cpp
     src/flux_register.cpp
     src/sgs.cpp
     src/checkpoint.cpp
     src/vtk_writer.cpp
+    src/live_streamer.cpp
 )
 target_link_libraries(ns_solver PUBLIC operators)
+# live_streamer.cpp uses POSIX threads (accept/stream threads)
+find_package(Threads REQUIRED)
+target_link_libraries(ns_solver PUBLIC Threads::Threads)
+
+# ── LZ4 (P6.8 — stream frame uint16 quantisation + block compression) ────────
+find_path(LZ4_INCLUDE_DIR lz4.h)
+find_library(LZ4_LIBRARY NAMES lz4)
+if(LZ4_INCLUDE_DIR AND LZ4_LIBRARY)
+    target_include_directories(ns_solver PUBLIC ${LZ4_INCLUDE_DIR})
+    target_link_libraries(ns_solver PUBLIC ${LZ4_LIBRARY})
+    target_compile_definitions(ns_solver PUBLIC HAVE_LZ4=1)
+    message(STATUS "LZ4 found (${LZ4_LIBRARY}) — stream frame compression enabled")
+else()
+    message(STATUS "LZ4 not found — stream frames use raw float32 (install liblz4-dev)")
+endif()
+
+# ── MPI (P7.1 — domain decomposition) ────────────────────────────────────────
+find_package(MPI QUIET)
+add_library(mpi_comm STATIC src/mpi_comm.cpp)
+target_link_libraries(mpi_comm PUBLIC block)
+if(MPI_CXX_FOUND)
+    target_link_libraries(mpi_comm PUBLIC MPI::MPI_CXX)
+    target_compile_definitions(mpi_comm PUBLIC HAVE_MPI=1)
+    message(STATUS "MPI found (${MPI_CXX_COMPILER}) — P7.1 halo exchange enabled")
+else()
+    message(STATUS "MPI not found — mpi_comm compiles as stub (n_ranks=1, no exchange)")
+endif()
+target_link_libraries(ns_solver PUBLIC mpi_comm)
 
 # =============================================================================
 # Gate test executables
@@ -126,6 +170,7 @@ if(NVCC)
         ${CMAKE_SOURCE_DIR}/src/sgs.cpp
         ${CMAKE_SOURCE_DIR}/src/checkpoint.cpp
         ${CMAKE_SOURCE_DIR}/src/vtk_writer.cpp
+        ${CMAKE_SOURCE_DIR}/src/live_streamer.cpp
     )
 
     add_custom_command(
@@ -140,6 +185,7 @@ if(NVCC)
                 -Xcompiler=-Wall
                 ${_T5_SRCS}
                 -o ${_T5_BIN} -lm
+                $<$<BOOL:${LZ4_LIBRARY}>:-llz4>
         DEPENDS ${_T5_SRCS}
         COMMENT "nvcc: compiling Step 5 GPU gate"
         VERBATIM
@@ -151,9 +197,651 @@ if(NVCC)
         COMMENT "Step 5 gate: test_gpu"
         USES_TERMINAL
     )
+    # ── P4.3: TBC ghost exchange gate (t8) ────────────────────────────────────
+    # Compiles with sm_${_ARCH} (sm_86 on RTX 3070) so the fallback path runs.
+    # The TBC path activates automatically at runtime when sm_major >= 9.
+    set(_T8_BIN ${CMAKE_BINARY_DIR}/t8_ghost_cluster)
+    set(_T8_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_ghost_cluster.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_cluster.cu
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T8_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall
+                ${_T8_SRCS}
+                -o ${_T8_BIN} -lm
+        DEPENDS ${_T8_SRCS}
+        COMMENT "nvcc: compiling P4.3 TBC ghost exchange gate"
+        VERBATIM
+    )
+
+    add_custom_target(t8
+        DEPENDS ${_T8_BIN}
+        COMMAND ${_T8_BIN}
+        COMMENT "P4.3 gate: TBC ghost exchange"
+        USES_TERMINAL
+    )
+    # ── P8.1: GPU memory pool gate (t19) ─────────────────────────────────────
+    set(_T19_BIN ${CMAKE_BINARY_DIR}/t19_gpu_pool)
+    set(_T19_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p81_gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T19_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall
+                ${_T19_SRCS}
+                -o ${_T19_BIN} -lm
+        DEPENDS ${_T19_SRCS}
+        COMMENT "nvcc: compiling P8.1 GPU pool gate"
+        VERBATIM
+    )
+
+    add_custom_target(t19
+        DEPENDS ${_T19_BIN}
+        COMMAND ${_T19_BIN}
+        COMMENT "P8.1 gate: GPU memory pool"
+        USES_TERMINAL
+    )
+    # ── P8.2: GPU ghost fill gate (t20) ──────────────────────────────────────
+    set(_T20_BIN ${CMAKE_BINARY_DIR}/t20_gpu_ghost)
+    set(_T20_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p82_gpu_ghost.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T20_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall
+                ${_T20_SRCS}
+                -o ${_T20_BIN} -lm
+        DEPENDS ${_T20_SRCS}
+        COMMENT "nvcc: compiling P8.2 GPU ghost fill gate"
+        VERBATIM
+    )
+
+    add_custom_target(t20
+        DEPENDS ${_T20_BIN}
+        COMMAND ${_T20_BIN}
+        COMMENT "P8.2 gate: GPU ghost fill kernels"
+        USES_TERMINAL
+    )
+    # ── P8.3: GPU WENO5-Z RHS gate (t21) ─────────────────────────────────────
+    set(_T21_BIN ${CMAKE_BINARY_DIR}/t21_gpu_rhs)
+    set(_T21_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p83_gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T21_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --extended-lambda
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T21_SRCS}
+                -o ${_T21_BIN} -lm
+        DEPENDS ${_T21_SRCS}
+        COMMENT "nvcc: compiling P8.3 GPU WENO5-Z RHS gate"
+        VERBATIM
+    )
+
+    add_custom_target(t21
+        DEPENDS ${_T21_BIN}
+        COMMAND ${_T21_BIN}
+        COMMENT "P8.3 gate: GPU WENO5-Z RHS kernels"
+        USES_TERMINAL
+    )
+    # ── P8.5: GPU CFL warp-shuffle reduction gate (t22) ──────────────────────
+    set(_T22_BIN ${CMAKE_BINARY_DIR}/t22_gpu_cfl)
+    set(_T22_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p85_gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T22_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T22_SRCS}
+                -o ${_T22_BIN} -lm
+        DEPENDS ${_T22_SRCS}
+        COMMENT "nvcc: compiling P8.5 GPU CFL warp-shuffle reduction gate"
+        VERBATIM
+    )
+
+    add_custom_target(t22
+        DEPENDS ${_T22_BIN}
+        COMMAND ${_T22_BIN}
+        COMMENT "P8.5 gate: GPU CFL warp-shuffle tree reduction"
+        USES_TERMINAL
+    )
+
+    # ── P8.4: GPU AMR prolong/restrict gate (t23) ─────────────────────────────
+    set(_T23_BIN ${CMAKE_BINARY_DIR}/t23_gpu_amr)
+    set(_T23_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p84_gpu_amr.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_amr.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T23_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T23_SRCS}
+                -o ${_T23_BIN} -lm
+        DEPENDS ${_T23_SRCS}
+        COMMENT "nvcc: compiling P8.4 GPU AMR prolong/restrict gate"
+        VERBATIM
+    )
+
+    add_custom_target(t23
+        DEPENDS ${_T23_BIN}
+        COMMAND ${_T23_BIN}
+        COMMENT "P8.4 gate: GPU AMR prolongation and restriction kernels"
+        USES_TERMINAL
+    )
+
+    # ── P8.6: CUDA Graph re-capture gate (t24) ────────────────────────────────
+    set(_T24_BIN ${CMAKE_BINARY_DIR}/t24_gpu_graph)
+    set(_T24_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p86_gpu_graph.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_graph.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T24_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T24_SRCS}
+                -o ${_T24_BIN} -lm
+        DEPENDS ${_T24_SRCS}
+        COMMENT "nvcc: compiling P8.6 CUDA Graph re-capture gate"
+        VERBATIM
+    )
+
+    add_custom_target(t24
+        DEPENDS ${_T24_BIN}
+        COMMAND ${_T24_BIN}
+        COMMENT "P8.6 gate: CUDA Graph re-capture on regrid"
+        USES_TERMINAL
+    )
+
+    # ── P9.1: GPU GpuGraphSolver vs CPU NSSolver gate (t25) ──────────────────
+    set(_T25_BIN ${CMAKE_BINARY_DIR}/t25_gpu_nssolver)
+    set(_T25_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p91_gpu_nssolver.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_graph.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/ns_solver.cpp
+        ${CMAKE_SOURCE_DIR}/src/flux_register.cpp
+        ${CMAKE_SOURCE_DIR}/src/sgs.cpp
+        ${CMAKE_SOURCE_DIR}/src/checkpoint.cpp
+        ${CMAKE_SOURCE_DIR}/src/vtk_writer.cpp
+        ${CMAKE_SOURCE_DIR}/src/live_streamer.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T25_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T25_SRCS}
+                -o ${_T25_BIN} -lm
+                $<$<BOOL:${LZ4_LIBRARY}>:-llz4>
+        DEPENDS ${_T25_SRCS}
+        COMMENT "nvcc: compiling P9.1 GPU vs CPU NSSolver gate"
+        VERBATIM
+    )
+
+    add_custom_target(t25
+        DEPENDS ${_T25_BIN}
+        COMMAND ${_T25_BIN}
+        COMMENT "P9.1 gate: GPU GpuGraphSolver vs CPU NSSolver"
+        USES_TERMINAL
+    )
+
+    # ── P10-A3: NSSolver GPU dispatch via set_gpu_solver() (t26) ─────────────
+    set(_T26_BIN ${CMAKE_BINARY_DIR}/t26_gpu_nssolver_dispatch)
+    set(_T26_SRCS
+        ${CMAKE_SOURCE_DIR}/tests/cuda/test_p10a3_gpu_nssolver.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_graph.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_ghost_fill.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_rhs.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_cfl.cu
+        ${CMAKE_SOURCE_DIR}/src/cuda/gpu_pool.cu
+        ${CMAKE_SOURCE_DIR}/src/linalg.cpp
+        ${CMAKE_SOURCE_DIR}/src/block_tree.cpp
+        ${CMAKE_SOURCE_DIR}/src/amr_operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/operators.cpp
+        ${CMAKE_SOURCE_DIR}/src/ns_solver.cpp
+        ${CMAKE_SOURCE_DIR}/src/flux_register.cpp
+        ${CMAKE_SOURCE_DIR}/src/sgs.cpp
+        ${CMAKE_SOURCE_DIR}/src/checkpoint.cpp
+        ${CMAKE_SOURCE_DIR}/src/vtk_writer.cpp
+        ${CMAKE_SOURCE_DIR}/src/live_streamer.cpp
+        ${CMAKE_SOURCE_DIR}/src/mpi_comm.cpp
+    )
+
+    add_custom_command(
+        OUTPUT  ${_T26_BIN}
+        COMMAND ${NVCC}
+                -std=c++17 -O2 -g
+                --expt-relaxed-constexpr
+                --generate-line-info
+                -arch=sm_${_ARCH}
+                -I${CMAKE_SOURCE_DIR}/include
+                -I${CMAKE_SOURCE_DIR}/include/cuda
+                -Xcompiler=-Wall,-Wno-unused-variable
+                ${_T26_SRCS}
+                -o ${_T26_BIN} -lm
+                $<$<BOOL:${LZ4_LIBRARY}>:-llz4>
+        DEPENDS ${_T26_SRCS}
+        COMMENT "nvcc: compiling P10-A3 NSSolver GPU dispatch gate"
+        VERBATIM
+    )
+
+    add_custom_target(t26
+        DEPENDS ${_T26_BIN}
+        COMMAND ${_T26_BIN}
+        COMMENT "P10-A3 gate: NSSolver GPU dispatch via set_gpu_solver()"
+        USES_TERMINAL
+    )
 else()
-    message(STATUS "nvcc not found — t5 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26 skipped")
 endif()
+
+# =============================================================================
+# P4.6 — Neural SGS closure gate (t11)
+# =============================================================================
+find_package(onnxruntime QUIET)  # requires libonnxruntime-dev or official pkg
+
+add_library(neural_sgs STATIC src/neural_sgs.cpp)
+target_include_directories(neural_sgs PUBLIC include)
+target_link_libraries(neural_sgs PUBLIC ns_solver)
+
+if(onnxruntime_FOUND)
+    target_compile_definitions(neural_sgs PUBLIC HAVE_ONNXRUNTIME)
+    target_link_libraries(neural_sgs PUBLIC onnxruntime::onnxruntime)
+    message(STATUS "ONNX Runtime found — neural SGS with ONNX inference enabled")
+else()
+    message(STATUS "ONNX Runtime not found — Vreman algebraic fallback only")
+endif()
+
+add_executable(test_neural_sgs tests/test_neural_sgs.cpp)
+target_link_libraries(test_neural_sgs PRIVATE neural_sgs m)
+
+add_test(NAME neural_sgs COMMAND test_neural_sgs)
+
+add_custom_target(t11
+    DEPENDS test_neural_sgs
+    COMMAND $<TARGET_FILE:test_neural_sgs>
+    COMMENT "P4.6 gate: Neural SGS closure"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# P4.5 — ZFP compressed checkpointing gate (t10)
+# =============================================================================
+find_package(ZFP QUIET)    # requires libzfp-dev; silently optional
+
+add_library(checkpoint_zfp STATIC src/checkpoint_zfp.cpp)
+target_include_directories(checkpoint_zfp PUBLIC include)
+target_link_libraries(checkpoint_zfp PUBLIC ns_solver)
+
+if(ZFP_FOUND)
+    target_compile_definitions(checkpoint_zfp PUBLIC HAVE_ZFP)
+    target_link_libraries(checkpoint_zfp PUBLIC zfp::zfp)
+    message(STATUS "ZFP found — compressed checkpointing with ZFP enabled")
+else()
+    message(STATUS "ZFP not found — float32 fallback only (install libzfp-dev for full support)")
+endif()
+
+add_executable(test_checkpoint_zfp tests/test_checkpoint_zfp.cpp)
+target_link_libraries(test_checkpoint_zfp PRIVATE checkpoint_zfp m)
+
+add_test(NAME checkpoint_zfp COMMAND test_checkpoint_zfp)
+
+add_custom_target(t10
+    DEPENDS test_checkpoint_zfp
+    COMMAND $<TARGET_FILE:test_checkpoint_zfp>
+    COMMENT "P4.5 gate: ZFP compressed checkpointing"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# P4.4 — Multiphase Baer-Nunziato (Allaire 5-equation) gate (t9)
+# =============================================================================
+add_library(bn_operators STATIC src/bn_operators.cpp)
+target_include_directories(bn_operators PUBLIC include)
+
+add_executable(test_multiphase tests/test_multiphase.cpp)
+target_link_libraries(test_multiphase PRIVATE bn_operators operators m)
+
+add_test(NAME multiphase COMMAND test_multiphase)
+
+add_custom_target(t9
+    DEPENDS test_multiphase
+    COMMAND $<TARGET_FILE:test_multiphase>
+    COMMENT "P4.4 gate: Allaire 5-equation two-phase model"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Phase 5 — Physical validation benchmarks (B.1 … B.9)
+# =============================================================================
+
+add_executable(test_bench_b1 tests/test_bench_b1.cpp)
+target_link_libraries(test_bench_b1 PRIVATE ns_solver m)
+add_test(NAME bench_b1 COMMAND test_bench_b1)
+
+add_custom_target(tb1
+    DEPENDS test_bench_b1
+    COMMAND $<TARGET_FILE:test_bench_b1>
+    COMMENT "B.1 benchmark: Sod shock tube"
+    USES_TERMINAL
+)
+
+add_executable(test_bench_b2 tests/test_bench_b2.cpp)
+target_link_libraries(test_bench_b2 PRIVATE ns_solver m)
+add_test(NAME bench_b2 COMMAND test_bench_b2)
+
+add_custom_target(tb2
+    DEPENDS test_bench_b2
+    COMMAND $<TARGET_FILE:test_bench_b2>
+    COMMENT "B.2 benchmark: Shu-Osher shock-entropy"
+    USES_TERMINAL
+)
+
+add_executable(test_bench_b3 tests/test_bench_b3.cpp)
+target_link_libraries(test_bench_b3 PRIVATE ns_solver m)
+add_test(NAME bench_b3 COMMAND test_bench_b3)
+
+add_custom_target(tb3
+    DEPENDS test_bench_b3
+    COMMAND $<TARGET_FILE:test_bench_b3>
+    COMMENT "B.3 benchmark: Taylor-Green vortex (3D periodic ILES)"
+    USES_TERMINAL
+)
+
+add_executable(test_bench_b4 tests/test_bench_b4.cpp)
+target_link_libraries(test_bench_b4 PRIVATE bn_operators operators m)
+add_test(NAME bench_b4 COMMAND test_bench_b4)
+
+add_custom_target(tb4
+    DEPENDS test_bench_b4
+    COMMAND $<TARGET_FILE:test_bench_b4>
+    COMMENT "B.4 benchmark: Water-air shock tube (Allaire 5-equation)"
+    USES_TERMINAL
+)
+
+add_executable(test_bench_b5 tests/test_bench_b5.cpp)
+target_link_libraries(test_bench_b5 PRIVATE ns_solver m)
+add_test(NAME bench_b5 COMMAND test_bench_b5)
+
+add_custom_target(tb5
+    DEPENDS test_bench_b5
+    COMMAND $<TARGET_FILE:test_bench_b5>
+    COMMENT "B.5 benchmark: Woodward-Colella double blast waves"
+    USES_TERMINAL
+)
+
+add_executable(test_bench_b6 tests/test_bench_b6.cpp)
+target_link_libraries(test_bench_b6 PRIVATE ns_solver m)
+add_test(NAME bench_b6 COMMAND test_bench_b6)
+
+add_custom_target(tb6
+    DEPENDS test_bench_b6
+    COMMAND $<TARGET_FILE:test_bench_b6>
+    COMMENT "B.6 benchmark: Kelvin-Helmholtz instability (2D)"
+    USES_TERMINAL
+)
+
+add_executable(test_bench_b7 tests/test_bench_b7.cpp)
+target_link_libraries(test_bench_b7 PRIVATE bn_operators operators m)
+add_test(NAME bench_b7 COMMAND test_bench_b7)
+
+add_custom_target(tb7
+    DEPENDS test_bench_b7
+    COMMAND $<TARGET_FILE:test_bench_b7>
+    COMMENT "B.7 benchmark: Rayleigh-Taylor instability (2D, Allaire)"
+    USES_TERMINAL
+)
+
+add_executable(test_bench_b8 tests/test_bench_b8.cpp)
+target_link_libraries(test_bench_b8 PRIVATE ns_solver m)
+add_test(NAME bench_b8 COMMAND test_bench_b8)
+
+add_custom_target(tb8
+    DEPENDS test_bench_b8
+    COMMAND $<TARGET_FILE:test_bench_b8>
+    COMMENT "B.8 benchmark: Lid-driven cavity Re=1000 (viscous NS)"
+    USES_TERMINAL
+)
+
+add_executable(test_bench_b9 tests/test_bench_b9.cpp)
+target_link_libraries(test_bench_b9 PRIVATE ns_solver m)
+add_test(NAME bench_b9 COMMAND test_bench_b9)
+
+add_custom_target(tb9
+    DEPENDS test_bench_b9
+    COMMAND $<TARGET_FILE:test_bench_b9>
+    COMMENT "B.9 benchmark: Turbulent channel flow Re_tau=180 (3D LES, Dynamic Smagorinsky)"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Phase 6 — In-situ browser live feed gate (P6.5)
+# =============================================================================
+add_executable(test_streamer tests/test_streamer.cpp)
+target_link_libraries(test_streamer PRIVATE ns_solver m)
+add_test(NAME streamer COMMAND test_streamer)
+
+add_custom_target(t12
+    DEPENDS test_streamer
+    COMMAND $<TARGET_FILE:test_streamer>
+    COMMENT "P6.5 gate: LiveStreamer 2D slice protocol"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Phase 7 — Multi-species Arrhenius chemistry (P7.4)
+# =============================================================================
+add_library(chemistry STATIC src/chemistry.cpp)
+target_link_libraries(chemistry PUBLIC ns_solver)
+
+add_executable(test_chemistry tests/test_chemistry.cpp)
+target_link_libraries(test_chemistry PRIVATE chemistry m)
+
+add_custom_target(t16
+    DEPENDS test_chemistry
+    COMMAND $<TARGET_FILE:test_chemistry>
+    COMMENT "P7.4 gate: multi-species Arrhenius reactive flow"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Phase 7 — IBM ghost-cell library (P7.3) — depends on ns_solver for EOS/constants
+# =============================================================================
+add_library(ibm STATIC src/ibm.cpp)
+target_link_libraries(ibm PUBLIC ns_solver)
+
+add_executable(test_ibm tests/test_ibm.cpp)
+target_link_libraries(test_ibm PRIVATE ibm m)
+
+add_custom_target(t15
+    DEPENDS test_ibm
+    COMMAND $<TARGET_FILE:test_ibm>
+    COMMENT "P7.3 gate: ghost-cell immersed boundary method"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Phase 7 — WENO5 C/F ghost fill gate (P7.2)
+# =============================================================================
+add_executable(test_weno5_cf tests/test_weno5_cf.cpp)
+target_link_libraries(test_weno5_cf PRIVATE ns_solver m)
+
+add_custom_target(t14
+    DEPENDS test_weno5_cf
+    COMMAND $<TARGET_FILE:test_weno5_cf>
+    COMMENT "P7.2 gate: 5th-order Lagrange C/F ghost fill accuracy"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Phase 7 — Wall-modelled LES gate (P7.6)
+# =============================================================================
+add_library(wall_model STATIC src/wall_model.cpp)
+target_link_libraries(wall_model PUBLIC ns_solver)
+
+add_executable(test_wmles tests/test_wmles.cpp)
+target_link_libraries(test_wmles PRIVATE wall_model m)
+
+add_custom_target(t18
+    DEPENDS test_wmles
+    COMMAND $<TARGET_FILE:test_wmles>
+    COMMENT "P7.6 gate: Wall-modelled LES (algebraic + ODE mixing-length)"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Phase 7 — Quantitative DNS TGV gate (P7.5)
+# =============================================================================
+add_executable(test_p75_dns_tgv tests/test_p75_dns_tgv.cpp)
+target_link_libraries(test_p75_dns_tgv PRIVATE ns_solver m)
+
+add_custom_target(t17
+    DEPENDS test_p75_dns_tgv
+    COMMAND $<TARGET_FILE:test_p75_dns_tgv>
+    COMMENT "P7.5 gate: Quantitative DNS TGV Re=1600 (32³ ILES, HiOCFD4 comparison)"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# Phase 7 — MPI gate test (P7.1)
+# =============================================================================
+add_executable(test_mpi tests/test_mpi.cpp)
+target_link_libraries(test_mpi PRIVATE ns_solver m)
+if(MPI_CXX_FOUND)
+    target_link_libraries(test_mpi PRIVATE MPI::MPI_CXX)
+    target_compile_definitions(test_mpi PRIVATE HAVE_MPI=1)
+endif()
+
+add_custom_target(t13
+    DEPENDS test_mpi
+    COMMAND mpirun -n 2 $<TARGET_FILE:test_mpi>
+    COMMENT "P7.1 gate: 2-rank Sod, global mass conserved to 1e-10"
+    USES_TERMINAL
+)
+
+# =============================================================================
+# apps/simulate — standalone JSON-driven simulation runner
+# =============================================================================
+add_executable(simulate apps/simulate.cpp)
+target_link_libraries(simulate PRIVATE ns_solver m)
+
+# `sim` runs simulate with sim.json from the repo root
+add_custom_target(sim
+    DEPENDS simulate
+    COMMAND $<TARGET_FILE:simulate> ${CMAKE_SOURCE_DIR}/apps/sod.json
+    COMMENT "Run Sod shock tube via apps/simulate (edit command or supply your own JSON)"
+    USES_TERMINAL
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
 
 # =============================================================================
 # Workflow aliases
@@ -161,7 +849,7 @@ endif()
 
 # b  — incremental build of all CXX targets
 add_custom_target(b
-    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7
+    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7
     COMMENT "Build all targets (incremental)"
 )
 

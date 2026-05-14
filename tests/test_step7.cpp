@@ -10,6 +10,10 @@
 // S06  VTK write produces non-empty .vtk file for each leaf
 // S07  Smagorinsky does not change global mass (mass-conservative SGS)
 // S08  Smagorinsky does not change global momentum (momentum-conservative)
+//
+// FIX #16a: node.h does not exist; cell size is in node.block->h
+// FIX S08:  use L1-norm of momentum (global_momx_l1) as scale denominator
+//           so the effective absolute tolerance is ~7e-5, not machine-eps.
 
 #include "../include/ns_solver.hpp"
 #include "../include/sgs.hpp"
@@ -36,7 +40,7 @@ static double global_mass(const NSSolver& s) {
     for (int li : s.tree.leaf_indices()) {
         auto& node = s.tree.nodes[li];
         auto& blk  = *node.block;
-        double h3  = node.h * node.h * node.h;
+        double h3  = blk.h * blk.h * blk.h;   // FIX #16a: was node.h
         for (int k=NG;k<NG+NB;++k)
         for (int j=NG;j<NG+NB;++j)
         for (int i=NG;i<NG+NB;++i)
@@ -50,11 +54,28 @@ static double global_momx(const NSSolver& s) {
     for (int li : s.tree.leaf_indices()) {
         auto& node = s.tree.nodes[li];
         auto& blk  = *node.block;
-        double h3  = node.h * node.h * node.h;
+        double h3  = blk.h * blk.h * blk.h;   // FIX #16a: was node.h
         for (int k=NG;k<NG+NB;++k)
         for (int j=NG;j<NG+NB;++j)
         for (int i=NG;i<NG+NB;++i)
             m += blk.Q[1][cell_idx(i,j,k)] * h3;
+    }
+    return m;
+}
+
+// FIX S08: L1-norm of x-momentum; used as scale denominator so that the
+// relative-error formula is well-conditioned even when the signed sum p0
+// cancels to machine epsilon (as it does for the antisymmetric TGV IC).
+static double global_momx_l1(const NSSolver& s) {
+    double m = 0;
+    for (int li : s.tree.leaf_indices()) {
+        auto& node = s.tree.nodes[li];
+        auto& blk  = *node.block;
+        double h3  = blk.h * blk.h * blk.h;
+        for (int k=NG;k<NG+NB;++k)
+        for (int j=NG;j<NG+NB;++j)
+        for (int i=NG;i<NG+NB;++i)
+            m += std::fabs(blk.Q[1][cell_idx(i,j,k)]) * h3;
     }
     return m;
 }
@@ -64,7 +85,7 @@ static double global_ke(const NSSolver& s) {
     for (int li : s.tree.leaf_indices()) {
         auto& node = s.tree.nodes[li];
         auto& blk  = *node.block;
-        double h3  = node.h * node.h * node.h;
+        double h3  = blk.h * blk.h * blk.h;   // FIX #16a: was node.h
         for (int k=NG;k<NG+NB;++k)
         for (int j=NG;j<NG+NB;++j)
         for (int i=NG;i<NG+NB;++i) {
@@ -105,7 +126,7 @@ static void s02_null_sgs_no_effect() {
     s.cfg.cfl = 0.5; s.cfg.bc = BCType::Periodic; s.cfg.verbose = false;
     s.cfg.sgs = std::make_shared<NullSGS>();
     s.init(2*acos(-1.0), tgv_ic);
-    double ke0 = global_ke(s);
+    (void)global_ke(s);  // suppress unused warning
 
     NSSolver s2;
     s2.cfg.cfl = 0.5; s2.cfg.bc = BCType::Periodic; s2.cfg.verbose = false;
@@ -144,6 +165,7 @@ static void s04_checkpoint_roundtrip() {
     NSSolver s;
     s.cfg.cfl = 0.5; s.cfg.bc = BCType::Periodic; s.cfg.verbose = false;
     s.init(1.0, [](double x,double y,double z)->Prim{
+        (void)z;
         double pi=acos(-1.0);
         Prim q; q.rho=1.225+0.05*sin(2*pi*x)*cos(2*pi*y);
         q.u=0.5*sin(2*pi*x)*cos(2*pi*y);
@@ -159,6 +181,7 @@ static void s04_checkpoint_roundtrip() {
     s2.cfg = s.cfg;
     // Re-init with same IC to create tree structure, then overwrite with checkpoint
     s2.init(1.0, [](double x,double y,double z)->Prim{
+        (void)x; (void)y; (void)z;
         Prim q; q.rho=1; q.u=0; q.v=0; q.w=0; q.p=1e5;
         q.T=q.p/(q.rho*R_GAS); q.c=sqrt(GAMMA*q.p/q.rho); return q;
     });
@@ -187,6 +210,7 @@ static void s05_checkpoint_metadata() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
     s.init(1.0,[](double x,double y,double z)->Prim{
+        (void)x; (void)y; (void)z;
         Prim q;q.rho=1.225;q.u=0;q.v=0;q.w=0;q.p=101325;
         q.T=q.p/(q.rho*R_GAS);q.c=sqrt(GAMMA*q.p/q.rho);return q;});
     for(int i=0;i<7;++i) s.advance();
@@ -197,6 +221,7 @@ static void s05_checkpoint_metadata() {
 
     NSSolver s2; s2.cfg=s.cfg;
     s2.init(1.0,[](double x,double y,double z)->Prim{
+        (void)x; (void)y; (void)z;
         Prim q;q.rho=1;q.u=0;q.v=0;q.w=0;q.p=1e5;
         q.T=q.p/(q.rho*R_GAS);q.c=sqrt(GAMMA*q.p/q.rho);return q;});
     checkpoint_load(s2, "/tmp/test_meta.bin");
@@ -211,6 +236,7 @@ static void s06_vtk_nonempty() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
     s.init(1.0,[](double x,double y,double z)->Prim{
+        (void)x; (void)y; (void)z;
         Prim q;q.rho=1.225;q.u=0;q.v=0;q.w=0;q.p=101325;
         q.T=q.p/(q.rho*R_GAS);q.c=sqrt(GAMMA*q.p/q.rho);return q;});
     s.advance();
@@ -238,17 +264,50 @@ static void s07_smag_mass_conserved() {
 }
 
 // S08: Smagorinsky is momentum-conservative (periodic domain, zero mean flow)
+// FIX S08: use L1-norm of x-momentum as scale denominator.
+// The TGV IC has zero signed sum (geometric cancellation to ~2e-16), so
+// |p0|+1e-10 ≈ 1e-10 and the old err formula had an effective absolute
+// tolerance of 1e-16 — below machine epsilon.  With p_scale ≈ 69, the
+// threshold becomes ~7e-5, which is achievable for a conservative operator.
 static void s08_smag_momentum_conserved() {
     NSSolver s;
     s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
     s.cfg.sgs = std::make_shared<SmagorinskyModel>(0.16, 0.9);
     s.init(2*acos(-1.0), tgv_ic);
-    double p0 = global_momx(s);
+    double p0      = global_momx(s);
+    double p_scale = global_momx_l1(s);   // L1-norm ≈ 69 for TGV on [0,2π]^3
     for(int i=0;i<10;++i) s.advance();
-    double p1 = global_momx(s);
-    // TGV has zero mean x-momentum; check it stays near zero
-    double err = std::fabs(p1-p0)/(std::fabs(p0)+1e-10);
+    double p1  = global_momx(s);
+    // |change in momentum| / (momentum scale) must stay below 1e-6
+    double err = std::fabs(p1-p0) / (p_scale + 1e-10);
     check("S08 Smagorinsky momentum-conservative < 1e-6", err < 1e-6, err, 1e-6);
+}
+
+// S09: DynamicSmagorinsky is mass-conservative
+static void s09_dynsmag_mass_conserved() {
+    NSSolver s;
+    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.sgs = std::make_shared<DynamicSmagorinskyModel>(0.9);
+    s.init(2*acos(-1.0), tgv_ic);
+    double m0 = global_mass(s);
+    for(int i=0;i<10;++i) s.advance();
+    double m1 = global_mass(s);
+    double err = std::fabs(m1-m0)/std::fabs(m0);
+    check("S09 DynamicSmagorinsky mass-conservative < 1e-10", err < 1e-10, err, 1e-10);
+}
+
+// S10: DynamicSmagorinsky is momentum-conservative (periodic domain)
+static void s10_dynsmag_momentum_conserved() {
+    NSSolver s;
+    s.cfg.cfl=0.5; s.cfg.bc=BCType::Periodic; s.cfg.verbose=false;
+    s.cfg.sgs = std::make_shared<DynamicSmagorinskyModel>(0.9);
+    s.init(2*acos(-1.0), tgv_ic);
+    double p0      = global_momx(s);
+    double p_scale = global_momx_l1(s);
+    for(int i=0;i<10;++i) s.advance();
+    double p1  = global_momx(s);
+    double err = std::fabs(p1-p0) / (p_scale + 1e-10);
+    check("S10 DynamicSmagorinsky momentum-conservative < 1e-6", err < 1e-6, err, 1e-6);
 }
 
 int main() {
@@ -261,6 +320,8 @@ int main() {
     s06_vtk_nonempty();
     s07_smag_mass_conserved();
     s08_smag_momentum_conserved();
+    s09_dynsmag_mass_conserved();
+    s10_dynsmag_momentum_conserved();
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail==0) printf("==> PASS  Step 7 gate cleared\n");
     else           printf("==> FAIL  Step 7 gate NOT cleared\n");

@@ -57,8 +57,12 @@ void checkpoint_save(const NSSolver& s, const std::string& path) {
         int32_t lv = node.level;
         write_pod(&h,  sizeof(h));
         write_pod(&lv, sizeof(lv));
-        for (int v = 0; v < NVAR; ++v)
-            write_pod(blk.Q[v].data(), NB2 * NB2 * NB2 * sizeof(double));
+        // P4.2: Q[v] is AoSoA internally; serialise to flat SoA for portability.
+        double tmp[NCELL];
+        for (int v = 0; v < NVAR; ++v) {
+            blk.Q[v].copy_to_flat(tmp);
+            write_pod(tmp, NCELL * sizeof(double));
+        }
     }
 
     // ── Topology section (FIX B7) ─────────────────────────────────────────────
@@ -182,7 +186,7 @@ void checkpoint_load(NSSolver& s, const std::string& path) {
     for (int ii = 0; ii < NL; ++ii) {
         auto& blk = *s.tree.nodes[final_leaves[ii]].block;
         for (int v = 0; v < NVAR; ++v)
-            blk.Q[v] = field_data[ii].Q[v];
+            blk.Q[v].assign_from_flat(field_data[ii].Q[v].data());
     }
 
     // Rebuild RK scratch arrays for the restored mesh

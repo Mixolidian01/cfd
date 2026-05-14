@@ -1,0 +1,31 @@
+{
+    // 3D Taylor-Green Vortex — turbulence decay at Re=1600 (HiOCFD4 C3.3)
+    // KE dissipation peak at t*≈9;  run to t*=18.
+    // domain_L = 2π ≈ 6.2832; refine_levels=2 → 32³ cells (fast reference run)
+    // Use refine_levels=3 for 64³ (moderate), refine_levels=4 for 128³ (DNS-grade)
+    "domain_L"          : 6.283185307,
+    "ic"                : "taylor_green",
+    "ic_ma"             : 0.1,
+    "ic_v0"             : 1.0,
+    "ic_rho0"           : 1.0,
+
+    "cfl"               : 0.4,
+    "t_end"             : 18.0,
+    "max_steps"         : 200000,
+    "bc"                : "Periodic",
+    "verbose"           : true,
+    "diag_interval"     : 100,
+    "regrid_interval"   : 0,
+    "max_level"         : 0,
+    "refine_levels"     : 2,        // 0→8³, 1→16³, 2→32³, 3→64³
+    "sgs"               : "none",   // ILES; switch to "Dynamic" for explicit LES
+
+    "stream_port"       : 8080,
+    "stream_var"        : "umag",
+    "stream_axis"       : 2,
+    "stream_pos"        : 0.5,
+    "stream_stride"     : 10,
+
+    "checkpoint_save"   : "tgv.bin",
+    "checkpoint_interval": 1000
+}
