@@ -41,6 +41,9 @@
 #include <thread>
 #include <vector>
 
+// Free function defined in viewer_html.cpp (R9-E1 extraction).
+const char* viewer_html();
+
 // ── Variable selector ────────────────────────────────────────────────────────
 enum class StreamVar : uint8_t {
     RHO      = 0,   // density ρ
@@ -203,6 +206,5 @@ private:
     void build_volume    (const BlockTree&, int step, double t, FrameBuffer3D&);
     void serialize_volume(const FrameBuffer3D&, std::vector<uint8_t>& out);
 
-    static const char* viewer_html();
     std::string viewer_html_3d();          // P6.6 — WebGPU ray marcher (needs port)
 };

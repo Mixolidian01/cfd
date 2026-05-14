@@ -73,6 +73,7 @@ add_library(ns_solver STATIC
     src/checkpoint.cpp
     src/vtk_writer.cpp
     src/live_streamer.cpp
+    src/viewer_html.cpp
     src/solver_factory.cpp
 )
 target_link_libraries(ns_solver PUBLIC operators)
@@ -165,7 +166,7 @@ if(NVCC)
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/ns_solver.cpp  ${_S}/flux_register.cpp
         ${_S}/sgs.cpp           ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
-        ${_S}/live_streamer.cpp
+        ${_S}/live_streamer.cpp ${_S}/viewer_html.cpp
     )
     set(_LZ4 "$<$<BOOL:${LZ4_LIBRARY}>:-llz4>")
     set(_WNO -Xcompiler=-Wno-unused-variable)
@@ -204,7 +205,7 @@ if(NVCC)
              ${_S}/linalg.cpp ${_S}/block_tree.cpp ${_S}/amr_operators.cpp
              ${_GPU_OPS} ${_S}/ns_solver.cpp ${_S}/flux_register.cpp
              ${_S}/sgs.cpp ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
-             ${_S}/live_streamer.cpp
+             ${_S}/live_streamer.cpp ${_S}/viewer_html.cpp
     )
     add_nvcc_gate(TARGET t8  BIN t8_ghost_cluster  COMMENT "P4.3 TBC ghost exchange"
         SRCS ${_T}/test_ghost_cluster.cu ${_S}/cuda/gpu_ghost_cluster.cu
