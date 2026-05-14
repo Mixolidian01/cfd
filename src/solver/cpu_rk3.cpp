@@ -6,6 +6,7 @@
 #include "solver/cpu_rk3.hpp"
 #include "schemes/operators.hpp"
 #include "mpi/mpi_comm.hpp"
+#include "profiling/profiler.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -32,6 +33,7 @@ static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
 }
 
 double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
+    PROFILE_SCOPE("CpuRk3/step");
     const SolverConfig& cfg = solver.cfg;
 
     const bool periodic = bc_is_periodic(cfg.bc.variant);
@@ -86,61 +88,67 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     };
 
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
-    mpi_exchange_halos(tree, solver.mpi_);
-    tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
-    if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
+    { PROFILE_SCOPE_COLOR("CpuRk3/stage1", 0xFFFF4040u);
+      mpi_exchange_halos(tree, solver.mpi_);
+      tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
+      if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for
-    for (int ii = 0; ii < NL; ++ii)
-    for (int v  = 0; v  < NVAR; ++v)
-    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
-        double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
-        const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
-        const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
-        #pragma omp simd simdlen(8)
-        for (int lane = 0; lane < CellBlock::W; ++lane)
-            qs[lane] = qn[lane] + dt * r[lane];
+      for (int ii = 0; ii < NL; ++ii)
+      for (int v  = 0; v  < NVAR; ++v)
+      for (int t  = 0; t  < CellBlock::NTILE; ++t) {
+          double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
+          const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
+          const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
+          #pragma omp simd simdlen(8)
+          for (int lane = 0; lane < CellBlock::W; ++lane)
+              qs[lane] = qn[lane] + dt * r[lane];
+      }
+      phi_stage(-1.0);
+      apply_positivity_floor(solver.Qs_);
+      solver.copy_stage_to_tree(solver.Qs_);
     }
-    phi_stage(-1.0);
-    apply_positivity_floor(solver.Qs_);
-    solver.copy_stage_to_tree(solver.Qs_);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
-    mpi_exchange_halos(tree, solver.mpi_);
-    tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
-    if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
+    { PROFILE_SCOPE_COLOR("CpuRk3/stage2", 0xFF40FF40u);
+      mpi_exchange_halos(tree, solver.mpi_);
+      tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
+      if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for
-    for (int ii = 0; ii < NL; ++ii)
-    for (int v  = 0; v  < NVAR; ++v)
-    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
-        double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
-        const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
-        const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
-        #pragma omp simd simdlen(8)
-        for (int lane = 0; lane < CellBlock::W; ++lane)
-            qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
+      for (int ii = 0; ii < NL; ++ii)
+      for (int v  = 0; v  < NVAR; ++v)
+      for (int t  = 0; t  < CellBlock::NTILE; ++t) {
+          double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
+          const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
+          const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
+          #pragma omp simd simdlen(8)
+          for (int lane = 0; lane < CellBlock::W; ++lane)
+              qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
+      }
+      phi_stage(3.0/4.0);
+      apply_positivity_floor(solver.Qs_);
+      solver.copy_stage_to_tree(solver.Qs_);
     }
-    phi_stage(3.0/4.0);
-    apply_positivity_floor(solver.Qs_);
-    solver.copy_stage_to_tree(solver.Qs_);
 
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
-    mpi_exchange_halos(tree, solver.mpi_);
-    tree_rhs(tree, solver.rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
-    if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
+    { PROFILE_SCOPE_COLOR("CpuRk3/stage3", 0xFF4040FFu);
+      mpi_exchange_halos(tree, solver.mpi_);
+      tree_rhs(tree, solver.rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
+      if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for
-    for (int ii = 0; ii < NL; ++ii)
-    for (int v  = 0; v  < NVAR; ++v)
-    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
-        double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
-        const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
-        const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
-        #pragma omp simd simdlen(8)
-        for (int lane = 0; lane < CellBlock::W; ++lane)
-            qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
+      for (int ii = 0; ii < NL; ++ii)
+      for (int v  = 0; v  < NVAR; ++v)
+      for (int t  = 0; t  < CellBlock::NTILE; ++t) {
+          double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
+          const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
+          const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
+          #pragma omp simd simdlen(8)
+          for (int lane = 0; lane < CellBlock::W; ++lane)
+              qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
+      }
+      phi_stage(1.0/3.0);
+      apply_positivity_floor(solver.Qs_);
+      solver.copy_stage_to_tree(solver.Qs_);
     }
-    phi_stage(1.0/3.0);
-    apply_positivity_floor(solver.Qs_);
-    solver.copy_stage_to_tree(solver.Qs_);
 
     tree.apply_flux_correction(dt);
     return dt;

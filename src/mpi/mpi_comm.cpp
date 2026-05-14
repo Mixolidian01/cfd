@@ -4,6 +4,7 @@
 
 #include "mpi/mpi_comm.hpp"
 #include "mesh/cell_block.hpp"
+#include "profiling/profiler.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cstring>
@@ -234,6 +235,7 @@ static void unpack_face(CellBlock& blk, FaceDir d,
 }
 
 void mpi_exchange_halos(BlockTree& tree, const MpiPartition* mpi_part) {
+    PROFILE_SCOPE("mpi_exchange_halos");
     if (!mpi_part || !mpi_part->active()) return;
     const MpiPartition& part = *mpi_part;
 

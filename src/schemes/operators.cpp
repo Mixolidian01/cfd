@@ -62,6 +62,7 @@
 #include "physics/hllc_flux.hpp"
 #include "physics/weno5_recon.hpp"
 #include "physics/diff_ops.hpp"
+#include "profiling/profiler.hpp"
 #include <cmath>
 #include <algorithm>
 #include <cassert>
@@ -500,13 +501,17 @@ void tree_rhs(BlockTree& tree,
               bool   open_bc,
               const DucrosConfig& ducros) noexcept
 {
+    PROFILE_SCOPE("tree_rhs");
+
     // ── 1. Ghost fill — always global (C/F fills need the full tree) ─────────
-    if (periodic)
-        tree.fill_ghosts_periodic(cf_coarse_zero_grad);
-    else if (open_bc)
-        tree.fill_ghosts_open(cf_coarse_zero_grad);
-    else
-        tree.fill_ghosts_wall(cf_coarse_zero_grad);
+    { PROFILE_SCOPE("tree_rhs/ghost_fill");
+      if (periodic)
+          tree.fill_ghosts_periodic(cf_coarse_zero_grad);
+      else if (open_bc)
+          tree.fill_ghosts_open(cf_coarse_zero_grad);
+      else
+          tree.fill_ghosts_wall(cf_coarse_zero_grad);
+    }
 
     const auto& leaves = tree.leaf_indices();
     const int n_leaves = (int)leaves.size();
@@ -526,19 +531,23 @@ void tree_rhs(BlockTree& tree,
     const int n_active = (int)order.size();
 
     // ── 3. Per-leaf RHS — parallel (fully independent per slot) ──────────────
+    { PROFILE_SCOPE("tree_rhs/compute");
 #pragma omp parallel for schedule(dynamic,4)
-    for (int oi = 0; oi < n_active; ++oi) {
-        const int li       = order[oi];
-        const int node_idx = leaves[li];
-        if (!tree.nodes[node_idx].has_block()) continue;  // P7.1: remote leaf
-        compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li], ducros);
-        undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
-        if (cf_coarse_zero_grad)
-            undo_cf_viscous_energy(tree, node_idx, rhs_blocks[li]);
+      for (int oi = 0; oi < n_active; ++oi) {
+          const int li       = order[oi];
+          const int node_idx = leaves[li];
+          if (!tree.nodes[node_idx].has_block()) continue;  // P7.1: remote leaf
+          compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li], ducros);
+          undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
+          if (cf_coarse_zero_grad)
+              undo_cf_viscous_energy(tree, node_idx, rhs_blocks[li]);
+      }
     }
 
     // ── 4. Flux register accumulation — serial (shared CF register writes) ───
-    accumulate_cf_fine_fluxes(tree, stage_weight, level_filter);
+    { PROFILE_SCOPE("tree_rhs/flux_accum");
+      accumulate_cf_fine_fluxes(tree, stage_weight, level_filter);
+    }
 }
 
 // =============================================================================
