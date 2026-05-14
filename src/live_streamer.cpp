@@ -17,7 +17,6 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
-#include <sstream>
 
 // POSIX sockets
 #include <arpa/inet.h>

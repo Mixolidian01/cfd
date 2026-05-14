@@ -12,7 +12,6 @@
 // Forcing a callback-based separation would require a large API surface for
 // little gain.  The pure socket utilities below are the extractable boundary.
 
-#include <cstdint>
 #include <string>
 
 // Send all bytes in [data, data+len) on fd.  Returns false on error.

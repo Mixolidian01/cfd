@@ -5,7 +5,6 @@
 #include "../include/http_server.hpp"
 
 #include <cstring>
-#include <stdexcept>
 #include <string>
 
 // POSIX
