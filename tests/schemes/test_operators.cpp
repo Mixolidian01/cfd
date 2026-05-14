@@ -16,6 +16,7 @@
 #include "physics/hllc_flux.hpp"
 #include "physics/weno5_recon.hpp"
 #include "physics/ideal_gas_eos.hpp"
+#include "physics/stiffened_gas_eos.hpp"
 #include "physics/diff_ops.hpp"
 #include "physics/face_interp.hpp"
 #include <cstdio>
@@ -737,6 +738,22 @@ static void t_dg_face_interp_policies() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// T11-SG  StiffenedGasEOS: single-phase limit (γ_a=γ_b=1.4, p∞=0) matches IdealGasEOS
+// ─────────────────────────────────────────────────────────────────────────────
+static void t11_stiffened_gas_eos() {
+    // T11: StiffenedGasEOS with gamma_a=gamma_b=1.4, p_inf=0 must match IdealGasEOS exactly.
+    {
+        StiffenedGasEOS sg{1.4, 1.4, 0.0, 0.0};
+        IdealGasEOS     ideal{};
+        const double rho=1.0, rhou=0.2, rhov=0.0, rhow=0.0, E=2.8;
+        Prim ps = sg.cons_to_prim(rho, rhou, rhov, rhow, E);
+        Prim pi = ideal.cons_to_prim(rho, rhou, rhov, rhow, E);
+        bool ok = (std::fabs(ps.p - pi.p) < 1e-12) && (std::fabs(ps.c - pi.c) < 1e-12);
+        check("T11 StiffenedGasEOS single-phase limit matches IdealGasEOS", ok);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 int main() {
     printf("=== Step 3: Layer 2 — Discrete Operators ===\n");
     printf("    Gate: HLLC correct + positive\n");
@@ -764,6 +781,7 @@ int main() {
     t_de_velocity_grad_at_face_linear();
     t_df_order4_smoke();
     t_dg_face_interp_policies();
+    t11_stiffened_gas_eos();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)

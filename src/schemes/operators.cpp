@@ -341,6 +341,13 @@ template void compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
 template void compute_rhs_typed<HllcFlux,   Weno5Recon, IdealGasEOS>(
     const CellBlock&, CellBlock&, const DucrosConfig&) noexcept;
 
+#include "physics/stiffened_gas_eos.hpp"
+
+template void compute_rhs_typed<HllcEsFlux, Weno5Recon, StiffenedGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&) noexcept;
+template void compute_rhs_typed<HllcFlux, Weno5Recon, StiffenedGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&) noexcept;
+
 // =============================================================================
 // Berger-Colella reflux: undo_cf_face_flux
 // ─────────────────────────────────────────
