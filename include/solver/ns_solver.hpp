@@ -116,8 +116,9 @@ struct SolverConfig {
         std::shared_ptr<SGSModel> sgs = nullptr;
 
         // P3.5: IMEX-ARK implicit viscous solve.
-        bool use_imex  = false;
-        int  mg_levels = 3;
+        bool   use_imex  = false;
+        int    mg_levels = 3;
+        double gamma     = GAMMA;   // ratio of specific heats; must be > 1.0
     } physics;
 
     // ── 6. Numerical sensors ──────────────────────────────────────────────

@@ -17,10 +17,12 @@
 #include "schemes/concepts.hpp"    // EquationOfState concept
 
 struct IdealGasEOS {
+    double gamma = GAMMA;   // default: 1.4; override for other gases
+
     __host__ __device__
     Prim cons_to_prim(double rho, double rhou, double rhov,
                       double rhow, double en) const noexcept {
-        return eos_cons_to_prim(rho, rhou, rhov, rhow, en);
+        return eos_cons_to_prim_g(rho, rhou, rhov, rhow, en, gamma);
     }
 };
 

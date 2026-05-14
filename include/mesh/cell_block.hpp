@@ -65,19 +65,26 @@ inline void mix_eos(double phi,
 }
 
 // ── Equation of state (inline — called millions of times) ────────────────────
-inline Prim eos_cons_to_prim(double rho, double rhou, double rhov,
-                              double rhow, double E) noexcept
+
+// Configurable-gamma variant — same formula, gamma passed as argument.
+inline Prim eos_cons_to_prim_g(double rho, double rhou, double rhov,
+                                double rhow, double E, double gamma) noexcept
 {
     Prim q;
     q.rho = rho;
     q.u   = rhou / rho;
     q.v   = rhov / rho;
     q.w   = rhow / rho;
-    q.p   = (GAMMA - 1.0) * (E - 0.5 * rho * (q.u*q.u + q.v*q.v + q.w*q.w));
+    q.p   = (gamma - 1.0) * (E - 0.5 * rho * (q.u*q.u + q.v*q.v + q.w*q.w));
     q.T   = q.p / (rho * R_GAS);
-    q.c   = std::sqrt(GAMMA * q.p / rho);
-    // gamma_m and p_inf_m keep their ideal-gas defaults
+    q.c   = std::sqrt(gamma * q.p / rho);
     return q;
+}
+
+// Fixed-gamma wrapper (gamma = GAMMA = 1.4); gamma_m and p_inf_m keep ideal-gas defaults.
+inline Prim eos_cons_to_prim(double rho, double rhou, double rhov,
+                              double rhow, double E) noexcept {
+    return eos_cons_to_prim_g(rho, rhou, rhov, rhow, E, GAMMA);
 }
 
 // Stiffened-gas variant: uses mixture γ_m and p∞_m derived from φ.

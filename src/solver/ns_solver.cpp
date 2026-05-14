@@ -93,6 +93,9 @@ void SolverConfig::validate() const {
         throw std::invalid_argument("SolverConfig: p_inf_b must be >= 0");
     if (physics.mg_levels < 1 || physics.mg_levels > 8)
         throw std::invalid_argument("SolverConfig: mg_levels must be in [1, 8]");
+    if (physics.gamma <= 1.0)
+        throw std::invalid_argument("physics.gamma must be > 1.0 (got "
+                                    + std::to_string(physics.gamma) + ")");
 }
 
 // =============================================================================

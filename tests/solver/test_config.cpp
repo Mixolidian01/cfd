@@ -40,11 +40,30 @@ static void test_bad_lts_ratio_throws() {
     catch (const std::invalid_argument&) {}
 }
 
+static void test_custom_gamma_accepted() {
+    SolverConfig cfg;
+    cfg.physics.gamma = 1.67;   // argon
+    cfg.validate();              // must not throw
+    printf("  PASS  test_custom_gamma_accepted\n");
+}
+
+static void test_sub_unity_gamma_throws() {
+    SolverConfig cfg;
+    cfg.physics.gamma = 0.8;    // unphysical
+    bool threw = false;
+    try { cfg.validate(); }
+    catch (const std::invalid_argument&) { threw = true; }
+    if (threw) printf("  PASS  test_sub_unity_gamma_throws\n");
+    else       printf("  FAIL  test_sub_unity_gamma_throws\n");
+}
+
 int main() {
     test_valid_config_passes();
     test_bad_cfl_throws();
     test_bad_max_level_throws();
     test_bad_gamma_throws();
     test_bad_lts_ratio_throws();
+    test_custom_gamma_accepted();
+    test_sub_unity_gamma_throws();
     return 0;
 }
