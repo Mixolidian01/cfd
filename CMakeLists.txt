@@ -68,6 +68,7 @@ endif()
 
 add_library(ns_solver STATIC
     src/ns_solver.cpp
+    src/cpu_rk3.cpp              # P10-A2: CpuRk3Integrator — CPU flat-tree SSP-RK3
     src/lts_advance.cpp          # R9-B: LTS member functions (advance_lts, lts_rk3_level)
     src/imex_advance.cpp         # R9-B: IMEX member function (advance_imex)
     src/flux_register.cpp

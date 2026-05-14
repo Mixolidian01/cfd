@@ -22,6 +22,7 @@
 #include "../include/sgs.hpp"
 #include "../include/amr_operators.hpp"
 #include "../include/ns_solver.hpp"
+#include "../include/cpu_rk3.hpp"
 #include "../include/operators.hpp"
 #include "../include/linalg.hpp"
 #include <algorithm>
@@ -127,34 +128,12 @@ void NSSolver::init(double domain_L,
     }
 
     alloc_scratch();
+    // P10-A2: create the CPU integrator.  GPU solver (if any) is injected by the
+    // application TU after init() returns — see set_gpu_solver().
+    integrator_ = std::make_unique<CpuRk3Integrator>(*this);
     // P8.1: GPU pool wiring (alloc+upload of IC, tree callbacks) is performed
     // by the application TU after init() returns — see gpu_pool.hpp.
     // NSSolver only stores the gpu_pool_ pointer; direct CUDA calls are in .cu TUs.
-}
-
-// =============================================================================
-// P11.3: Zhang-Shu positivity floor — ρ ≥ ε, p ≥ ε (interior cells only)
-// Applied after each SSP-RK3 stage before copy_stage_to_tree().
-// =============================================================================
-static constexpr double EPS_POS = 1e-12;
-
-static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
-    for (auto& blk : stage) {
-        for (int k = ilo(); k <= ihi(); ++k)
-        for (int j = ilo(); j <= ihi(); ++j)
-        for (int i = ilo(); i <= ihi(); ++i) {
-            const int f = cell_idx(i, j, k);
-            double rho  = blk.Q[0][f];
-            double rhou = blk.Q[1][f];
-            double rhov = blk.Q[2][f];
-            double rhow = blk.Q[3][f];
-            double E    = blk.Q[4][f];
-            if (rho < EPS_POS) { blk.Q[0][f] = rho = EPS_POS; }
-            const double ke = 0.5*(rhou*rhou + rhov*rhov + rhow*rhow) / rho;
-            if ((GAMMA - 1.0)*(E - ke) < EPS_POS)
-                blk.Q[4][f] = ke + EPS_POS / (GAMMA - 1.0);
-        }
-    }
 }
 
 // =============================================================================
@@ -217,19 +196,6 @@ double NSSolver::advance() {
     // P4.1: LTS path — only if tree has more than one level.
     if (cfg.use_lts && tree.max_leaf_level() > 0) return advance_lts();
 
-    bool periodic = bc_is_periodic(cfg.bc_variant);
-    bool open_bc  = bc_is_open(cfg.bc_variant);
-
-    // P11.6: Ducros sensor parameters threaded as a value through tree_rhs.
-    const DucrosConfig ducros{ cfg.ducros_p_threshold, cfg.ducros_blend_width };
-    // P14.1c: activate stiffened-gas mixture EOS when ACDI is on and fluids differ.
-    {
-        const bool sg = cfg.use_acdi &&
-                        (cfg.gamma_a != cfg.gamma_b ||
-                         cfg.p_inf_a != 0.0 || cfg.p_inf_b != 0.0);
-        CellBlock::set_sg_eos(sg, cfg.gamma_a, cfg.gamma_b, cfg.p_inf_a, cfg.p_inf_b);
-    }
-
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
     // topology is immutable during zero_regs → stages → apply_correction.
     // step > 0 guard: skip at step 0 (initial IC, no dynamics yet).
@@ -261,107 +227,8 @@ double NSSolver::advance() {
         gpu_q_stale_ = true;
     }
 
-    double dt = tree_cfl_dt(tree, cfg.cfl);
-    // P7.1: global CFL across all ranks
-    if (mpi_) dt = mpi_allreduce_min(dt, *mpi_);
-
-    save_Qn();
-
-    const auto& leaves = tree.leaf_indices();
-    int NL = (int)leaves.size();
-
-    // Zero registers once; each stage accumulates its SSP-RK3 weight.
-    tree.zero_flux_registers();
-
-    // P4.2: SSP-RK3 tile loops — NTILE×W covers all cells (ghosts carry through
-    // unchanged since rhs_[ii].Q[v] is zero at ghost-cell flat indices).
-    const bool use_sat = (cfg.sat_tau > 0.0) && (tree.max_leaf_level() > 0);
-
-    // P14.1: phi SSP-RK3 helper — fills phi rhs and applies one stage update.
-    // Called after tree_rhs() so phi ghosts are already filled by fill_ghosts_*.
-    // alpha < 0 → stage 1 (ps = pn + dt*L, ignores stale Qs_).
-    // alpha >= 0 → stages 2/3: ps = α*pn + (1-α)*(ps_prev + dt*L).
-    const bool use_acdi = cfg.use_acdi;
-    auto phi_stage = [&](double alpha) {
-        if (!use_acdi) return;
-        for (int ii = 0; ii < NL; ++ii) {
-            if (!tree.nodes[leaves[ii]].has_block()) continue;
-            const CellBlock& blk = *tree.nodes[leaves[ii]].block;
-            std::fill(rhs_[ii].phi_data_, rhs_[ii].phi_data_ + NCELL, 0.0);
-            phi_rhs(blk, rhs_[ii]);
-            if (cfg.acdi_ceps > 0.0)
-                phi_compression_rhs(blk, rhs_[ii], cfg.acdi_ceps);
-            const double* pn = Qn_[ii].phi_data_;
-            double*       ps = Qs_[ii].phi_data_;
-            const double* pr = rhs_[ii].phi_data_;
-            if (alpha < 0.0) {
-                for (int f = 0; f < NCELL; ++f)
-                    ps[f] = pn[f] + dt * pr[f];
-            } else {
-                const double beta = 1.0 - alpha;
-                for (int f = 0; f < NCELL; ++f)
-                    ps[f] = alpha * pn[f] + beta * (ps[f] + dt * pr[f]);
-            }
-        }
-    };
-
-    // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
-    if (mpi_) mpi_exchange_halos(tree, *mpi_);
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
-    if (use_sat) tree_sat_penalty(tree, rhs_, cfg.sat_tau);
-    for (int ii = 0; ii < NL; ++ii)
-    for (int v  = 0; v  < NVAR; ++v)
-    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
-        double*       qs = Qs_[ii].Q[v].tile_ptr(t);
-        const double* qn = Qn_[ii].Q[v].tile_ptr(t);
-        const double* r  = rhs_[ii].Q[v].tile_ptr(t);
-        #pragma omp simd simdlen(8)
-        for (int lane = 0; lane < CellBlock::W; ++lane)
-            qs[lane] = qn[lane] + dt * r[lane];
-    }
-    phi_stage(-1.0);  // stage 1: phi^(1) = phi^n + dt*L(phi^n)
-    apply_positivity_floor(Qs_);
-    copy_stage_to_tree(Qs_);
-
-    // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
-    if (mpi_) mpi_exchange_halos(tree, *mpi_);
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
-    if (use_sat) tree_sat_penalty(tree, rhs_, cfg.sat_tau);
-    for (int ii = 0; ii < NL; ++ii)
-    for (int v  = 0; v  < NVAR; ++v)
-    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
-        double*       qs = Qs_[ii].Q[v].tile_ptr(t);
-        const double* qn = Qn_[ii].Q[v].tile_ptr(t);
-        const double* r  = rhs_[ii].Q[v].tile_ptr(t);
-        #pragma omp simd simdlen(8)
-        for (int lane = 0; lane < CellBlock::W; ++lane)
-            qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
-    }
-    phi_stage(3.0/4.0);  // phi^(2) = 3/4*phi^n + 1/4*(phi^(1)+dt*L)
-    apply_positivity_floor(Qs_);
-    copy_stage_to_tree(Qs_);
-
-    // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
-    if (mpi_) mpi_exchange_halos(tree, *mpi_);
-    tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
-    if (use_sat) tree_sat_penalty(tree, rhs_, cfg.sat_tau);
-    for (int ii = 0; ii < NL; ++ii)
-    for (int v  = 0; v  < NVAR; ++v)
-    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
-        double*       qs = Qs_[ii].Q[v].tile_ptr(t);
-        const double* qn = Qn_[ii].Q[v].tile_ptr(t);
-        const double* r  = rhs_[ii].Q[v].tile_ptr(t);
-        #pragma omp simd simdlen(8)
-        for (int lane = 0; lane < CellBlock::W; ++lane)
-            qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
-    }
-    phi_stage(1.0/3.0);  // phi^(n+1) = 1/3*phi^n + 2/3*(phi^(2)+dt*L)
-    apply_positivity_floor(Qs_);
-    copy_stage_to_tree(Qs_);
-
-    // Apply time-averaged Berger-Colella correction once — last write to
-    // every leaf cell this step; topology is frozen until next advance().
-    tree.apply_flux_correction(dt);
+    // P10-A2: CPU flat-tree SSP-RK3 via CpuRk3Integrator.
+    const double dt = integrator_->step(tree, cfg.cfl);
 
     last_dt_ = dt;
     t    += dt;
@@ -517,7 +384,6 @@ void NSSolver::alloc_scratch() {
 // =============================================================================
 void NSSolver::regrid() {
     bool topology_changed = false;
-    bool periodic = bc_is_periodic(cfg.bc_variant);
 
     // ── Pass 1: refinement ────────────────────────────────────────────────
     {
