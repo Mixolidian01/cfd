@@ -20,15 +20,13 @@ static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
         for (int j = ilo(); j <= ihi(); ++j)
         for (int i = ilo(); i <= ihi(); ++i) {
             const int f = cell_idx(i, j, k);
-            double rho  = blk.Q[0][f];
-            double rhou = blk.Q[1][f];
-            double rhov = blk.Q[2][f];
-            double rhow = blk.Q[3][f];
-            double E    = blk.Q[4][f];
-            if (rho < EPS_POS) { blk.Q[0][f] = rho = EPS_POS; }
-            const double ke = 0.5*(rhou*rhou + rhov*rhov + rhow*rhow) / rho;
-            if ((GAMMA - 1.0)*(E - ke) < EPS_POS)
-                blk.Q[4][f] = ke + EPS_POS / (GAMMA - 1.0);
+            double rho_v = blk.rho(f);
+            if (rho_v < EPS_POS) { blk.rho(f) = rho_v = EPS_POS; }
+            const double ke = 0.5 * (blk.rhou(f)*blk.rhou(f)
+                                   + blk.rhov(f)*blk.rhov(f)
+                                   + blk.rhow(f)*blk.rhow(f)) / rho_v;
+            if ((GAMMA - 1.0) * (blk.E(f) - ke) < EPS_POS)
+                blk.E(f) = ke + EPS_POS / (GAMMA - 1.0);
         }
     }
 }

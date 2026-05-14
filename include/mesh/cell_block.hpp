@@ -257,6 +257,18 @@ struct alignas(64) CellBlock {
     double rhow(int i,int j,int k) const noexcept { return Q[3][cell_idx(i,j,k)]; }
     double E   (int i,int j,int k) const noexcept { return Q[4][cell_idx(i,j,k)]; }
 
+    // Flat-index variants — complement the (i,j,k) forms above.
+    double& rho (int f) noexcept { return Q[0][f]; }
+    double& rhou(int f) noexcept { return Q[1][f]; }
+    double& rhov(int f) noexcept { return Q[2][f]; }
+    double& rhow(int f) noexcept { return Q[3][f]; }
+    double& E   (int f) noexcept { return Q[4][f]; }
+    double  rho (int f) const noexcept { return Q[0][f]; }
+    double  rhou(int f) const noexcept { return Q[1][f]; }
+    double  rhov(int f) const noexcept { return Q[2][f]; }
+    double  rhow(int f) const noexcept { return Q[3][f]; }
+    double  E   (int f) const noexcept { return Q[4][f]; }
+
     // P14.1c: stiffened-gas EOS parameters — single source of truth.
     // Set via set_sg_eos(); read by prim(), cfl_dt(), and operators.cpp.
     static inline bool   sg_active_ = false;

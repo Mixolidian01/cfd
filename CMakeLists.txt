@@ -123,6 +123,7 @@ add_executable(test_config    tests/solver/test_config.cpp)
 add_executable(test_imex      tests/solver/test_imex.cpp)
 add_executable(test_sat       tests/schemes/test_sat.cpp)
 add_executable(test_ghost_fill tests/mesh/test_ghost_fill.cpp)  # R9-C
+add_executable(test_cell_block_accessors tests/mesh/test_cell_block_accessors.cpp)  # R10-T1
 
 target_link_libraries(test_linalg    PRIVATE linalg    m)
 target_link_libraries(test_block     PRIVATE block      m)
@@ -134,6 +135,7 @@ target_link_libraries(test_config    PRIVATE ns_solver  m)
 target_link_libraries(test_imex      PRIVATE ns_solver  m)
 target_link_libraries(test_sat       PRIVATE ns_solver  m)
 target_link_libraries(test_ghost_fill PRIVATE block     m)  # R9-C: libblock only
+target_link_libraries(test_cell_block_accessors PRIVATE block m)  # R10-T1
 
 add_test(NAME linalg     COMMAND test_linalg)
 add_test(NAME block      COMMAND test_block)
@@ -145,6 +147,10 @@ add_test(NAME config     COMMAND test_config)
 add_test(NAME imex       COMMAND test_imex)
 add_test(NAME sat        COMMAND test_sat)
 add_test(NAME ghost_fill COMMAND test_ghost_fill)  # R9-C
+add_test(NAME cell_block_accessors COMMAND test_cell_block_accessors)  # R10-T1
+add_custom_target(taccess DEPENDS test_cell_block_accessors
+    COMMAND $<TARGET_FILE:test_cell_block_accessors>
+    COMMENT "R10-T1: flat-index accessor test" USES_TERMINAL)
 
 # =============================================================================
 # CUDA gate tests  (t5, t8, t19–t26)  — conditional on nvcc
@@ -428,12 +434,12 @@ add_custom_target(sim
 # =============================================================================
 
 add_custom_target(b
-    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill
+    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill test_cell_block_accessors
     COMMENT "Build all targets (incremental)"
 )
 
 add_custom_target(ba
-    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill
+    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill test_cell_block_accessors
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
