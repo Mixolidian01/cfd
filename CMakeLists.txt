@@ -68,6 +68,8 @@ endif()
 
 add_library(ns_solver STATIC
     src/ns_solver.cpp
+    src/lts_advance.cpp          # R9-B: LTS member functions (advance_lts, lts_rk3_level)
+    src/imex_advance.cpp         # R9-B: IMEX member function (advance_imex)
     src/flux_register.cpp
     src/sgs.cpp
     src/checkpoint.cpp
@@ -164,7 +166,8 @@ if(NVCC)
         ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
         ${_S}/cuda/gpu_rhs.cu   ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
         ${_GPU_BASE}
-        ${_GPU_OPS}             ${_S}/ns_solver.cpp  ${_S}/flux_register.cpp
+        ${_GPU_OPS}             ${_S}/ns_solver.cpp  ${_S}/lts_advance.cpp
+                                ${_S}/imex_advance.cpp ${_S}/flux_register.cpp
         ${_S}/sgs.cpp           ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
         ${_S}/live_streamer.cpp ${_S}/viewer_html.cpp
     )
@@ -203,7 +206,8 @@ if(NVCC)
         EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_gpu.cu
              ${_S}/linalg.cpp ${_S}/block_tree.cpp ${_S}/amr_operators.cpp
-             ${_GPU_OPS} ${_S}/ns_solver.cpp ${_S}/flux_register.cpp
+             ${_GPU_OPS} ${_S}/ns_solver.cpp ${_S}/lts_advance.cpp
+             ${_S}/imex_advance.cpp ${_S}/flux_register.cpp
              ${_S}/sgs.cpp ${_S}/checkpoint.cpp ${_S}/vtk_writer.cpp
              ${_S}/live_streamer.cpp ${_S}/viewer_html.cpp
     )
