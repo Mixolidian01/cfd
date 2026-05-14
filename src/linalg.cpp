@@ -216,10 +216,11 @@ void MGSolver::prolongate3(const MGLevel& coarse, MGLevel& fine) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MGSolver public interface
 // ─────────────────────────────────────────────────────────────────────────────
-void MGSolver::build(int N, double h) {
-    assert(N % 4 == 0);
+void MGSolver::build(int N, double h, int n_levels) {
+    assert(n_levels >= 1);
+    assert(N % (1 << (n_levels - 1)) == 0);
     levels.clear();
-    for (int lv = 0; lv < 3; ++lv) {
+    for (int lv = 0; lv < n_levels; ++lv) {
         int n = N >> lv;
         MGLevel L;
         L.nx = L.ny = L.nz = n;
@@ -351,6 +352,124 @@ int MGSolver::solve(std::vector<double>& u,
     }
 
     levels[0].u.swap(u);                    // return result to caller
+    return max_cycles;
+}
+
+// =============================================================================
+// P3.5 — Helmholtz solver  (I - alpha·∇²) u = f
+//
+// The Gauss-Seidel update for each interior cell is:
+//   u_ijk = (f_ijk + (alpha/h²)·Σ_nb u_nb) / (1 + cnt·alpha/h²)
+// where cnt is the number of available neighbours (< 6 at boundaries).
+//
+// alpha = dt·(mu/rho)  has dimensions m², so alpha/h² is dimensionless.
+// The operator (I - alpha·∇²) is SPD for alpha > 0 — no mean subtraction needed.
+//
+// The V-cycle hierarchy reuses the existing restrict3/prolongate3 operators.
+// At coarser level lv the cell size is h_lv = h_fine * 2^lv, and the
+// smooth_helmholtz call uses lv.hx which is already set to h_lv by build().
+// The same dimensional alpha is passed through all levels, so a_inv_h2 = alpha/h_lv²
+// adapts automatically.
+// =============================================================================
+
+// Red-black Gauss-Seidel for (I - alpha*Lap) u = f.
+void MGSolver::smooth_helmholtz(MGLevel& lv, double alpha, int n_sweeps) {
+    int nx = lv.nx, ny = lv.ny, nz = lv.nz;
+    double h2     = lv.hx * lv.hx;
+    double a_ih2  = alpha / h2;   // alpha / h^2   (dimensionless viscous weight)
+    auto& u = lv.u; auto& f = lv.f;
+    auto idx = [&](int i, int j, int k) { return k*ny*nx + j*nx + i; };
+
+    for (int sw = 0; sw < n_sweeps; ++sw) {
+        for (int color = 0; color < 2; ++color) {
+            for (int k = 0; k < nz; ++k)
+            for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i) {
+                if (((i+j+k) & 1) != color) continue;
+                double nb = 0.0; int cnt = 0;
+                if (i > 0)    { nb += u[idx(i-1,j,k)]; ++cnt; }
+                if (i < nx-1) { nb += u[idx(i+1,j,k)]; ++cnt; }
+                if (j > 0)    { nb += u[idx(i,j-1,k)]; ++cnt; }
+                if (j < ny-1) { nb += u[idx(i,j+1,k)]; ++cnt; }
+                if (k > 0)    { nb += u[idx(i,j,k-1)]; ++cnt; }
+                if (k < nz-1) { nb += u[idx(i,j,k+1)]; ++cnt; }
+                if (cnt == 0) continue;
+                // (1 + cnt*a_ih2)*u_ijk = f_ijk + a_ih2*Σ_nb u_nb
+                u[idx(i,j,k)] = (f[idx(i,j,k)] + a_ih2 * nb) / (1.0 + cnt * a_ih2);
+            }
+        }
+    }
+}
+
+void MGSolver::vcycle_helmholtz(std::vector<double>& u_in,
+                                 const std::vector<double>& f_in,
+                                 double alpha, int n_pre, int n_post)
+{
+    int L = (int)levels.size();
+
+    // Alias fine-level arrays to caller's storage (zero copy).
+    std::swap(levels[0].u, u_in);
+    levels[0].f = f_in;
+
+    // Downstroke: pre-smooth → residual (in r) → restrict
+    for (int lv = 0; lv < L-1; ++lv) {
+        smooth_helmholtz(levels[lv], alpha, n_pre);
+
+        // Residual of (I - alpha*Lap) u = f:
+        //   r = f - u + alpha * Lap(u)
+        auto& r  = levels[lv].r;
+        auto& u  = levels[lv].u;
+        auto& fv = levels[lv].f;
+        int   sz = (int)u.size();
+        r.resize(sz);
+        apply_laplacian(levels[lv], u, r);          // r = Lap(u)
+        for (int i = 0; i < sz; ++i)
+            r[i] = fv[i] - u[i] + alpha * r[i];    // r = f - Hu
+
+        restrict3(levels[lv], levels[lv+1]);
+        zero_vec(levels[lv+1].u);
+    }
+
+    // Coarsest level: many smooths (direct-solve approximation).
+    smooth_helmholtz(levels[L-1], alpha, 200);
+
+    // Upstroke: prolongate correction → post-smooth
+    for (int lv = L-2; lv >= 0; --lv) {
+        prolongate3(levels[lv+1], levels[lv]);
+        smooth_helmholtz(levels[lv], alpha, n_post);
+    }
+
+    // Restore caller's storage.
+    std::swap(levels[0].u, u_in);
+}
+
+int MGSolver::solve_helmholtz(std::vector<double>& u,
+                               const std::vector<double>& f,
+                               double alpha,
+                               int max_cycles, double tol)
+{
+    // Helper: Helmholtz residual norm  ||f - (I - alpha*Lap) u||_2
+    auto helmholtz_resid = [&](const std::vector<double>& uu) -> double {
+        levels[0].u = uu;    // temporary alias (small block: NCELL copies OK here)
+        std::vector<double> Lu;
+        apply_laplacian(levels[0], uu, Lu);
+        double s = 0.0;
+        int sz = (int)uu.size();
+        for (int i = 0; i < sz; ++i) {
+            double ri = f[i] - uu[i] + alpha * Lu[i];
+            s += ri * ri;
+        }
+        return std::sqrt(s);
+    };
+
+    double r0 = helmholtz_resid(u);
+    if (r0 < 1e-300) return 0;
+
+    levels[0].f = f;
+    for (int cy = 0; cy < max_cycles; ++cy) {
+        vcycle_helmholtz(u, f, alpha);
+        if (helmholtz_resid(u) / r0 < tol) return cy + 1;
+    }
     return max_cycles;
 }
 
