@@ -90,9 +90,16 @@ void mpi_alloc_local_blocks(BlockTree& tree, const MpiPartition& part,
 // ── Halo exchange ─────────────────────────────────────────────────────────────
 // Fill ghost layers of local CellBlocks whose face-neighbor is on a remote rank.
 // Call once per RHS evaluation, before fill_ghosts_*.
-// No-op if part.n_ranks == 1.
-void mpi_exchange_halos(BlockTree& tree, const MpiPartition& part);
+// No-op if part is null or part->n_ranks == 1.
+void mpi_exchange_halos(BlockTree& tree, const MpiPartition* part);
 
 // ── Global reductions ─────────────────────────────────────────────────────────
-double mpi_allreduce_min(double local_val, const MpiPartition& part);
-double mpi_allreduce_sum(double local_val, const MpiPartition& part);
+// Both functions return local_val unchanged when part is null (single-rank path).
+double mpi_allreduce_min(double local_val, const MpiPartition* part);
+double mpi_allreduce_sum(double local_val, const MpiPartition* part);
+
+// ── Null-safe remote-leaf test ────────────────────────────────────────────────
+// Returns false (treat as local) when part is null; avoids scattered if(mpi_&&…).
+inline bool mpi_is_remote(const MpiPartition* part, int ni) noexcept {
+    return part && part->is_remote(ni);
+}

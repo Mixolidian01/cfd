@@ -233,8 +233,9 @@ static void unpack_face(CellBlock& blk, FaceDir d,
     assert(ptr == HALO_FACE_DOUBLES);
 }
 
-void mpi_exchange_halos(BlockTree& tree, const MpiPartition& part) {
-    if (!part.active()) return;
+void mpi_exchange_halos(BlockTree& tree, const MpiPartition* mpi_part) {
+    if (!mpi_part || !mpi_part->active()) return;
+    const MpiPartition& part = *mpi_part;
 
 #ifdef HAVE_MPI
     const int NR = part.n_ranks;
@@ -357,11 +358,11 @@ void mpi_exchange_halos(BlockTree& tree, const MpiPartition& part) {
 // Global reductions
 // =============================================================================
 
-double mpi_allreduce_min(double local_val, const MpiPartition& part) {
+double mpi_allreduce_min(double local_val, const MpiPartition* part) {
 #ifdef HAVE_MPI
-    if (!part.active()) return local_val;
+    if (!part || !part->active()) return local_val;
     double global_val;
-    MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_MIN, part.comm);
+    MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_MIN, part->comm);
     return global_val;
 #else
     (void)part;
@@ -369,11 +370,11 @@ double mpi_allreduce_min(double local_val, const MpiPartition& part) {
 #endif
 }
 
-double mpi_allreduce_sum(double local_val, const MpiPartition& part) {
+double mpi_allreduce_sum(double local_val, const MpiPartition* part) {
 #ifdef HAVE_MPI
-    if (!part.active()) return local_val;
+    if (!part || !part->active()) return local_val;
     double global_val;
-    MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_SUM, part.comm);
+    MPI_Allreduce(&local_val, &global_val, 1, MPI_DOUBLE, MPI_SUM, part->comm);
     return global_val;
 #else
     (void)part;

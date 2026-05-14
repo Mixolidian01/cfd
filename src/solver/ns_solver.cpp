@@ -143,7 +143,9 @@ void NSSolver::init(double domain_L,
 // =============================================================================
 void NSSolver::copy_tree_to_stage(std::vector<CellBlock>& stage) {
     const auto& leaves = tree.leaf_indices();
-    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
+    const int N = (int)leaves.size();
+#pragma omp parallel for
+    for (int ii = 0; ii < N; ++ii) {
         if (!tree.nodes[leaves[ii]].has_block()) continue;  // P7.1: remote leaf
         stage[ii] = *tree.nodes[leaves[ii]].block;
     }
@@ -151,7 +153,9 @@ void NSSolver::copy_tree_to_stage(std::vector<CellBlock>& stage) {
 
 void NSSolver::copy_stage_to_tree(const std::vector<CellBlock>& stage) {
     const auto& leaves = tree.leaf_indices();
-    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
+    const int N = (int)leaves.size();
+#pragma omp parallel for
+    for (int ii = 0; ii < N; ++ii) {
         if (!tree.nodes[leaves[ii]].has_block()) continue;  // P7.1: remote leaf
         *tree.nodes[leaves[ii]].block = stage[ii];
     }
@@ -341,22 +345,25 @@ void NSSolver::run() {
 StepDiag NSSolver::compute_diag() const {
     StepDiag d;
     d.step = step; d.t = t; d.dt = last_dt_;
-    d.mass = 0; d.momentum_x = 0; d.kinetic_energy = 0; d.total_energy = 0;
-    for (int li : tree.leaf_indices()) {
+    const auto& leaves_d = tree.leaf_indices();
+    const int NL_d = (int)leaves_d.size();
+    double mass = 0, mtm_x = 0, ke = 0, tot_e = 0;
+#pragma omp parallel for reduction(+:mass,mtm_x,ke,tot_e)
+    for (int idx = 0; idx < NL_d; ++idx) {
+        int li = leaves_d[idx];
         if (!tree.nodes[li].has_block()) continue;  // remote leaf on this rank
         const auto& b = *tree.nodes[li].block;
-        d.mass           += block_mass(b);
-        d.momentum_x     += block_momentum_x(b);
-        d.kinetic_energy += block_kinetic_energy(b);
-        d.total_energy   += block_total_energy(b);
+        mass  += block_mass(b);
+        mtm_x += block_momentum_x(b);
+        ke    += block_kinetic_energy(b);
+        tot_e += block_total_energy(b);
     }
+    d.mass = mass; d.momentum_x = mtm_x; d.kinetic_energy = ke; d.total_energy = tot_e;
     // P7.1: reduce across all MPI ranks
-    if (mpi_) {
-        d.mass           = mpi_allreduce_sum(d.mass,           *mpi_);
-        d.momentum_x     = mpi_allreduce_sum(d.momentum_x,     *mpi_);
-        d.kinetic_energy = mpi_allreduce_sum(d.kinetic_energy, *mpi_);
-        d.total_energy   = mpi_allreduce_sum(d.total_energy,   *mpi_);
-    }
+    d.mass           = mpi_allreduce_sum(d.mass,           mpi_);
+    d.momentum_x     = mpi_allreduce_sum(d.momentum_x,     mpi_);
+    d.kinetic_energy = mpi_allreduce_sum(d.kinetic_energy, mpi_);
+    d.total_energy   = mpi_allreduce_sum(d.total_energy,   mpi_);
     return d;
 }
 

@@ -13,7 +13,9 @@
 static constexpr double EPS_POS = 1e-12;
 
 static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
-    for (auto& blk : stage) {
+#pragma omp parallel for
+    for (int bi = 0; bi < (int)stage.size(); ++bi) {
+        auto& blk = stage[bi];
         for (int k = ilo(); k <= ihi(); ++k)
         for (int j = ilo(); j <= ihi(); ++j)
         for (int i = ilo(); i <= ihi(); ++i) {
@@ -47,7 +49,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     }
 
     double dt = tree_cfl_dt(tree, cfl);
-    if (solver.mpi_) dt = mpi_allreduce_min(dt, *solver.mpi_);
+    dt = mpi_allreduce_min(dt, solver.mpi_);
 
     solver.save_Qn();
 
@@ -86,9 +88,10 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     };
 
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
-    if (solver.mpi_) mpi_exchange_halos(tree, *solver.mpi_);
+    mpi_exchange_halos(tree, solver.mpi_);
     tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
     if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
+#pragma omp parallel for
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -104,9 +107,10 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     solver.copy_stage_to_tree(solver.Qs_);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
-    if (solver.mpi_) mpi_exchange_halos(tree, *solver.mpi_);
+    mpi_exchange_halos(tree, solver.mpi_);
     tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
     if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
+#pragma omp parallel for
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -122,9 +126,10 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     solver.copy_stage_to_tree(solver.Qs_);
 
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
-    if (solver.mpi_) mpi_exchange_halos(tree, *solver.mpi_);
+    mpi_exchange_halos(tree, solver.mpi_);
     tree_rhs(tree, solver.rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
     if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
+#pragma omp parallel for
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {

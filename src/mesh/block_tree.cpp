@@ -814,7 +814,7 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
             const FaceSpec& sp = specs[d];
 
             // P7.1: remote face already filled by mpi_exchange_halos()
-            if (ni >= 0 && mpi_ && mpi_->is_remote(ni)) continue;
+            if (ni >= 0 && mpi_is_remote(mpi_, ni)) continue;
 
             if (ni >= 0 && nodes[ni].has_block()) {
                 if (nodes[ni].level < nd.level) {
@@ -1032,7 +1032,7 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
         for (int d = 0; d < NFACES; ++d) {
             int ni = nd.neighbours[d];
             if (ni < 0 || !nodes[ni].has_block()) continue;
-            if (mpi_ && mpi_->is_remote(ni)) continue;  // P7.1: filled by mpi_exchange_halos()
+            if (mpi_is_remote(mpi_, ni)) continue;  // P7.1: filled by mpi_exchange_halos()
             const FaceSpec& sp = specs[d];
             if (nodes[ni].level < nd.level) {
                 int oct = child_octant_of(nodes, li);
@@ -1198,7 +1198,7 @@ void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
         for (int d = 0; d < NFACES; ++d) {
             int ni = nd.neighbours[d];
             if (ni < 0 || !nodes[ni].has_block()) continue;
-            if (mpi_ && mpi_->is_remote(ni)) continue;  // P7.1: filled by mpi_exchange_halos()
+            if (mpi_is_remote(mpi_, ni)) continue;  // P7.1: filled by mpi_exchange_halos()
             const FaceSpec& sp = specs[d];
             if (nodes[ni].level < nd.level) {
                 int oct = child_octant_of(nodes, li);

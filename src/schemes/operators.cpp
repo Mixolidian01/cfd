@@ -546,10 +546,15 @@ void tree_rhs(BlockTree& tree,
 // =============================================================================
 double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept
 {
+    const auto& leaves = tree.leaf_indices();
+    const int NL = (int)leaves.size();
     double dt = 1e300;
-    for (auto li : tree.leaf_indices()) {
+#pragma omp parallel for reduction(min:dt)
+    for (int i = 0; i < NL; ++i) {
+        int li = leaves[i];
         if (!tree.nodes[li].has_block()) continue;  // P7.1: remote leaf
-        dt = std::min(dt, tree.nodes[li].block->cfl_dt(cfl));
+        double cdt = tree.nodes[li].block->cfl_dt(cfl);
+        if (cdt < dt) dt = cdt;
     }
     return dt;
 }
@@ -557,11 +562,16 @@ double tree_cfl_dt(const BlockTree& tree, double cfl) noexcept
 // P4.1: minimum CFL dt over leaves at a specific refinement level.
 double level_cfl_dt(const BlockTree& tree, int level, double cfl) noexcept
 {
+    const auto& leaves = tree.leaf_indices();
+    const int NL = (int)leaves.size();
     double dt = 1e300;
-    for (auto li : tree.leaf_indices()) {
+#pragma omp parallel for reduction(min:dt)
+    for (int i = 0; i < NL; ++i) {
+        int li = leaves[i];
         if (tree.nodes[li].level != level) continue;
         if (!tree.nodes[li].has_block()) continue;  // P7.1: remote leaf
-        dt = std::min(dt, tree.nodes[li].block->cfl_dt(cfl));
+        double cdt = tree.nodes[li].block->cfl_dt(cfl);
+        if (cdt < dt) dt = cdt;
     }
     return dt;
 }
