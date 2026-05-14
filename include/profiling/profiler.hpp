@@ -38,7 +38,7 @@
 #elif defined(ENABLE_TRACY)
 #  include <tracy/Tracy.hpp>
 #  define PROFILE_SCOPE(name)             ZoneScopedN(name)
-#  define PROFILE_SCOPE_COLOR(name, argb) ZoneScopedNC(name, (argb))
+#  define PROFILE_SCOPE_COLOR(name, argb) ZoneScopedNC(name, ((argb) & 0x00FFFFFFu))
 
 #else
 #  define PROFILE_SCOPE(name)             ((void)0)
