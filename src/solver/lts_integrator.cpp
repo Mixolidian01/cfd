@@ -55,52 +55,49 @@ void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
 
     // Stage 1: Q^(1) = Q^n + dt * L(Q^n)
     tree_rhs(tree, solver.rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc, ducros);
-#pragma omp parallel for
-    for (int ii = 0; ii < NL; ++ii) {
+#pragma omp parallel for collapse(3) schedule(static)
+    for (int ii = 0; ii < NL; ++ii)
+    for (int v  = 0; v  < NVAR; ++v)
+    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
         if (tree.nodes[leaves[ii]].level != level) continue;
-        for (int v = 0; v < NVAR; ++v)
-        for (int t = 0; t < CellBlock::NTILE; ++t) {
-            double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
-            const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
-            const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
-            #pragma omp simd simdlen(8)
-            for (int lane = 0; lane < CellBlock::W; ++lane)
-                qs[lane] = qn[lane] + dt * r[lane];
-        }
+        double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
+        const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
+        const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
+        #pragma omp simd simdlen(8)
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            qs[lane] = qn[lane] + dt * r[lane];
     }
     copy_stage_to_tree_level(solver.Qs_, level);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))
     tree_rhs(tree, solver.rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc, ducros);
-#pragma omp parallel for
-    for (int ii = 0; ii < NL; ++ii) {
+#pragma omp parallel for collapse(3) schedule(static)
+    for (int ii = 0; ii < NL; ++ii)
+    for (int v  = 0; v  < NVAR; ++v)
+    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
         if (tree.nodes[leaves[ii]].level != level) continue;
-        for (int v = 0; v < NVAR; ++v)
-        for (int t = 0; t < CellBlock::NTILE; ++t) {
-            double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
-            const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
-            const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
-            #pragma omp simd simdlen(8)
-            for (int lane = 0; lane < CellBlock::W; ++lane)
-                qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
-        }
+        double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
+        const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
+        const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
+        #pragma omp simd simdlen(8)
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
     }
     copy_stage_to_tree_level(solver.Qs_, level);
 
     // Stage 3: Q^{n+1} = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))
     tree_rhs(tree, solver.rhs_, periodic, sub_weight * (2.0/3.0), level, coarse_mode, open_bc, ducros);
-#pragma omp parallel for
-    for (int ii = 0; ii < NL; ++ii) {
+#pragma omp parallel for collapse(3) schedule(static)
+    for (int ii = 0; ii < NL; ++ii)
+    for (int v  = 0; v  < NVAR; ++v)
+    for (int t  = 0; t  < CellBlock::NTILE; ++t) {
         if (tree.nodes[leaves[ii]].level != level) continue;
-        for (int v = 0; v < NVAR; ++v)
-        for (int t = 0; t < CellBlock::NTILE; ++t) {
-            double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
-            const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
-            const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
-            #pragma omp simd simdlen(8)
-            for (int lane = 0; lane < CellBlock::W; ++lane)
-                qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
-        }
+        double*       qs = solver.Qs_[ii].Q[v].tile_ptr(t);
+        const double* qn = solver.Qn_[ii].Q[v].tile_ptr(t);
+        const double* r  = solver.rhs_[ii].Q[v].tile_ptr(t);
+        #pragma omp simd simdlen(8)
+        for (int lane = 0; lane < CellBlock::W; ++lane)
+            qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
     }
     copy_stage_to_tree_level(solver.Qs_, level);
 }

@@ -92,7 +92,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
       mpi_exchange_halos(tree, solver.mpi_);
       tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
-#pragma omp parallel for
+#pragma omp parallel for collapse(3) schedule(static)
       for (int ii = 0; ii < NL; ++ii)
       for (int v  = 0; v  < NVAR; ++v)
       for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -113,7 +113,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
       mpi_exchange_halos(tree, solver.mpi_);
       tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
-#pragma omp parallel for
+#pragma omp parallel for collapse(3) schedule(static)
       for (int ii = 0; ii < NL; ++ii)
       for (int v  = 0; v  < NVAR; ++v)
       for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -134,7 +134,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
       mpi_exchange_halos(tree, solver.mpi_);
       tree_rhs(tree, solver.rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
-#pragma omp parallel for
+#pragma omp parallel for collapse(3) schedule(static)
       for (int ii = 0; ii < NL; ++ii)
       for (int v  = 0; v  < NVAR; ++v)
       for (int t  = 0; t  < CellBlock::NTILE; ++t) {
