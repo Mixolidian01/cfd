@@ -19,6 +19,7 @@
 //   IC, confirming the IC itself is consistent.
 
 #include "solver/ns_solver.hpp"
+#include "solver/solver_result.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -155,6 +156,24 @@ static void t04_explicit_energy_conservation()
 }
 
 // =============================================================================
+// T05: advance_result() returns ok with dt > 0 for a valid solver
+// =============================================================================
+static void t05_advance_result_ok() {
+    NSSolver s;
+    s.cfg.time.cfl = 0.5; s.cfg.time.max_steps = 1; s.cfg.time.t_end = 1e30;
+    s.cfg.bc.variant = PeriodicBC{}; s.cfg.io.verbose = false;
+    s.cfg.io.diag_interval = 100;
+    s.init(1.0, [](double x, double y, double z) -> Prim {
+        (void)y; (void)z; (void)x;
+        return Prim{1.0, 0.0, 0.0, 0.0, 2.5, 0.0, 0.0};
+    });
+    auto r = s.advance_result();
+    check("T05 advance_result ok() for valid solver", r.ok());
+    check("T05 advance_result dt > 0", r.ok() && r.value() > 0.0,
+          r.ok() ? r.value() : -1.0, 0.0);
+}
+
+// =============================================================================
 // main
 // =============================================================================
 int main()
@@ -165,6 +184,7 @@ int main()
 
     t01_imex_energy_conservation();
     t04_explicit_energy_conservation();
+    t05_advance_result_ok();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)

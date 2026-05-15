@@ -14,6 +14,7 @@
 // dt is recomputed from CFL at the start of each step.
 
 #include "mesh/bc_types.hpp"
+#include "solver/solver_result.hpp"
 #include <memory>
 #include <stdexcept>
 #include "models/sgs.hpp"
@@ -188,6 +189,7 @@ struct NSSolver {
               const std::function<double(double,double,double)>* phi_ic = nullptr);
     void run();
     double advance();
+    SolverResult<double> advance_result() noexcept;
     void regrid();
 
     StepDiag compute_diag() const;

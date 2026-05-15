@@ -324,6 +324,23 @@ double NSSolver::advance() {
 // advance_imex — moved to src/imex_advance.cpp (R9-B)
 
 // =============================================================================
+// advance_result — non-throwing wrapper around advance()
+// =============================================================================
+SolverResult<double> NSSolver::advance_result() noexcept {
+    try {
+        double dt = advance();
+        if (dt <= 0.0 || std::isnan(dt) || std::isinf(dt))
+            return SolverResult<double>::err(
+                SolverError{"advance() returned non-positive dt: " + std::to_string(dt), 1});
+        return SolverResult<double>::ok(dt);
+    } catch (const std::exception& ex) {
+        return SolverResult<double>::err(SolverError{ex.what(), 2});
+    } catch (...) {
+        return SolverResult<double>::err(SolverError{"unknown exception in advance()", 3});
+    }
+}
+
+// =============================================================================
 // run
 // =============================================================================
 void NSSolver::run() {
