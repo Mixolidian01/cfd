@@ -181,24 +181,22 @@ static void accumulate_face_typed(const Prim* pc, const double* duc,
                                    CellBlock& rhs, double ih,
                                    int n, int a, int b) noexcept {
     constexpr double kep_threshold = 1.0e-8;
-    // face_lr_idx / face_to_ijk logic inlined here (static templates in
-    // convective_rhs.cpp have TU-private linkage; duplicate minimal helpers).
-    auto face_lr = [](int nn, int aa, int bb) -> std::pair<int,int> {
-        if constexpr (DIR == Axis::X) return {cell_idx(nn,  aa,bb), cell_idx(nn+1,aa,bb)};
-        if constexpr (DIR == Axis::Y) return {cell_idx(aa,nn,  bb), cell_idx(aa,nn+1,bb)};
-        return                              {cell_idx(aa,bb,nn  ), cell_idx(aa,bb,nn+1)};
-    };
+
+    // R6: cell_idx_axis replaces the inlined face_lr lambda; axis_view replaces
+    // the Q[v][Li/Ri] accumulation below.
+    const int Li = cell_idx_axis<DIR>(n,   a, b);
+    const int Ri = cell_idx_axis<DIR>(n+1, a, b);
+    const Prim& pL = pc[Li];
+    const Prim& pR = pc[Ri];
+    const double theta = std::max(duc[Li], duc[Ri]);
+    const bool is_bnd = (n < ilo() || n+1 > ihi());
+
+    // face_to_ijk still needed for Recon functor (uses natural i,j,k).
     auto face_to_ijk = [](int nn, int aa, int bb, int& xi, int& yi, int& zi) {
         if constexpr (DIR == Axis::X) { xi = nn; yi = aa; zi = bb; }
         else if constexpr (DIR == Axis::Y) { xi = aa; yi = nn; zi = bb; }
         else                               { xi = aa; yi = bb; zi = nn; }
     };
-
-    const auto [Li, Ri] = face_lr(n, a, b);
-    const Prim& pL = pc[Li];
-    const Prim& pR = pc[Ri];
-    const double theta = std::max(duc[Li], duc[Ri]);
-    const bool is_bnd = (n < ilo() || n+1 > ihi());
 
     std::array<double,NVAR> F;
     if (!is_bnd && theta < kep_threshold) {
@@ -213,8 +211,6 @@ static void accumulate_face_typed(const Prim* pc, const double* duc,
             Recon<DIR>{}(pc, xi, yi, zi, qL, qR);
             Fs = Flux<DIR>{}(qL, qR);
         } else {
-            // is_wall_ghost detection: exact p equality + antisymmetric velocities.
-            // Reproduce inline (static helper is TU-private in convective_rhs.cpp).
             bool wall = (pL.p == pR.p);
             if (wall) {
                 auto antisym = [](double a_, double b_) {
@@ -228,10 +224,12 @@ static void accumulate_face_typed(const Prim* pc, const double* duc,
         const double om = 1.0 - th;
         for (int v = 0; v < NVAR; ++v) F[v] = om * Fk[v] + th * Fs[v];
     }
+
+    // R6: axis_view accumulation — no per-axis dispatch.
     if (n >= ilo())
-        for (int v = 0; v < NVAR; ++v) rhs.Q[v][Li] -= ih * F[v];
+        for (int v = 0; v < NVAR; ++v) rhs.axis_view<DIR>(v)(n,   a, b) -= ih * F[v];
     if (n+1 <= ihi())
-        for (int v = 0; v < NVAR; ++v) rhs.Q[v][Ri] += ih * F[v];
+        for (int v = 0; v < NVAR; ++v) rhs.axis_view<DIR>(v)(n+1, a, b) += ih * F[v];
 }
 
 template<template<Axis> class Flux, template<Axis> class Recon>
@@ -380,9 +378,9 @@ static void undo_cf_one_face(const CellBlock& blk, CellBlock& rhs, int delta) no
         const Prim ghost    = blk.prim(gi, gj, gk);
         const auto F = (delta > 0) ? hllc_es_flux_t<DIR>(interior, ghost)
                                    : hllc_es_flux_t<DIR>(ghost,    interior);
-        const int idx = cell_idx(ci, cj, ck);
+        // R6: axis_view — interior cell is always (bound, a, b) in axis coords.
         for (int v = 0; v < NVAR; ++v)
-            rhs.Q[v][idx] += sign * ih * F[v];
+            rhs.axis_view<DIR>(v)(bound, a, b) += sign * ih * F[v];
     }
 }
 
