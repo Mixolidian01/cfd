@@ -104,7 +104,7 @@ static void a02_restrict_conservative() {
 
 // A03: regrid (refine then restrict) preserves global mass
 static void a03_regrid_conserves_mass() {
-    auto ic = [](double x, double y, double z) -> Prim {
+    auto ic = [](double x, double y, double /*z*/) -> Prim {
         double pi = acos(-1.0);
         Prim q; q.rho = 1.0 + 0.1*sin(2*pi*x)*cos(2*pi*y);
         q.u=0; q.v=0; q.w=0; q.p=1e5;
@@ -113,7 +113,6 @@ static void a03_regrid_conserves_mass() {
     NSSolver s;
     s.cfg.bc.variant = PeriodicBC{}; s.cfg.io.verbose=false;
     s.init(1.0, ic);
-    double m0 = global_mass(s);
 
     // Manually trigger refine on first block and restrict back
     int root = s.tree.root();
@@ -143,7 +142,7 @@ static void a03_regrid_conserves_mass() {
 
 // A04: NSSolver::advance() conserves mass with no regrid
 static void a04_advance_conserves_mass() {
-    auto ic = [](double x, double y, double z) -> Prim {
+    auto ic = [](double x, double y, double /*z*/) -> Prim {
         double pi = acos(-1.0);
         Prim q; q.rho=1.225+0.05*sin(2*pi*x)*cos(2*pi*y);
         q.u=0.5*sin(2*pi*x)*cos(2*pi*y);
@@ -164,8 +163,7 @@ static void a04_advance_conserves_mass() {
 
 // A05: mass conserved through regrid step
 static void a05_regrid_step_conserves_mass() {
-    auto ic = [](double x, double y, double z) -> Prim {
-        double pi = acos(-1.0);
+    auto ic = [](double x, double y, double /*z*/) -> Prim {
         Prim q; q.rho=1.225+0.2*exp(-20*((x-0.5)*(x-0.5)+(y-0.5)*(y-0.5)));
         q.u=0; q.v=0; q.w=0; q.p=101325;
         q.T=q.p/(q.rho*R_GAS); q.c=sqrt(GAMMA*q.p/q.rho); return q;

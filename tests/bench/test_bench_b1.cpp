@@ -68,7 +68,6 @@ static double f_wave(double p, double pk, double rhok, double ck, double gam) {
 }
 
 static double df_wave(double p, double pk, double rhok, double ck, double gam) {
-    const double g1 = (gam - 1.0) / (2.0 * gam);
     const double g2 = (gam + 1.0) / (2.0 * gam);
     const double g5 = 2.0 / (gam + 1.0);
     const double g6 = (gam - 1.0) / (gam + 1.0);

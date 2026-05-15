@@ -239,8 +239,7 @@ void BlockTree::init(double L) {
     nodes.clear();
     free_list_.clear();
     leaf_dirty_ = true;
-    int root_idx = alloc_node();
-    assert(root_idx == 0);
+    assert(alloc_node() == 0);
     auto& root  = nodes[0];
     root.level  = 0;
     root.morton = 0;

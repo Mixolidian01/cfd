@@ -98,7 +98,7 @@ int main() {
     solver.cfg.io.diag_interval = 999;
     solver.set_streamer(&streamer);
 
-    solver.init(1.0, [](double x, double y, double z) -> Prim {
+    solver.init(1.0, [](double x, double /*y*/, double /*z*/) -> Prim {
         Prim q{};
         q.rho = (x < 0.5) ? 1.0 : 0.125;
         q.u   = 0.0; q.v = 0.0; q.w = 0.0;
