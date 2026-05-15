@@ -280,11 +280,18 @@ endif()
 # =============================================================================
 
 # ── P4.4: Multiphase Baer-Nunziato / Allaire 5-equation (t9) ─────────────────
-add_library(bn_operators STATIC src/models/bn_operators.cpp)
+add_library(bn_operators STATIC
+    src/models/bn_operators.cpp
+    src/models/bn_ghost_fill.cpp
+    src/models/bn_solver.cpp)
 target_include_directories(bn_operators PUBLIC include)
+target_link_libraries(bn_operators PUBLIC block)
 add_executable(test_multiphase tests/models/test_multiphase.cpp)
 target_link_libraries(test_multiphase PRIVATE bn_operators operators m)
 add_test(NAME multiphase COMMAND test_multiphase)
+add_executable(test_bn_solver tests/models/test_bn_solver.cpp)
+target_link_libraries(test_bn_solver PRIVATE bn_operators m)
+add_test(NAME bn_solver COMMAND test_bn_solver)
 add_custom_target(t9 DEPENDS test_multiphase
     COMMAND $<TARGET_FILE:test_multiphase>
     COMMENT "P4.4 gate: Allaire 5-equation two-phase model" USES_TERMINAL)
