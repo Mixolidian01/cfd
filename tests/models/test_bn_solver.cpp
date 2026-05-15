@@ -5,6 +5,9 @@
 // BN06: Multi-block ghost fill — 2x2x2 periodic domain, ghost values match
 //       neighbour interior after bn_fill_ghosts_tree().
 // BN07: Multi-block mass conservation — 2x2x2 domain, 10 steps < 1e-12 drift.
+// BN08: Coarse-fine ghost fill — 2-level tree (7 level-1 + 8 level-2 leaves):
+//       fine ghosts on C/F face == coarse interior value;
+//       coarse ghosts on C/F face == 2x2 avg of fine interior (all same → same val).
 
 #include "models/bn_solver.hpp"
 #include <cstdio>
@@ -183,12 +186,84 @@ static void bn07_multi_block_mass() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BN08: 2-level AMR coarse-fine ghost fill correctness.
+// ─────────────────────────────────────────────────────────────────────────────
+static void bn08_cf_ghost_fill() {
+    printf("\n-- BN08  Coarse-fine ghost fill (2-level periodic tree) --\n");
+
+    // Build: root → 8 level-1 blocks, then refine oct-0 → 8 level-2 blocks.
+    BNSolver s;
+    s.bc = PeriodicBC{};
+    s.tree.set_periodic(true);
+    s.tree.init(1.0);
+    s.tree.refine(0);
+    int fc0 = s.tree.nodes[0].first_child;  // first level-1 child (oct 0)
+    s.tree.refine(fc0);                     // → 8 level-2 grandchildren (15 leaves)
+    s.tree.rebuild_neighbours();
+    s.eos = make_water_air_eos();
+    s.t = 0.0; s.step = 0;
+    s.alloc_scratch();
+
+    const auto& leaves = s.tree.leaf_indices();
+
+    // Level-1 blocks → value 10.0; level-2 blocks → value 20.0.
+    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
+        double val = (s.tree.nodes[leaves[ii]].level == 1) ? 10.0 : 20.0;
+        for (int v = 0; v < NVAR_BN; ++v)
+            s.Q[ii].Q[v].assign(NCELL, val);
+    }
+
+    bn_fill_ghosts_tree(s.tree, s.Q, s.bc);
+
+    // Scan for C/F interfaces and check ghost values.
+    // fine (level-2) ghosts on C/F face ← coarse value 10.0
+    // coarse (level-1) ghosts on C/F face ← fine avg = 20.0
+    bool fine_ghost_ok   = false;
+    bool coarse_ghost_ok = false;
+
+    const int jc = NG + NB/2, kc = NG + NB/2;  // center transverse indices
+    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
+        const auto& nd = s.tree.nodes[leaves[ii]];
+        for (int d = 0; d < NFACES; ++d) {
+            int ni = nd.neighbours[d];
+            if (ni < 0 || !s.tree.nodes[ni].is_leaf()) continue;
+            int ni_lev = s.tree.nodes[ni].level;
+            if (ni_lev == nd.level) continue;  // skip same-level
+
+            int axis  = d >> 1;
+            int side  = d & 1;
+            int g0    = side ? (NB + NG) : (NG - 1);  // ghost layer 0
+
+            // Ghost cell flat index at face center.
+            int fi = (axis == 0) ? cell_idx(g0, jc, kc)
+                   : (axis == 1) ? cell_idx(jc, g0, kc)
+                   :               cell_idx(jc, kc, g0);
+
+            double ghost_val = s.Q[ii].Q[0][fi];
+
+            if (nd.level == 2 && ni_lev == 1) {
+                // Fine block: ghost should == coarse value 10.0
+                if (std::fabs(ghost_val - 10.0) < 1e-14) fine_ghost_ok = true;
+            }
+            if (nd.level == 1 && ni_lev == 2) {
+                // Coarse block: ghost should == fine avg 20.0
+                if (std::fabs(ghost_val - 20.0) < 1e-14) coarse_ghost_ok = true;
+            }
+        }
+    }
+
+    check("BN08 fine ghost == coarse interior (10.0)", fine_ghost_ok);
+    check("BN08 coarse ghost == fine interior avg (20.0)", coarse_ghost_ok);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 int main() {
-    printf("=== BNSolver gate tests (BN05–BN07) ===\n");
+    printf("=== BNSolver gate tests (BN05–BN08) ===\n");
 
     bn05_single_block_mass();
     bn06_multi_block_ghost_fill();
     bn07_multi_block_mass();
+    bn08_cf_ghost_fill();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)

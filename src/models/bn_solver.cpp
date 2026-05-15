@@ -75,7 +75,7 @@ void BNSolver::alloc_scratch() {
     for (int li : leaves) {
         const auto& nd = tree.nodes[li];
         double ox = nd.ox, oy = nd.oy, oz = nd.oz;
-        double h  = nd.block ? nd.block->h : tree.domain_L() / NB;
+        double h  = tree.domain_L() / (NB * (1u << nd.level));
         Q.emplace_back(ox, oy, oz, h);
         rhs_.emplace_back(ox, oy, oz, h);
         Qn_.emplace_back(ox, oy, oz, h);

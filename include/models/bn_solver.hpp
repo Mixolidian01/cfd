@@ -5,9 +5,10 @@
 //   tree        — AMR topology (BlockTree); leaf order drives all arrays.
 //   Q/rhs_/Qn_/Qs_ — one BNCellBlock per leaf slot (indexed by leaf_indices()[ii]).
 //
-// Ghost fill: bn_fill_ghosts_tree() handles same-level periodic and wall BCs.
-//   Coarse-fine ghost fill is not yet implemented; BNSolver currently enforces
-//   a flat tree (max_level=0 or uniform refinement only).
+// Ghost fill: bn_fill_ghosts_tree() handles same-level, coarse-fine, and
+//   domain-boundary (periodic/wall) BCs.
+//   C/F fine←coarse: piecewise-constant (0th-order) from coarse interior cell.
+//   C/F coarse←fine: 2×2 cell average over fine interior (conservative).
 //
 // Time integration: SSP-RK3 (Shu-Osher 1988).
 
