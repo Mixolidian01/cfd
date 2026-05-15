@@ -179,21 +179,12 @@ struct BNFaceFlux {
 // in the RHS loop (see bn_operators.cpp).
 //
 // Sign convention: F is the flux in the +axis direction.
-// Davis wave-speed estimates; contact speed sStar from mixture momentum balance.
+// Roe-averaged wave-speed bounds; contact speed sStar from mixture momentum balance.
 inline BNFaceFlux hllc_bn_flux(const Prim2Phase& L, const Prim2Phase& R,
                                 int axis, const BNEosParams& eos) noexcept
 {
     const double uL = (axis==0)?L.u:(axis==1)?L.v:L.w;
     const double uR = (axis==0)?R.u:(axis==1)?R.v:R.w;
-
-    // Davis wave-speed bounds (mixture sound speed)
-    const double sL = std::min(uL - L.c_mix, uR - R.c_mix);
-    const double sR = std::max(uL + L.c_mix, uR + R.c_mix);
-
-    // Contact speed from mixture momentum balance (Toro §10.4)
-    const double numer = R.p - L.p + L.rho*(sL-uL)*uL - R.rho*(sR-uR)*uR;
-    const double denom = L.rho*(sL-uL) - R.rho*(sR-uR);
-    const double sStar = (std::abs(denom) > 1.0e-300) ? numer/denom : 0.5*(uL+uR);
 
     // Helper: reconstruct total energy from Prim2Phase
     auto total_energy = [&](const Prim2Phase& q) -> double {
@@ -203,6 +194,33 @@ inline BNFaceFlux hllc_bn_flux(const Prim2Phase& L, const Prim2Phase& R,
                            + a2      *(q.p + eos.gamma2*eos.pinf2)/(eos.gamma2-1.0);
         return KE + rho_e;
     };
+
+    // Roe-averaged wave-speed bounds — matches HllcFlux<DIR> in the single-phase
+    // limit (α₁=1, pinf₁=0): same Roe-averaged ρ/u/H/c as that functor.
+    const double sqL = std::sqrt(L.rho), sqR = std::sqrt(R.rho);
+    const double isq = 1.0 / (sqL + sqR);
+    const double uh  = (sqL*L.u + sqR*R.u)*isq;
+    const double vh  = (sqL*L.v + sqR*R.v)*isq;
+    const double wh  = (sqL*L.w + sqR*R.w)*isq;
+    const double u_h = (axis==0)?uh:(axis==1)?vh:wh;   // normal component
+    // Mixture γ via inverse-weight α formula (reduces to γ₁ when α₁=1)
+    const double gmL = 1.0 + 1.0/(L.alpha1/(eos.gamma1-1.0)+(1.0-L.alpha1)/(eos.gamma2-1.0));
+    const double gmR = 1.0 + 1.0/(R.alpha1/(eos.gamma1-1.0)+(1.0-R.alpha1)/(eos.gamma2-1.0));
+    const double gm_h = 0.5*(gmL + gmR);
+    // Specific total enthalpy H=(E+p)/ρ; Roe-average of H
+    const double HL = (total_energy(L) + L.p) / L.rho;
+    const double HR = (total_energy(R) + R.p) / R.rho;
+    const double H_h = (sqL*HL + sqR*HR)*isq;
+    const double c2h = (gm_h - 1.0)*(H_h - 0.5*(uh*uh + vh*vh + wh*wh));
+    const double ch  = (c2h > 0.0) ? std::sqrt(c2h) : 0.5*(L.c_mix + R.c_mix);
+
+    const double sL = std::min(uL - L.c_mix, u_h - ch);
+    const double sR = std::max(uR + R.c_mix, u_h + ch);
+
+    // Contact speed from mixture momentum balance (Toro §10.4)
+    const double numer = R.p - L.p + L.rho*(sL-uL)*uL - R.rho*(sR-uR)*uR;
+    const double denom = L.rho*(sL-uL) - R.rho*(sR-uR);
+    const double sStar = (std::abs(denom) > 1.0e-300) ? numer/denom : 0.5*(uL+uR);
 
     // Physical flux F(Q) for the 6 conservative variables
     auto phys_flux = [&](const Prim2Phase& q) -> std::array<double,6> {
