@@ -207,6 +207,16 @@ const std::vector<int>& BlockTree::leaf_indices() const {
     return leaf_cache_;
 }
 
+const std::vector<int>& BlockTree::morton_leaf_indices() const {
+    const auto& leaves = leaf_indices();   // rebuilds leaf_cache_ if dirty
+    if (morton_leaf_cache_.size() == leaves.size())
+        return morton_leaf_cache_;
+    morton_leaf_cache_ = leaves;
+    std::sort(morton_leaf_cache_.begin(), morton_leaf_cache_.end(),
+              [this](int a, int b) { return nodes[a].morton < nodes[b].morton; });
+    return morton_leaf_cache_;
+}
+
 int BlockTree::max_leaf_level() const noexcept {
     int lmax = 0;
     for (int li : leaf_indices())

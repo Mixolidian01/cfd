@@ -520,21 +520,27 @@ void tree_rhs(BlockTree& tree,
           tree.fill_ghosts_wall(cf_coarse_zero_grad);
     }
 
-    const auto& leaves = tree.leaf_indices();
-    const int n_leaves = (int)leaves.size();
+    const auto& leaves  = tree.leaf_indices();
+    const int   n_leaves = (int)leaves.size();
     assert((int)rhs_blocks.size() == n_leaves);
 
     // ── 2. Build Morton-sorted slot order for L3 cache locality ──────────────
+    // Morton-sorted node indices (cached — avoids re-sort each RK3 stage)
+    const auto& ml = tree.morton_leaf_indices();  // node indices in Morton order
+
+    // Build reverse map: node_idx → slot li  (slot = position in leaf_indices())
+    std::vector<int> node_to_slot(tree.nodes.size(), -1);
+    for (int li = 0; li < n_leaves; ++li)
+        node_to_slot[leaves[li]] = li;
+
     std::vector<int> order;
     order.reserve(n_leaves);
-    for (int li = 0; li < n_leaves; ++li) {
-        if (level_filter >= 0 && tree.nodes[leaves[li]].level != level_filter)
-            continue;
+    for (int node_idx : ml) {
+        int li = node_to_slot[node_idx];
+        if (li < 0) continue;
+        if (level_filter >= 0 && tree.nodes[node_idx].level != level_filter) continue;
         order.push_back(li);
     }
-    std::sort(order.begin(), order.end(), [&](int a, int b) {
-        return tree.nodes[leaves[a]].morton < tree.nodes[leaves[b]].morton;
-    });
     const int n_active = (int)order.size();
 
     // ── 3. Per-leaf RHS — parallel (fully independent per slot) ──────────────

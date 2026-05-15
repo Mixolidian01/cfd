@@ -129,6 +129,11 @@ struct BlockTree {
     // P1.6: cached leaf index list; invalidated by refine/coarsen/rebuild.
     const std::vector<int>& leaf_indices() const;
 
+    // Morton-sorted leaf indices — cached alongside leaf_cache_.
+    // Returns slot indices (positions in leaf_indices()) sorted by Morton code.
+    // O(1) after first call; invalidated when leaf_dirty_ is set.
+    const std::vector<int>& morton_leaf_indices() const;
+
     // P4.1: max/min refinement level that has at least one leaf.
     int max_leaf_level() const noexcept;
     int min_leaf_level() const noexcept;
@@ -206,6 +211,8 @@ private:
     mutable std::vector<int> leaf_cache_;
     mutable bool             leaf_dirty_ = true;
     void invalidate_leaf_cache() const noexcept { leaf_dirty_ = true; }
+
+    mutable std::vector<int> morton_leaf_cache_;
 
     void set_child_geometry(int parent_idx, int child_local, int child_idx);
     void prolongate_to_children(int parent_idx);
