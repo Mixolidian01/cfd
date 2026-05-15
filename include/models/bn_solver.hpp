@@ -33,6 +33,28 @@ void bn_prolong(const BNCellBlock& parent, BNCellBlock children[8]) noexcept;
 // Used by BNSolver::coarsen.
 void bn_restrict(BNCellBlock& parent, const BNCellBlock children[8]) noexcept;
 
+// ── Berger-Colella C/F flux correction ───────────────────────────────────────
+// Conservative variable count (Q[0..5]; Q[6]=α₁ is non-conservative).
+static constexpr int NVAR_BN_CONS = 6;
+
+// For each FINE leaf adjacent to a coarser leaf: accumulate
+// sw*(F_fine − F_coarse_ghost) into regs[coarse_slot][d^1], weighted by
+// stage_weight (SSP-RK3 quadrature: 1/6, 1/6, 2/3).
+// The coarse RHS is NOT modified; correction is applied post-RK3.
+void bn_accumulate_cf_correction_fluxes(
+        const BlockTree& tree,
+        const std::vector<BNCellBlock>& blocks,
+        std::vector<std::array<std::vector<double>, NFACES>>& regs,
+        double stage_weight,
+        const BNEosParams& eos) noexcept;
+
+// Apply the accumulated fine-flux correction to Q (called once after RK3).
+void bn_apply_flux_correction(
+        const BlockTree& tree,
+        std::vector<BNCellBlock>& Q,
+        const std::vector<std::array<std::vector<double>, NFACES>>& regs,
+        double dt) noexcept;
+
 struct BNSolver {
     BlockTree   tree;
     BNEosParams eos;
@@ -42,6 +64,10 @@ struct BNSolver {
     std::vector<BNCellBlock> rhs_;  // RHS scratch
     std::vector<BNCellBlock> Qn_;   // Q^n backup
     std::vector<BNCellBlock> Qs_;   // RK stage
+
+    // Berger-Colella flux registers: regs_[slot][face] holds NVAR_BN_CONS*NB*NB
+    // accumulated (stage-weighted) fine-face fluxes for each coarse leaf.
+    std::vector<std::array<std::vector<double>, NFACES>> regs_;
 
     double t    = 0.0;
     int    step = 0;
@@ -62,8 +88,20 @@ struct BNSolver {
     // Resize scratch arrays to match current leaf count.
     void alloc_scratch();
 
+    // ── Runtime AMR ──────────────────────────────────────────────────────────
+    // refine(slot): prolong leaf at slot → 8 children; rebuilds Q/rhs_/Qn_/Qs_.
+    // slot is the position in tree.leaf_indices() of the leaf to refine.
+    void refine(int slot);
+
+    // coarsen(parent_node): restrict 8 leaf children of parent_node → parent;
+    // rebuilds Q/rhs_/Qn_/Qs_.  parent_node is a BlockTree node index.
+    void coarsen(int parent_node);
+
     // Copy all leaf blocks into Q.
     void sync_tree_to_q();
     // Copy Q back into leaf blocks.
     void sync_q_to_tree();
+
+private:
+    void bn_zero_regs() noexcept;
 };

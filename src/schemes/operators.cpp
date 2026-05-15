@@ -618,6 +618,12 @@ template void tree_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
 template void tree_rhs_typed<HllcFlux, Weno5Recon, IdealGasEOS>(
     BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
     const DucrosConfig&, IdealGasEOS) noexcept;
+template void tree_rhs_typed<HllcEsFlux, Weno5Recon, StiffenedGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, StiffenedGasEOS) noexcept;
+template void tree_rhs_typed<HllcFlux, Weno5Recon, StiffenedGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, StiffenedGasEOS) noexcept;
 
 // =============================================================================
 // CFL time step

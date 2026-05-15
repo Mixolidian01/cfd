@@ -283,7 +283,8 @@ endif()
 add_library(bn_operators STATIC
     src/models/bn_operators.cpp
     src/models/bn_ghost_fill.cpp
-    src/models/bn_solver.cpp)
+    src/models/bn_solver.cpp
+    src/models/bn_flux_correction.cpp)
 target_include_directories(bn_operators PUBLIC include)
 target_link_libraries(bn_operators PUBLIC block)
 add_executable(test_multiphase tests/models/test_multiphase.cpp)
@@ -292,6 +293,9 @@ add_test(NAME multiphase COMMAND test_multiphase)
 add_executable(test_bn_solver tests/models/test_bn_solver.cpp)
 target_link_libraries(test_bn_solver PRIVATE bn_operators m)
 add_test(NAME bn_solver COMMAND test_bn_solver)
+add_executable(test_bn_amr tests/models/test_bn_amr.cpp)
+target_link_libraries(test_bn_amr PRIVATE bn_operators m)
+add_test(NAME bn_amr COMMAND test_bn_amr)
 add_custom_target(t9 DEPENDS test_multiphase
     COMMAND $<TARGET_FILE:test_multiphase>
     COMMENT "P4.4 gate: Allaire 5-equation two-phase model" USES_TERMINAL)
@@ -356,6 +360,7 @@ add_custom_target(t13 DEPENDS test_mpi
 # ── P7.2: WENO5 C/F ghost fill (t14) ─────────────────────────────────────────
 add_executable(test_weno5_cf tests/schemes/test_weno5_cf.cpp)
 target_link_libraries(test_weno5_cf PRIVATE ns_solver m)
+add_test(NAME weno5_cf COMMAND test_weno5_cf)
 add_custom_target(t14 DEPENDS test_weno5_cf
     COMMAND $<TARGET_FILE:test_weno5_cf>
     COMMENT "P7.2 gate: 5th-order Lagrange C/F ghost fill accuracy" USES_TERMINAL)
@@ -365,6 +370,7 @@ add_library(ibm STATIC src/models/ibm.cpp)
 target_link_libraries(ibm PUBLIC ns_solver)
 add_executable(test_ibm tests/models/test_ibm.cpp)
 target_link_libraries(test_ibm PRIVATE ibm m)
+add_test(NAME ibm COMMAND test_ibm)
 add_custom_target(t15 DEPENDS test_ibm
     COMMAND $<TARGET_FILE:test_ibm>
     COMMENT "P7.3 gate: ghost-cell immersed boundary method" USES_TERMINAL)
@@ -374,6 +380,7 @@ add_library(chemistry STATIC src/models/chemistry.cpp)
 target_link_libraries(chemistry PUBLIC ns_solver)
 add_executable(test_chemistry tests/models/test_chemistry.cpp)
 target_link_libraries(test_chemistry PRIVATE chemistry m)
+add_test(NAME chemistry COMMAND test_chemistry)
 add_custom_target(t16 DEPENDS test_chemistry
     COMMAND $<TARGET_FILE:test_chemistry>
     COMMENT "P7.4 gate: multi-species Arrhenius reactive flow" USES_TERMINAL)
@@ -390,6 +397,7 @@ add_library(wall_model STATIC src/models/wall_model.cpp)
 target_link_libraries(wall_model PUBLIC ns_solver)
 add_executable(test_wmles tests/models/test_wmles.cpp)
 target_link_libraries(test_wmles PRIVATE wall_model m)
+add_test(NAME wmles COMMAND test_wmles)
 add_custom_target(t18 DEPENDS test_wmles
     COMMAND $<TARGET_FILE:test_wmles>
     COMMENT "P7.6 gate: Wall-modelled LES (algebraic + ODE mixing-length)" USES_TERMINAL)
@@ -446,7 +454,10 @@ add_custom_target(b
 )
 
 add_custom_target(ba
-    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill test_cell_block_accessors
+    DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7
+            test_config test_imex test_sat test_ghost_fill test_cell_block_accessors
+            test_bn_amr test_bn_solver test_multiphase
+            test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
