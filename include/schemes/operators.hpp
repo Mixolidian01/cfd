@@ -122,6 +122,22 @@ void tree_rhs(BlockTree& tree,
               bool   open_bc             = false,
               const DucrosConfig& ducros = DucrosConfig{}) noexcept;
 
+// R10-T6: Typed tree-level RHS — same signature as tree_rhs but routes through
+// compute_rhs_typed<Flux,Recon,EOS> for compile-time scheme resolution.
+template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
+    requires RiemannFlux<Flux<Axis::X>>
+          && SpatialReconstruction<Recon<Axis::X>>
+          && EquationOfState<EOS>
+void tree_rhs_typed(BlockTree& tree,
+                    std::vector<CellBlock>& rhs_blocks,
+                    bool periodic,
+                    double stage_weight        = 1.0,
+                    int    level_filter        = -1,
+                    bool   cf_coarse_zero_grad = false,
+                    bool   open_bc             = false,
+                    const DucrosConfig& ducros = DucrosConfig{},
+                    EOS    eos                 = EOS{}) noexcept;
+
 // ── R5: typed entry-point (Flux × Recon × EOS resolved at compile time) ──────
 // Template template parameters so the loop over Axis::X/Y/Z inside
 // operators.cpp can instantiate Flux<Axis::X>, Flux<Axis::Y>, Flux<Axis::Z>

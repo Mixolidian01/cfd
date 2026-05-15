@@ -5,6 +5,9 @@
 
 #include "solver/cpu_rk3.hpp"
 #include "schemes/operators.hpp"
+#include "physics/ideal_gas_eos.hpp"
+#include "physics/weno5_recon.hpp"
+#include "physics/hllc_flux.hpp"
 #include "mpi/mpi_comm.hpp"
 #include "profiling/profiler.hpp"
 #include <algorithm>
@@ -61,6 +64,17 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     const bool use_sat  = (cfg.numerics.sat_tau > 0.0) && (tree.max_leaf_level() > 0);
     const bool use_acdi = cfg.acdi.use_acdi;
 
+    // R10-T6: typed dispatch — scheme resolved at compile time, γ carried by EOS
+    const IdealGasEOS eos{cfg.physics.gamma};
+    auto rhs_call = [&](double sw) {
+        if (cfg.exec.flux_scheme == SolverConfig::FluxScheme::HLLC_ES)
+            tree_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
+                tree, solver.rhs_, periodic, sw, -1, false, open_bc, ducros, eos);
+        else
+            tree_rhs_typed<HllcFlux, Weno5Recon, IdealGasEOS>(
+                tree, solver.rhs_, periodic, sw, -1, false, open_bc, ducros, eos);
+    };
+
     // P14.1: phi SSP-RK3 helper — fills phi rhs and applies one stage update.
     // alpha < 0 → stage 1 (ps = pn + dt*L).
     // alpha ≥ 0 → stages 2/3: ps = α*pn + (1-α)*(ps_prev + dt*L).
@@ -90,7 +104,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
     { PROFILE_SCOPE_COLOR("CpuRk3/stage1", 0xFFFF4040u);
       mpi_exchange_halos(tree, solver.mpi_);
-      tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
+      rhs_call(1.0/6.0);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for collapse(3) schedule(static)
       for (int ii = 0; ii < NL; ++ii)
@@ -111,7 +125,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
     { PROFILE_SCOPE_COLOR("CpuRk3/stage2", 0xFF40FF40u);
       mpi_exchange_halos(tree, solver.mpi_);
-      tree_rhs(tree, solver.rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
+      rhs_call(1.0/6.0);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for collapse(3) schedule(static)
       for (int ii = 0; ii < NL; ++ii)
@@ -132,7 +146,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
     { PROFILE_SCOPE_COLOR("CpuRk3/stage3", 0xFF4040FFu);
       mpi_exchange_halos(tree, solver.mpi_);
-      tree_rhs(tree, solver.rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
+      rhs_call(2.0/3.0);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for collapse(3) schedule(static)
       for (int ii = 0; ii < NL; ++ii)
