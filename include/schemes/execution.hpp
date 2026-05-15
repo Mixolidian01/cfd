@@ -20,7 +20,14 @@ struct ISolver {
     virtual ~ISolver() = default;
 };
 
-// Factory: reads cfg.backend and returns the correct ISolver implementation.
-// Currently: CPU path returns CpuSolverWrapper.
-// GPU path deferred (use NSSolver + set_gpu_solver() directly for now).
+// Factory: reads cfg.exec.backend and returns the correct ISolver.
+// CPU path: always available (CpuSolverWrapper).
+// GPU path: available only when a GPU factory has been registered via
+//   register_gpu_solver_factory().  This is done at static-init time by
+//   a CUDA TU (e.g. src/cuda/solver_factory_gpu.cu) linked into the binary.
+//   If no factory is registered and GPU is requested, make_solver throws.
 std::unique_ptr<ISolver> make_solver(SolverConfig cfg, double domain_L, int n_blocks);
+
+// Plugin hook for the GPU factory.  A CUDA TU calls this once at static init.
+using GpuSolverFactory = std::unique_ptr<ISolver>(*)(SolverConfig, double, int);
+void register_gpu_solver_factory(GpuSolverFactory f) noexcept;

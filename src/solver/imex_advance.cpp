@@ -61,8 +61,6 @@ static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
 // NSSolver::advance_imex — P3.5 IMEX-Euler operator splitting
 // =============================================================================
 double NSSolver::advance_imex() {
-    bool periodic = bc_is_periodic(cfg.bc.variant);
-    bool open_bc  = bc_is_open(cfg.bc.variant);
     const DucrosConfig ducros{ cfg.numerics.ducros_p_threshold, cfg.numerics.ducros_blend_width };
 
     // ── Step 1: same regrid + SSP-RK3 as advance() ───────────────────────
@@ -79,7 +77,7 @@ double NSSolver::advance_imex() {
     tree.zero_flux_registers();
 
     // Stage 1: Q^(1) = Q^n + dt·L(Q^n)   [RK weight 1/6]
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
+    tree_rhs(tree, rhs_, cfg.bc.variant, 1.0/6.0, -1, false, ducros);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -94,7 +92,7 @@ double NSSolver::advance_imex() {
     copy_stage_to_tree(Qs_);
 
     // Stage 2: Q^(2) = 3/4·Q^n + 1/4·(Q^(1) + dt·L(Q^(1)))   [RK weight 1/6]
-    tree_rhs(tree, rhs_, periodic, 1.0/6.0, -1, false, open_bc, ducros);
+    tree_rhs(tree, rhs_, cfg.bc.variant, 1.0/6.0, -1, false, ducros);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {
@@ -109,7 +107,7 @@ double NSSolver::advance_imex() {
     copy_stage_to_tree(Qs_);
 
     // Stage 3: Q^{n+1} = 1/3·Q^n + 2/3·(Q^(2) + dt·L(Q^(2)))  [RK weight 2/3]
-    tree_rhs(tree, rhs_, periodic, 2.0/3.0, -1, false, open_bc, ducros);
+    tree_rhs(tree, rhs_, cfg.bc.variant, 2.0/3.0, -1, false, ducros);
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
     for (int t  = 0; t  < CellBlock::NTILE; ++t) {

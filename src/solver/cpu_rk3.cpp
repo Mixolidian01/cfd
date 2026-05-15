@@ -39,8 +39,6 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     PROFILE_SCOPE("CpuRk3/step");
     const SolverConfig& cfg = solver.cfg;
 
-    const bool periodic = bc_is_periodic(cfg.bc.variant);
-    const bool open_bc  = bc_is_open(cfg.bc.variant);
     const DucrosConfig ducros{ cfg.numerics.ducros_p_threshold, cfg.numerics.ducros_blend_width };
 
     // P14.1c: activate stiffened-gas mixture EOS when ACDI is on and fluids differ.
@@ -69,10 +67,10 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     auto rhs_call = [&](double sw) {
         if (cfg.exec.flux_scheme == SolverConfig::FluxScheme::HLLC_ES)
             tree_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
-                tree, solver.rhs_, periodic, sw, -1, false, open_bc, ducros, eos);
+                tree, solver.rhs_, cfg.bc.variant, sw, -1, false, ducros, eos);
         else
             tree_rhs_typed<HllcFlux, Weno5Recon, IdealGasEOS>(
-                tree, solver.rhs_, periodic, sw, -1, false, open_bc, ducros, eos);
+                tree, solver.rhs_, cfg.bc.variant, sw, -1, false, ducros, eos);
     };
 
     // P14.1: phi SSP-RK3 helper — fills phi rhs and applies one stage update.

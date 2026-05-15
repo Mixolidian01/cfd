@@ -213,7 +213,7 @@ static void t07_entropy_sod() {
     std::vector<CellBlock> rhs_blocks;
     for (int li : tree.leaf_indices())
         rhs_blocks.emplace_back(0,0,0, tree.nodes[li].block->h);
-    tree_rhs(tree, rhs_blocks, true);
+    tree_rhs(tree, rhs_blocks, PeriodicBC{});
 
     double dt = 1e-8;
     auto leaves = tree.leaf_indices();
@@ -329,7 +329,7 @@ static void t09_tree_rhs_uniform() {
     double h = tree.nodes[tree.leaf_indices()[0]].block->h;
     for (auto& r : rhs) r.h = h;
 
-    tree_rhs(tree, rhs, true);
+    tree_rhs(tree, rhs, PeriodicBC{});
 
     double err = 0;
     for (auto& rb : rhs)

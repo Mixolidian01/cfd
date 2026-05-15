@@ -58,6 +58,7 @@
 //          rhs_sensors.cpp     — fill_ducros_cache + phi_rhs + phi_compression_rhs + tree_sat_penalty
 
 #include "schemes/operators.hpp"
+#include "mesh/ghost_filler.hpp"
 #include "schemes/concepts.hpp"
 #include "physics/hllc_flux.hpp"
 #include "physics/weno5_recon.hpp"
@@ -501,23 +502,17 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
 // =============================================================================
 void tree_rhs(BlockTree& tree,
               std::vector<CellBlock>& rhs_blocks,
-              bool periodic,
+              const BCVariant& bc,
               double stage_weight,
               int    level_filter,
               bool   cf_coarse_zero_grad,
-              bool   open_bc,
               const DucrosConfig& ducros) noexcept
 {
     PROFILE_SCOPE("tree_rhs");
 
     // ── 1. Ghost fill — always global (C/F fills need the full tree) ─────────
     { PROFILE_SCOPE("tree_rhs/ghost_fill");
-      if (periodic)
-          tree.fill_ghosts_periodic(cf_coarse_zero_grad);
-      else if (open_bc)
-          tree.fill_ghosts_open(cf_coarse_zero_grad);
-      else
-          tree.fill_ghosts_wall(cf_coarse_zero_grad);
+      GhostFiller::fill_all(tree, bc, cf_coarse_zero_grad);
     }
 
     const auto& leaves  = tree.leaf_indices();
@@ -572,19 +567,16 @@ template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
           && EquationOfState<EOS>
 void tree_rhs_typed(BlockTree& tree,
                     std::vector<CellBlock>& rhs_blocks,
-                    bool periodic,
+                    const BCVariant& bc,
                     double stage_weight,
                     int    level_filter,
                     bool   cf_coarse_zero_grad,
-                    bool   open_bc,
                     const DucrosConfig& ducros,
                     EOS    /*eos*/) noexcept
 {
     PROFILE_SCOPE("tree_rhs_typed");
 
-    if (periodic) tree.fill_ghosts_periodic(cf_coarse_zero_grad);
-    else if (open_bc) tree.fill_ghosts_open(cf_coarse_zero_grad);
-    else tree.fill_ghosts_wall(cf_coarse_zero_grad);
+    GhostFiller::fill_all(tree, bc, cf_coarse_zero_grad);
 
     const auto& leaves   = tree.leaf_indices();
     const int   n_leaves = (int)leaves.size();
@@ -621,10 +613,10 @@ void tree_rhs_typed(BlockTree& tree,
 }
 
 template void tree_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
-    BlockTree&, std::vector<CellBlock>&, bool, double, int, bool, bool,
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
     const DucrosConfig&, IdealGasEOS) noexcept;
 template void tree_rhs_typed<HllcFlux, Weno5Recon, IdealGasEOS>(
-    BlockTree&, std::vector<CellBlock>&, bool, double, int, bool, bool,
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
     const DucrosConfig&, IdealGasEOS) noexcept;
 
 // =============================================================================

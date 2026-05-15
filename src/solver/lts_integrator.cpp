@@ -44,8 +44,6 @@ void LtsIntegrator::copy_stage_to_tree_level(const std::vector<CellBlock>& stage
 // =============================================================================
 void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
                                double sub_weight, bool coarse_mode) {
-    bool periodic = bc_is_periodic(solver.cfg.bc.variant);
-    bool open_bc  = bc_is_open(solver.cfg.bc.variant);
     const DucrosConfig ducros{ solver.cfg.numerics.ducros_p_threshold,
                                 solver.cfg.numerics.ducros_blend_width };
     const auto& leaves = tree.leaf_indices();
@@ -54,7 +52,7 @@ void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
     copy_tree_to_stage_level(solver.Qn_, level);
 
     // Stage 1: Q^(1) = Q^n + dt * L(Q^n)
-    tree_rhs(tree, solver.rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc, ducros);
+    tree_rhs(tree, solver.rhs_, solver.cfg.bc.variant, sub_weight / 6.0, level, coarse_mode, ducros);
 #pragma omp parallel for collapse(3) schedule(static)
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
@@ -70,7 +68,7 @@ void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
     copy_stage_to_tree_level(solver.Qs_, level);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))
-    tree_rhs(tree, solver.rhs_, periodic, sub_weight / 6.0, level, coarse_mode, open_bc, ducros);
+    tree_rhs(tree, solver.rhs_, solver.cfg.bc.variant, sub_weight / 6.0, level, coarse_mode, ducros);
 #pragma omp parallel for collapse(3) schedule(static)
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)
@@ -86,7 +84,7 @@ void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
     copy_stage_to_tree_level(solver.Qs_, level);
 
     // Stage 3: Q^{n+1} = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))
-    tree_rhs(tree, solver.rhs_, periodic, sub_weight * (2.0/3.0), level, coarse_mode, open_bc, ducros);
+    tree_rhs(tree, solver.rhs_, solver.cfg.bc.variant, sub_weight * (2.0/3.0), level, coarse_mode, ducros);
 #pragma omp parallel for collapse(3) schedule(static)
     for (int ii = 0; ii < NL; ++ii)
     for (int v  = 0; v  < NVAR; ++v)

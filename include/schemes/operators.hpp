@@ -18,6 +18,7 @@
 // Primitive variables are computed on-the-fly inside each function (no storage).
 
 #include "mesh/block_tree.hpp"
+#include "mesh/bc_types.hpp"
 #include "mesh/axis.hpp"
 #include "schemes/concepts.hpp"
 #include "physics/hllc_flux.hpp"
@@ -115,11 +116,10 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
 //   total-energy conservation after Berger-Colella correction.
 void tree_rhs(BlockTree& tree,
               std::vector<CellBlock>& rhs_blocks,
-              bool periodic,
+              const BCVariant& bc,
               double stage_weight        = 1.0,
               int    level_filter        = -1,
               bool   cf_coarse_zero_grad = false,
-              bool   open_bc             = false,
               const DucrosConfig& ducros = DucrosConfig{}) noexcept;
 
 // R10-T6: Typed tree-level RHS — same signature as tree_rhs but routes through
@@ -130,11 +130,10 @@ template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
           && EquationOfState<EOS>
 void tree_rhs_typed(BlockTree& tree,
                     std::vector<CellBlock>& rhs_blocks,
-                    bool periodic,
+                    const BCVariant& bc,
                     double stage_weight        = 1.0,
                     int    level_filter        = -1,
                     bool   cf_coarse_zero_grad = false,
-                    bool   open_bc             = false,
                     const DucrosConfig& ducros = DucrosConfig{},
                     EOS    eos                 = EOS{}) noexcept;
 
