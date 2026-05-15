@@ -30,15 +30,8 @@ static bool is_wall_ghost(const Prim& pL, const Prim& pR) noexcept {
     return antisym(pL.u, pR.u) && antisym(pL.v, pR.v) && antisym(pL.w, pR.w);
 }
 
-// face_lr_idx<DIR>: flat cell indices for the left and right cells of face (n,a,b).
-template <Axis DIR>
-static inline std::pair<int,int> face_lr_idx(int n, int a, int b) noexcept {
-    if constexpr (DIR == Axis::X) return {cell_idx(n,  a,b), cell_idx(n+1,a,b)};
-    if constexpr (DIR == Axis::Y) return {cell_idx(a,n,  b), cell_idx(a,n+1,b)};
-    return                              {cell_idx(a,b,n  ), cell_idx(a,b,n+1)};
-}
-
-// face_to_ijk<DIR>: convert face coords (n, a, b) to (xi, yi, zi) of the left cell.
+// face_to_ijk<DIR>: convert face coords (n, a, b) to (xi, yi, zi) of the left
+// cell, for passing into Weno5Recon which still uses natural (i,j,k) indexing.
 template <Axis DIR>
 static inline void face_to_ijk(int n, int a, int b,
                                 int& xi, int& yi, int& zi) noexcept {
@@ -48,13 +41,18 @@ static inline void face_to_ijk(int n, int a, int b,
 }
 
 // accumulate_face<DIR>: compute the flux at one face and accumulate into rhs.
+// R6: rhs updates use axis_view<DIR> — no axis dispatch in the accumulation.
 // See operators.cpp P15.1 / P3.2 design notes for the full hybrid scheme doc.
 template <Axis DIR>
 static void accumulate_face(const Prim* pc, const double* duc,
                              CellBlock& rhs, double ih,
                              int n, int a, int b) noexcept {
     constexpr double kep_threshold = 1.0e-8;
-    const auto [Li, Ri] = face_lr_idx<DIR>(n, a, b);
+
+    // R6: axis_view maps (n,a,b) → the correct flat index for each axis.
+    // Li = cell_idx for the left cell, Ri for the right — no axis branch needed.
+    const int Li = cell_idx_axis<DIR>(n,   a, b);
+    const int Ri = cell_idx_axis<DIR>(n+1, a, b);
     const Prim& pL = pc[Li];
     const Prim& pR = pc[Ri];
     const double theta = std::max(duc[Li], duc[Ri]);
@@ -62,7 +60,6 @@ static void accumulate_face(const Prim* pc, const double* duc,
 
     std::array<double,NVAR> F;
     if (!is_bnd && theta < kep_threshold) {
-        // Pure KEP: smooth/vortex-dominated interior
         F = kep_flux_t<DIR>(pL, pR);
     } else {
         const auto Fk = kep_flux_t<DIR>(pL, pR);
@@ -82,10 +79,12 @@ static void accumulate_face(const Prim* pc, const double* duc,
         const double om = 1.0 - th;
         for (int v = 0; v < NVAR; ++v) F[v] = om * Fk[v] + th * Fs[v];
     }
+
+    // R6: write through axis_view — accumulation is axis-agnostic.
     if (n >= ilo())
-        for (int v = 0; v < NVAR; ++v) rhs.Q[v][Li] -= ih * F[v];
+        for (int v = 0; v < NVAR; ++v) rhs.axis_view<DIR>(v)(n,   a, b) -= ih * F[v];
     if (n+1 <= ihi())
-        for (int v = 0; v < NVAR; ++v) rhs.Q[v][Ri] += ih * F[v];
+        for (int v = 0; v < NVAR; ++v) rhs.axis_view<DIR>(v)(n+1, a, b) += ih * F[v];
 }
 
 // =============================================================================

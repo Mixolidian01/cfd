@@ -24,6 +24,8 @@
 #include <cassert>
 #include <cstring>   // std::memcpy / std::memset
 #include <algorithm> // std::fill
+#include "mesh/axis.hpp"
+#include "vendor/mdspan.hpp"
 
 // ── Constants ─────────────────────────────────────────────────────────────────────────────────
 inline constexpr int    NB     = 8;          // cells per block side (interior)
@@ -128,6 +130,59 @@ inline double sutherland(double T) noexcept {
     if (T < 1.0) T = 1.0;  // floor prevents NaN from transient negative T
     double ratio = T / T_ref;
     return mu_ref * ratio * std::sqrt(ratio) * (T_ref + S) / (T + S);
+}
+
+// ── AoSoAAccessor ─────────────────────────────────────────────────────────────
+// Custom mdspan accessor: translates a logical flat cell index into the
+// CellBlock AoSoA physical address.
+//
+//   CellBlock layout: data_[tile*NVAR*W + v*W + lane]
+//   where tile = flat >> 3,  lane = flat & 7,  W = 8
+//
+// Declared before CellBlock so it can appear in CellBlock's type aliases.
+struct AoSoAAccessor {
+    using element_type     = double;
+    using data_handle_type = double*;
+    using reference        = double&;
+    using offset_policy    = AoSoAAccessor;
+
+    int v_;
+
+    constexpr explicit AoSoAAccessor(int v) noexcept : v_(v) {}
+
+    [[nodiscard]] constexpr reference
+    access(data_handle_type p, std::ptrdiff_t flat) const noexcept {
+        // W=8, NVAR=5 (compile-time constants; match CellBlock::W and ::NVAR).
+        return p[(flat >> 3) * (NVAR * 8) + v_ * 8 + (flat & 7)];
+    }
+
+    // offset() is only used for submdspan; not supported with AoSoA storage.
+    [[nodiscard]] constexpr data_handle_type
+    offset(data_handle_type p, std::ptrdiff_t) const noexcept { return p; }
+};
+
+// ── axis_strides<DIR> ─────────────────────────────────────────────────────────
+// Returns layout_stride strides so that view(n, a, b) maps to:
+//   cell_idx(n,a,b) for X,  cell_idx(a,n,b) for Y,  cell_idx(a,b,n) for Z.
+//
+// Derivation from cell_idx(i,j,k) = i + j·NB2 + k·NB2²:
+//   X: strides (1,    NB2,  NB2²) — n=i, a=j, b=k
+//   Y: strides (NB2,  1,    NB2²) — n=j, a=i, b=k
+//   Z: strides (NB2², 1,    NB2 ) — n=k, a=i, b=j
+template<Axis DIR>
+[[nodiscard]] constexpr std::array<int, 3> axis_strides() noexcept {
+    if constexpr (DIR == Axis::X) return {1,        NB2,  NB2*NB2};
+    if constexpr (DIR == Axis::Y) return {NB2,      1,    NB2*NB2};
+    /* Z */                       return {NB2*NB2,  1,    NB2    };
+}
+
+// cell_idx_axis<DIR>(n, a, b): flat index for the cell at position n along the
+// face-normal direction for Axis DIR, and (a, b) tangentially.
+// Equivalent to: X→cell_idx(n,a,b), Y→cell_idx(a,n,b), Z→cell_idx(a,b,n).
+template<Axis DIR>
+[[nodiscard]] constexpr int cell_idx_axis(int n, int a, int b) noexcept {
+    const auto s = axis_strides<DIR>();
+    return n * s[0] + a * s[1] + b * s[2];
 }
 
 // ── CellBlock ────────────────────────────────────────────────────────────────
@@ -320,6 +375,35 @@ struct alignas(64) CellBlock {
     double cfl_dt(double cfl) const noexcept;
     void   zero_ghosts()      noexcept;
 
+    // ── R6: axis-aligned mdspan views ────────────────────────────────────────
+    //
+    // axis_view<DIR>(v) returns a 3-D mdspan over variable v where:
+    //   index 0 (n) runs along the face-normal direction for Axis DIR,
+    //   indices 1 and 2 (a, b) run along the two tangential directions.
+    //
+    // This means view(n, a, b) gives the same cell as:
+    //   Q[v][cell_idx(n, a, b)]  for Axis::X
+    //   Q[v][cell_idx(a, n, b)]  for Axis::Y
+    //   Q[v][cell_idx(a, b, n)]  for Axis::Z
+    //
+    // The AoSoA remapping is handled by AoSoAAccessor; no data is moved.
+    // The layout policy is layout_stride with strides set by axis_strides<DIR>().
+
+    using BlockExtents = md::extents<int, NB2, NB2, NB2>;
+    using BlockView    = md::mdspan<double, BlockExtents,
+                                    md::layout_stride, AoSoAAccessor>;
+
+    template<Axis DIR>
+    [[nodiscard]] BlockView axis_view(int v) noexcept {
+        md::layout_stride::mapping<BlockExtents> m{BlockExtents{}, axis_strides<DIR>()};
+        return BlockView{data_, m, AoSoAAccessor{v}};
+    }
+    template<Axis DIR>
+    [[nodiscard]] BlockView axis_view(int v) const noexcept {
+        md::layout_stride::mapping<BlockExtents> m{BlockExtents{}, axis_strides<DIR>()};
+        return BlockView{const_cast<double*>(data_), m, AoSoAAccessor{v}};
+    }
+
 private:
     // Bind Q[v].data_ → this->data_ and Q[v].v_ → v.
     // Must be called before any other member use.
@@ -327,3 +411,4 @@ private:
         for (int v = 0; v < NVAR; ++v) { Q[v].data_ = data_; Q[v].v_ = v; }
     }
 };
+

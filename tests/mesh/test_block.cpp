@@ -340,6 +340,77 @@ static void t12_isothermal_wall() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// R6 — mdspan axis_view tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+// T13: axis_view(i,j,k) == Q[v][cell_idx(i,j,k)] for all vars and all axes.
+static void t13_axis_view_identity() {
+    CellBlock blk;
+    // Fill each variable with a distinct pattern so aliasing bugs are visible.
+    for (int v = 0; v < NVAR; ++v)
+        for (int flat = 0; flat < NCELL; ++flat)
+            blk.Q[v][flat] = 100.0 * v + flat;
+
+    bool ok = true;
+    for (int k = 0; k < NB2; ++k)
+    for (int j = 0; j < NB2; ++j)
+    for (int i = 0; i < NB2; ++i) {
+        for (int v = 0; v < NVAR; ++v) {
+            double expected = blk.Q[v][cell_idx(i,j,k)];
+            ok &= (blk.axis_view<Axis::X>(v)(i,j,k) == expected);
+            ok &= (blk.axis_view<Axis::Y>(v)(j,i,k) == expected);  // Y: (n=j,a=i,b=k)
+            ok &= (blk.axis_view<Axis::Z>(v)(k,i,j) == expected);  // Z: (n=k,a=i,b=j)
+        }
+    }
+    check("T13 axis_view identity: X/Y/Z views read same data as Q[v][flat]", ok);
+}
+
+// T14: writes through axis_view are visible via Q[v][flat] (no copy/shadow).
+static void t14_axis_view_write_roundtrip() {
+    CellBlock blk;
+    auto vx = blk.axis_view<Axis::X>(2);
+    auto vy = blk.axis_view<Axis::Y>(1);
+    auto vz = blk.axis_view<Axis::Z>(0);
+
+    vx(3, 5, 7) = 111.0;
+    vy(4, 2, 6) = 222.0;
+    vz(7, 1, 3) = 333.0;
+
+    bool ok = true;
+    ok &= (blk.Q[2][cell_idx(3,5,7)] == 111.0);  // X: (n=i=3, a=j=5, b=k=7)
+    ok &= (blk.Q[1][cell_idx(2,4,6)] == 222.0);  // Y: (n=j=4, a=i=2, b=k=6)
+    ok &= (blk.Q[0][cell_idx(1,3,7)] == 333.0);  // Z: (n=k=7, a=i=1, b=j=3)
+    check("T14 axis_view write round-trip: write via view, read via Q[v][flat]", ok);
+}
+
+// T15: axis_view face-pair convention — left and right cells of face (n,a,b)
+// map to cell_idx(n,a,b) and cell_idx(n+1,a,b) regardless of axis.
+static void t15_axis_view_face_pair() {
+    CellBlock blk;
+    // Set one sentinel value at a known interior cell.
+    constexpr int n = 4, a = 3, b = 5;
+    const int flat_L_x = cell_idx(n,   a, b);
+    const int flat_R_x = cell_idx(n+1, a, b);
+    const int flat_L_y = cell_idx(a,   n, b);
+    const int flat_R_y = cell_idx(a, n+1, b);
+    const int flat_L_z = cell_idx(a,   b, n);
+    const int flat_R_z = cell_idx(a,   b, n+1);
+
+    blk.Q[0][flat_L_x] = 1.0; blk.Q[0][flat_R_x] = 2.0;
+    blk.Q[1][flat_L_y] = 3.0; blk.Q[1][flat_R_y] = 4.0;
+    blk.Q[2][flat_L_z] = 5.0; blk.Q[2][flat_R_z] = 6.0;
+
+    bool ok = true;
+    ok &= (blk.axis_view<Axis::X>(0)(n,   a, b) == 1.0);
+    ok &= (blk.axis_view<Axis::X>(0)(n+1, a, b) == 2.0);
+    ok &= (blk.axis_view<Axis::Y>(1)(n,   a, b) == 3.0);
+    ok &= (blk.axis_view<Axis::Y>(1)(n+1, a, b) == 4.0);
+    ok &= (blk.axis_view<Axis::Z>(2)(n,   a, b) == 5.0);
+    ok &= (blk.axis_view<Axis::Z>(2)(n+1, a, b) == 6.0);
+    check("T15 axis_view face-pair: view(n,a,b)/view(n+1,a,b) = L/R cell for all axes", ok);
+}
+
 int main() {
     printf("=== Step 2: Layer 1 — Cell Block + Block Tree ===\n");
     printf("    Gate: mass conserved through refine/coarsen < 1e-13\n");
@@ -358,6 +429,10 @@ int main() {
     t10_periodic_ghost();
     t11_wall_ghost();
     t12_isothermal_wall();
+    printf("\n-- R6  mdspan axis_view --\n");
+    t13_axis_view_identity();
+    t14_axis_view_write_roundtrip();
+    t15_axis_view_face_pair();
 
     printf("\nResults: %d passed, %d failed\n", n_pass, n_fail);
     if (n_fail > 0)
