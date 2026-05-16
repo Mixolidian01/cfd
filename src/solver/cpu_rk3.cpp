@@ -4,10 +4,9 @@
 // lives in its own translation unit, separate from diagnostics and dispatch.
 
 #include "solver/cpu_rk3.hpp"
-#include "schemes/operators.hpp"
-#include "physics/ideal_gas_eos.hpp"
 #include "physics/weno5_recon.hpp"
 #include "physics/hllc_flux.hpp"
+#include "physics/stiffened_gas_eos.hpp"
 #include "mpi/mpi_comm.hpp"
 #include "profiling/profiler.hpp"
 #include <algorithm>
@@ -32,6 +31,48 @@ static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
             if ((GAMMA - 1.0) * (blk.E(f) - ke) < EPS_POS)
                 blk.E(f) = ke + EPS_POS / (GAMMA - 1.0);
         }
+    }
+}
+
+// R5: select the right tree_rhs_typed specialisation once based on cfg.
+// Called on the first step(); subsequent steps call rhs_fn_ directly.
+void CpuRk3Integrator::select_scheme() {
+    const SolverConfig& cfg = solver.cfg;
+    const bool sg = cfg.acdi.use_acdi &&
+                    (cfg.acdi.gamma_a != cfg.acdi.gamma_b ||
+                     cfg.acdi.p_inf_a != 0.0 || cfg.acdi.p_inf_b != 0.0);
+    const bool es = (cfg.exec.flux_scheme == SolverConfig::FluxScheme::HLLC_ES);
+
+    if (es && !sg) {
+        const IdealGasEOS eos{cfg.physics.gamma};
+        rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,
+                        const BCVariant& bc, double sw, int lf, bool cz,
+                        const DucrosConfig& d) noexcept {
+            tree_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(t, r, bc, sw, lf, cz, d, eos);
+        };
+    } else if (!es && !sg) {
+        const IdealGasEOS eos{cfg.physics.gamma};
+        rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,
+                        const BCVariant& bc, double sw, int lf, bool cz,
+                        const DucrosConfig& d) noexcept {
+            tree_rhs_typed<HllcFlux, Weno5Recon, IdealGasEOS>(t, r, bc, sw, lf, cz, d, eos);
+        };
+    } else if (es) {
+        const StiffenedGasEOS eos{cfg.acdi.gamma_a, cfg.acdi.gamma_b,
+                                   cfg.acdi.p_inf_a, cfg.acdi.p_inf_b};
+        rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,
+                        const BCVariant& bc, double sw, int lf, bool cz,
+                        const DucrosConfig& d) noexcept {
+            tree_rhs_typed<HllcEsFlux, Weno5Recon, StiffenedGasEOS>(t, r, bc, sw, lf, cz, d, eos);
+        };
+    } else {
+        const StiffenedGasEOS eos{cfg.acdi.gamma_a, cfg.acdi.gamma_b,
+                                   cfg.acdi.p_inf_a, cfg.acdi.p_inf_b};
+        rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,
+                        const BCVariant& bc, double sw, int lf, bool cz,
+                        const DucrosConfig& d) noexcept {
+            tree_rhs_typed<HllcFlux, Weno5Recon, StiffenedGasEOS>(t, r, bc, sw, lf, cz, d, eos);
+        };
     }
 }
 
@@ -62,15 +103,10 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     const bool use_sat  = (cfg.numerics.sat_tau > 0.0) && (tree.max_leaf_level() > 0);
     const bool use_acdi = cfg.acdi.use_acdi;
 
-    // R10-T6: typed dispatch — scheme resolved at compile time, γ carried by EOS
-    const IdealGasEOS eos{cfg.physics.gamma};
+    // R5: scheme selected once; rhs_fn_ is branch-free in the hot loop.
+    if (!rhs_fn_) select_scheme();
     auto rhs_call = [&](double sw) {
-        if (cfg.exec.flux_scheme == SolverConfig::FluxScheme::HLLC_ES)
-            tree_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
-                tree, solver.rhs_, cfg.bc.variant, sw, -1, false, ducros, eos);
-        else
-            tree_rhs_typed<HllcFlux, Weno5Recon, IdealGasEOS>(
-                tree, solver.rhs_, cfg.bc.variant, sw, -1, false, ducros, eos);
+        rhs_fn_(tree, solver.rhs_, cfg.bc.variant, sw, -1, false, ducros);
     };
 
     // P14.1: phi SSP-RK3 helper — fills phi rhs and applies one stage update.

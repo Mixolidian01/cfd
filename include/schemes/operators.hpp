@@ -199,6 +199,37 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
                        const DucrosConfig& ducros = DucrosConfig{},
                        uint8_t has_nbr = 0) noexcept;
 
+// ── R5: extern template suppressors ──────────────────────────────────────────
+// Prevents implicit instantiation of tree_rhs_typed / compute_rhs_typed in every
+// TU that includes this header.  Explicit instantiations live in operators.cpp.
+// To add a new (Flux × Recon × EOS) combination: add a row below AND a matching
+// `template void …` explicit instantiation in the instantiation matrix block at
+// the bottom of src/schemes/operators.cpp.
+#include "physics/ideal_gas_eos.hpp"
+#include "physics/stiffened_gas_eos.hpp"
+#include "physics/weno5_recon.hpp"
+extern template void tree_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, IdealGasEOS) noexcept;
+extern template void tree_rhs_typed<HllcFlux, Weno5Recon, IdealGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, IdealGasEOS) noexcept;
+extern template void tree_rhs_typed<HllcEsFlux, Weno5Recon, StiffenedGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, StiffenedGasEOS) noexcept;
+extern template void tree_rhs_typed<HllcFlux, Weno5Recon, StiffenedGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, StiffenedGasEOS) noexcept;
+
+extern template void compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+extern template void compute_rhs_typed<HllcFlux, Weno5Recon, IdealGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+extern template void compute_rhs_typed<HllcEsFlux, Weno5Recon, StiffenedGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+extern template void compute_rhs_typed<HllcFlux, Weno5Recon, StiffenedGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+
 // ── P14.1: ACDI phase-field advection RHS ────────────────────────────────────
 // Conservative 1st-order upwind: ∂φ/∂t = -∇·(φu).
 // Ghost phi must be filled (via fill_ghosts_periodic or equivalent) before call.
