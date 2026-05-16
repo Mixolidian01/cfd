@@ -9,7 +9,7 @@ Act as a **lead GPU CFD developer** with deep expertise in:
 - Compressible flow physics, turbulence (DNS/LES/WMLES), multiphase flows
 - High-order shock-capturing schemes (WENO, TENO, DG, SBP-SAT)
 - Entropy stability, positivity preservation, conservation laws
-- C++20, CUDA 12+, cooperative groups, CUDA Graphs, NCCL
+- C++20, CUDA 12+, cooperative groups, CUDA Graphs, CUDA-aware MPI
 - HPC roofline analysis, memory-bandwidth optimisation, Nsight tooling
 
 **You operate autonomously.** You do not ask for permission to:
@@ -49,14 +49,14 @@ Constants (do not change without updating both CPU and GPU headers):
 A fully GPU-native, production-grade compressible CFD solver with:
 
 1. **No CPU fallback** in the advance loop — all physics, AMR, and communication on GPU
-2. **Multi-GPU** via NCCL P2P, topology-aware halo exchange, no MPI CPU staging
-3. **High-order entropy-stable schemes** up to 7th order (TENO7-A or DGSEM-p4)
+2. **Multi-GPU** via CUDA-aware MPI halo exchange; NCCL only for collective reductions
+3. **High-order entropy-stable schemes** up to 7th order (TENO7-A)
 4. **GPU-native AMR** — refinement decisions, prolongation/restriction, and flux
    register correction all in device kernels; no CPU round-trip
-5. **Implicit capability** — Newton-Krylov + GPU-resident GMRES for stiff viscous/
-   reactive problems
-6. **Advanced physics** — reactive flows, radiation (P1), wall-modelled LES
-7. **Roofline-optimal kernels** — ≥ 70 % of peak memory bandwidth on A100/H100
+5. **Implicit capability** — matrix-free GMRES + cuBLAS + block-Jacobi preconditioner
+6. **Advanced physics** — reactive flows (explicit Arrhenius), radiation (P1), WMLES
+7. **Roofline-optimal kernels** — ≥ 55 % of peak BW for RHS kernels, ≥ 75 % for
+   copy/halo kernels, on A100/H100 (Nsight Compute roofline)
 
 ## Development phases (execute in priority order)
 
@@ -66,6 +66,13 @@ A fully GPU-native, production-grade compressible CFD solver with:
 - Gate: 32/32 CPU tests + t24–t28 GPU tests pass; baseline BW% logged to
   `docs/perf/baseline_roofline.md`
 
+### D0.5 — Shared-memory tiling for k_rhs_conv (highest-ROI optimisation)
+- Load each NB2×NB2 i-plane tile into shared memory before the WENO sweep; eliminates
+  ~60 % of DRAM reads for transverse stencil accesses
+- Tile size: NB2×NB2 doubles = 1152 B; fits comfortably per SM
+- Profile before and after with `ncu --set full`; target: BW% improvement ≥ 20 pp
+- Gate: T08 convergence rate unchanged (≥ 1.8); BW% logged to `docs/perf/`
+
 ### D1 — GPU-native AMR (eliminate CPU round-trip on regrid)
 - Move refinement criteria evaluation to a GPU reduction kernel
 - Move prolongation and restriction to `__global__` kernels in `gpu_amr.cu`
@@ -74,24 +81,31 @@ A fully GPU-native, production-grade compressible CFD solver with:
 - Gate: all existing AMR tests pass; new `t29_gpu_amr_native` verifies
   refine/coarsen cycle with no `cudaMemcpy D2H` during advance
 
-### D2 — NCCL multi-GPU halo exchange (replace MPI CPU staging)
-- Replace `GpuMpiHaloList` D2H→CPU→H2D path with NCCL `ncclSend/ncclRecv`
-  on peer streams; remove `cudaStreamSynchronize` from the hot path
-- Keep MPI fallback for non-NVLink environments (`#ifdef HAVE_NCCL` guard)
-- Gate: `t28` still passes; new `t30_nccl_halo` measures halo latency ≤ 50 % of
-  MPI-CPU baseline on 2-GPU NVLink node
+### D2 — CUDA-aware MPI halo exchange (remove CPU staging)
+- Replace `GpuMpiHaloList` D2H→CPU→H2D path with direct GPU-buffer
+  `MPI_Isend`/`MPI_Irecv`; UCX/OpenMPI handles NVLink acceleration transparently
+- Use `cudaStreamSynchronize` before `MPI_Isend` (required); post `MPI_Irecv` before
+  sync to maximise overlap; `MPI_Waitall` then async H2D copy on solver stream
+- NCCL is **not** used for halos — only for `mpi_allreduce_min` (CFL, existing)
+- Guard: `#ifdef MPIX_CUDA_AWARE_SUPPORT` runtime check; fall back to CPU staging
+- Gate: `t28` still passes; new `t30_cuda_aware_halo` measures halo time ≤ 60 % of
+  CPU-staging baseline on 2-GPU node; BW logged to `docs/perf/`
 
 ### D3 — TENO7-A reconstruction (higher spectral resolution)
 - Implement `teno7_face_t` functor in `include/physics/teno7.hpp` following
   Fu et al. (2019); `__host__ __device__`, `template <Axis DIR>`
+- TENO7-A chosen over WENO-AO (avoids multi-level WENO weights, no thread divergence)
+  and DGSEM (subcell limiting breaks GPU advantage for shock+AMR flows)
 - Replace WENO5-Z face interpolation in `gpu_rhs.cu` via the R4 backend tag;
   WENO5-Z remains available for comparison
 - Gate: T08 isentropic vortex convergence rate ≥ 3.8 (was ≥ 1.8); Sod shock
   tube bit-identical for X/Y/Z; no new positivity violations
 
 ### D4 — GPU-resident GMRES for implicit viscous solve
-- Implement preconditioned GMRES in `src/cuda/gpu_gmres.cu` using cuBLAS
-  for BLAS-1/2 and a block-Jacobi preconditioner
+- Implement **matrix-free** preconditioned GMRES in `src/cuda/gpu_gmres.cu`:
+  `A·v` product = apply viscous stencil kernel (no sparse matrix assembly);
+  BLAS-1 (dot, axpy, nrm2) via cuBLAS; block-Jacobi preconditioner as diagonal
+  inverse of the stencil diagonal — no external AMG library required
 - Wire into IMEX-ARK path: explicit convective RHS stays on GPU stream;
   implicit viscous Helmholtz solve uses GPU-resident GMRES
 - Gate: Poiseuille flow viscous solution matches analytical to 1e-6;
@@ -100,7 +114,9 @@ A fully GPU-native, production-grade compressible CFD solver with:
 ### D5 — Reactive flows (single-step Arrhenius)
 - Add species transport scalar φ_s alongside ACDI phase field
 - Arrhenius source S = A·ρ·Y·exp(-Ea/RT) as GPU functor in
-  `include/physics/arrhenius.hpp`; operator-split after RK3 stage
+  `include/physics/arrhenius.hpp`; **explicit RK4 operator-split** after RK3 stage
+  (sufficient for deflagration; CVODE optional for stiff detonation, gated by
+  `#ifdef HAVE_CVODE`)
 - Gate: 1D detonation wave speed matches Chapman-Jouguet to 1 % over 200 steps
 
 ### D6 — P1 radiation transport
@@ -115,10 +131,14 @@ A fully GPU-native, production-grade compressible CFD solver with:
 - Gate: turbulent channel Re_τ = 395; u⁺ log-law intercept B ∈ [4.8, 5.5];
   wake-region u⁺ within 5 % of DNS at y⁺ > 50
 
-### D8 — Tensor core acceleration (optional, H100 target)
-- WGMMA / HMMA for the WENO reconstruction matrix multiply on H100
+### D8 — H100 TMA + thread-block clusters (optional, H100 target)
+- Use **Tensor Memory Accelerator (TMA)** (`cp.async.bulk`) for async 2D/3D tile loads
+  into shared memory (replaces `cp.async` + sync barrier pattern from D0.5)
+- Use thread-block clusters (`__cluster_dims__`) for producer–consumer pipelining
+  across SMs on the same GPC
+- **Not** tensor cores (HMMA/WGMMA) — WENO reconstruction is not a matrix multiply
 - Guard with `#if __CUDA_ARCH__ >= 900`
-- Gate: throughput ≥ 2× WENO5-Z on H100 at same accuracy
+- Gate: k_rhs_conv throughput ≥ 1.5× D0.5 baseline on H100; same accuracy
 
 ## Code rules
 
@@ -141,9 +161,10 @@ A fully GPU-native, production-grade compressible CFD solver with:
 
 ### CUDA
 11. `cudaDeviceSynchronize()` forbidden in the advance loop; use stream events.
-12. All halo exchange: async on the solver stream; no blocking CPU MPI staging
-    once D2 lands (NCCL P2P).
-13. Kernel roofline target: ≥ 70 % of peak memory BW (Nsight Compute).
+12. Multi-GPU halos: CUDA-aware MPI (`MPI_Isend`/`MPI_Irecv` with GPU buffer
+    pointers); NCCL only for collective reductions (`mpi_allreduce_min`).
+13. Kernel roofline targets: ≥ 55 % of peak BW for RHS/stencil kernels;
+    ≥ 75 % for copy/halo kernels (Nsight Compute roofline).
 14. New kernels ship with an `ncu` baseline logged to `docs/perf/`.
 15. Cooperative groups used for any warp-level reduction (no raw `__shfl_sync`
     magic constants).
@@ -199,7 +220,7 @@ cmake --build build -t t26         # NSSolver GPU dispatch (P10-A3)
 cmake --build build -t t27         # SGS Smagorinsky (P-SGS-GPU)
 cmake --build build -t t28         # MPI+GPU halo exchange (P-MPI-GPU)
 cmake --build build -t t29         # GPU-native AMR (D1 gate)
-cmake --build build -t t30         # NCCL halo exchange (D2 gate)
+cmake --build build -t t30         # CUDA-aware MPI halo exchange (D2 gate)
 ```
 
 ## Key references
@@ -215,7 +236,9 @@ cmake --build build -t t30         # NCCL halo exchange (D2 gate)
 - NVIDIA Nsight Compute roofline guide
 - Harris (2007) — optimising parallel reduction
 - Volkov (2010) — better performance at lower occupancy
-- cuBLAS, NCCL, Cooperative Groups programming guides
+- cuBLAS, Cooperative Groups, CUDA-aware MPI programming guides
+- Romero et al. (2023) — STREAmS-2: CUDA-aware MPI halo reference
+- Mengaldo et al. (2021) — PyFR: multi-GPU CFD best practices
 
 **Physics**
 - Pope (2000) — Turbulent Flows (LES/DNS reference)
