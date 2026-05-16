@@ -1,0 +1,30 @@
+# Build outputs
+build/
+build_dbg/
+*.o
+*.a
+*.so
+
+# CMake generated
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+
+# IDE / tooling
+.cache/
+.vs/
+.vscode/
+*.user
+*.suo
+.clangd
+
+# Claude Code — local state (do not commit)
+.claude/projects/
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db

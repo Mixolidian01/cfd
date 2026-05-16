@@ -1,0 +1,48 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git status*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(git push origin to_refactor*)",
+      "Bash(grep -rn*)",
+      "Bash(find . -name*)",
+      "Bash(nvcc --version)",
+      "Bash(nvidia-smi*)"
+    ],
+    "deny": [
+      "Bash(git push origin main*)",
+      "Bash(git push origin to_debug*)",
+      "Bash(git reset --hard*)",
+      "Bash(git checkout to_debug -- *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/pre-edit.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/post-edit.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
