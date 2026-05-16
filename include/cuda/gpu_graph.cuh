@@ -32,6 +32,7 @@
 #include "gpu_rhs.cuh"
 #include "gpu_cfl.cuh"
 #include "gpu_cf.cuh"
+#include "gpu_sgs.cuh"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -50,6 +51,12 @@ struct GpuGraphSolver : IGpuSolver {
     GpuRhsList       rhs_list;
     GpuCflList       cfl_list;
     GpuCfList        cf_list;   // P14.4: Berger-Colella CF correction
+    GpuSgsList       sgs_list;  // P-SGS-GPU: Smagorinsky operator split
+
+    // SGS parameters — set via set_gpu_sgs() before build().
+    bool   sgs_enabled = false;
+    double sgs_Cs_     = 0.16;
+    double sgs_Pr_t_   = 0.9;
 
     // Per-leaf RK3 metadata and Qn pool
     GpuRk3LeafMeta* d_rk3_metas = nullptr;
@@ -70,6 +77,12 @@ struct GpuGraphSolver : IGpuSolver {
     GpuGraphSolver(const GpuGraphSolver&) = delete;
     GpuGraphSolver& operator=(const GpuGraphSolver&) = delete;
     ~GpuGraphSolver();
+
+    // Enable Smagorinsky SGS for subsequent build() calls.
+    // Must be called before build() to take effect on the current topology.
+    void set_gpu_sgs(double Cs, double Pr_t) override {
+        sgs_Cs_ = Cs; sgs_Pr_t_ = Pr_t; sgs_enabled = true;
+    }
 
     // Rebuild all component lists from the tree; invalidates any captured graphs.
     // bc_type: 0=periodic, 1=wall, 2=open.

@@ -133,6 +133,7 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
     rhs_list.build(tree, pool);
     cfl_list.build(tree, pool);
     cf_list.build(tree, pool, rhs_list.d_rhs_pool, rhs_list.d_scratch_pool);
+    if (sgs_enabled) sgs_list.build(tree, pool, sgs_Cs_, sgs_Pr_t_);
 
     const auto& leaves = tree.leaf_indices();
     n_leaves = (int)leaves.size();
@@ -285,6 +286,12 @@ double GpuGraphSolver::_advance_amr(double cfl) {
     // Apply Berger-Colella correction to coarse Q (once, after all 3 stages).
     cf_list.apply_correction(stream, dt);
 
+    // SGS operator-split: refresh ghosts with Q^{n+1} then apply Smagorinsky.
+    if (sgs_enabled) {
+        ghost_list.exec(stream);
+        sgs_list.exec(cfl_list.d_dt, stream);
+    }
+
     CUDA_CHECK(cudaStreamSynchronize(stream));
     return dt;
 }
@@ -305,8 +312,13 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
     const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
 
     if (!graph_valid) {
-        // First step after build: run explicit then capture sub-graphs
+        // First step after build: run explicit then capture sub-graphs.
+        // SGS runs after the full RK3 cycle (outside captured graphs).
         _run_rk3_explicit(stream);
+        if (sgs_enabled) {
+            ghost_list.exec(stream);
+            sgs_list.exec(cfl_list.d_dt, stream);
+        }
         CUDA_CHECK(cudaStreamSynchronize(stream));
         _capture_graphs();
     } else {
@@ -318,6 +330,10 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
         CUDA_CHECK(cudaGraphLaunch(graph_s2, stream));
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
         CUDA_CHECK(cudaGraphLaunch(graph_s3, stream));
+        if (sgs_enabled) {
+            ghost_list.exec(stream);
+            sgs_list.exec(cfl_list.d_dt, stream);
+        }
         CUDA_CHECK(cudaStreamSynchronize(stream));
     }
 

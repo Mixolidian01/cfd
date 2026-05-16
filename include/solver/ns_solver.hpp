@@ -55,6 +55,9 @@ struct IGpuSolver : TimeIntegrator {
     // P11.8: re-upload CPU Q → GPU after CPU fallback steps (AMR path).
     virtual void   upload_q()                                                 const = 0;
     virtual void   build(const BlockTree& tree, const GpuPool& pool, int bc_type) = 0;
+    // P-SGS-GPU: enable Smagorinsky SGS for subsequent build() calls.
+    // Default no-op — only GpuGraphSolver overrides this.
+    virtual void   set_gpu_sgs(double /*Cs*/, double /*Pr_t*/) {}
 };
 
 // ── Diagnostics written every `diag_interval` steps ───────────────────────────────────

@@ -495,6 +495,11 @@ void NSSolver::regrid() {
 
     // A3: rebuild GPU lists after topology change (new d_Q pointers; stale
     // CUDA graphs from the previous build would reference freed memory).
-    if (gpu_solver_)
+    if (gpu_solver_) {
+        if (cfg.physics.sgs) {
+            if (auto* sm = dynamic_cast<SmagorinskyModel*>(cfg.physics.sgs.get()))
+                gpu_solver_->set_gpu_sgs(sm->Cs, sm->Pr_t);
+        }
         gpu_solver_->build(tree, *gpu_pool_, bc_to_int(cfg.bc.variant));
+    }
 }

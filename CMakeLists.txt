@@ -188,10 +188,10 @@ if(NVCC)
         ${_S}/schemes/viscous_rhs.cpp
         ${_S}/schemes/rhs_sensors.cpp
     )
-    set(_GPU_NS                                         # full solver set (t25, t26)
+    set(_GPU_NS                                         # full solver set (t25, t26, t27)
         ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
         ${_S}/cuda/gpu_rhs.cu   ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
-        ${_S}/cuda/gpu_cf.cu
+        ${_S}/cuda/gpu_cf.cu    ${_S}/cuda/gpu_sgs.cu
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
@@ -269,8 +269,18 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}
         SRCS ${_T}/test_p86_gpu_graph.cu
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
-             ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu ${_GPU_POOL}
+             ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
+             ${_S}/cuda/gpu_sgs.cu  ${_GPU_POOL}
              ${_GPU_OPS}
+    )
+    add_nvcc_gate(TARGET t27 BIN t27_gpu_sgs       COMMENT "P-SGS-GPU Smagorinsky kernel"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_p_sgs_gpu.cu
+             ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
+             ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
+             ${_S}/cuda/gpu_sgs.cu  ${_GPU_POOL}
+             ${_GPU_OPS}
+             ${_S}/models/sgs.cpp
     )
     add_nvcc_gate(TARGET t25 BIN t25_gpu_nssolver          COMMENT "P9.1 GPU vs CPU NSSolver"
         EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
@@ -281,7 +291,7 @@ if(NVCC)
         SRCS ${_T}/test_p10a3_gpu_nssolver.cu ${_GPU_NS}
     )
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27 skipped")
 endif()
 
 # =============================================================================
