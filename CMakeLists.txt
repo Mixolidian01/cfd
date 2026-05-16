@@ -291,6 +291,26 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_p10a3_gpu_nssolver.cu ${_GPU_NS}
     )
+    # D0 roofline baseline benchmark (build-only target; run manually for profiling)
+    set(_D0_SRCS
+        ${_T}/bench_d0_roofline.cu
+        ${_S}/cuda/gpu_graph.cu    ${_S}/cuda/gpu_ghost_fill.cu
+        ${_S}/cuda/gpu_rhs.cu      ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
+        ${_S}/cuda/gpu_cf.cu       ${_S}/cuda/gpu_sgs.cu
+        ${_S}/cuda/gpu_mpi_halo.cu
+        ${_GPU_BASE} ${_GPU_OPS}
+    )
+    set(_D0_BIN ${CMAKE_BINARY_DIR}/bench_d0_roofline)
+    add_custom_command(
+        OUTPUT  ${_D0_BIN}
+        COMMAND ${NVCC} ${_NVCC_BASE} ${_WNO} ${_D0_SRCS} -o ${_D0_BIN} -lm
+        DEPENDS ${_D0_SRCS}
+        COMMENT "nvcc: compiling D0 roofline benchmark"
+        VERBATIM
+    )
+    add_custom_target(bench_d0 DEPENDS ${_D0_BIN}
+        COMMENT "D0 roofline benchmark (run ./build/bench_d0_roofline)"
+    )
 
     # add_nvcc_mpi_gate: like add_nvcc_gate but runs binary via "mpirun -n 2"
     function(add_nvcc_mpi_gate)
