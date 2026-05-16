@@ -80,6 +80,7 @@ add_library(ns_solver STATIC
     src/io/http_server.cpp          # R9-E1: POSIX socket / HTTP utilities
     src/io/frame_packer.cpp         # R9-E1: wire-format frame serialisers
     src/solver/solver_factory.cpp
+    src/solver/ensemble_solver.cpp   # P14.5: EnsembleSolver + stochastic EnKF
 )
 target_link_libraries(ns_solver PUBLIC operators)
 find_package(Threads REQUIRED)
@@ -124,6 +125,7 @@ add_executable(test_imex      tests/solver/test_imex.cpp)
 add_executable(test_sat       tests/schemes/test_sat.cpp)
 add_executable(test_ghost_fill tests/mesh/test_ghost_fill.cpp)  # R9-C
 add_executable(test_cell_block_accessors tests/mesh/test_cell_block_accessors.cpp)  # R10-T1
+add_executable(test_ensemble tests/solver/test_ensemble.cpp)                        # P14.5
 
 target_link_libraries(test_linalg    PRIVATE linalg    m)
 target_link_libraries(test_block     PRIVATE block      m)
@@ -136,6 +138,7 @@ target_link_libraries(test_imex      PRIVATE ns_solver  m)
 target_link_libraries(test_sat       PRIVATE ns_solver  m)
 target_link_libraries(test_ghost_fill PRIVATE block     m)  # R9-C: libblock only
 target_link_libraries(test_cell_block_accessors PRIVATE block m)  # R10-T1
+target_link_libraries(test_ensemble PRIVATE ns_solver m)           # P14.5
 
 add_test(NAME linalg     COMMAND test_linalg)
 add_test(NAME block      COMMAND test_block)
@@ -148,6 +151,7 @@ add_test(NAME imex       COMMAND test_imex)
 add_test(NAME sat        COMMAND test_sat)
 add_test(NAME ghost_fill COMMAND test_ghost_fill)  # R9-C
 add_test(NAME cell_block_accessors COMMAND test_cell_block_accessors)  # R10-T1
+add_test(NAME ensemble             COMMAND test_ensemble)              # P14.5
 add_custom_target(taccess DEPENDS test_cell_block_accessors
     COMMAND $<TARGET_FILE:test_cell_block_accessors>
     COMMENT "R10-T1: flat-index accessor test" USES_TERMINAL)
@@ -172,7 +176,8 @@ if(NVCC)
     set(_T ${CMAKE_SOURCE_DIR}/tests/cuda)
 
     set(_GPU_BASE  ${_S}/linalg/linalg.cpp ${_S}/mesh/block_tree.cpp
-                   ${_S}/mesh/amr_operators.cpp ${_S}/mpi/mpi_comm.cpp)
+                   ${_S}/mesh/amr_operators.cpp ${_S}/mesh/ghost_filler.cpp
+                   ${_S}/mpi/mpi_comm.cpp)
     set(_GPU_POOL  ${_S}/cuda/gpu_pool.cu ${_GPU_BASE})
     set(_GPU_OPS                                        # R9-E3: operators split set
         ${_S}/schemes/operators.cpp
@@ -183,6 +188,7 @@ if(NVCC)
     set(_GPU_NS                                         # full solver set (t25, t26)
         ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
         ${_S}/cuda/gpu_rhs.cu   ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
+        ${_S}/cuda/gpu_cf.cu
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
@@ -260,7 +266,7 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}
         SRCS ${_T}/test_p86_gpu_graph.cu
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
-             ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_GPU_POOL}
+             ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu ${_GPU_POOL}
              ${_GPU_OPS}
     )
     add_nvcc_gate(TARGET t25 BIN t25_gpu_nssolver          COMMENT "P9.1 GPU vs CPU NSSolver"
@@ -449,7 +455,7 @@ add_custom_target(sim
 # =============================================================================
 
 add_custom_target(b
-    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill test_cell_block_accessors
+    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill test_cell_block_accessors test_ensemble
     COMMENT "Build all targets (incremental)"
 )
 
@@ -458,6 +464,7 @@ add_custom_target(ba
             test_config test_imex test_sat test_ghost_fill test_cell_block_accessors
             test_bn_amr test_bn_solver test_multiphase
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
+            test_ensemble
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
@@ -476,5 +483,6 @@ add_custom_target(t4 DEPENDS test_ns        COMMAND $<TARGET_FILE:test_ns>      
 # t5 defined above in the CUDA block
 add_custom_target(t6 DEPENDS test_amr6      COMMAND $<TARGET_FILE:test_amr6>      COMMENT "Step 6 gate: test_amr6"      USES_TERMINAL)
 add_custom_target(t7 DEPENDS test_step7     COMMAND $<TARGET_FILE:test_step7>     COMMENT "Step 7 gate: test_step7"     USES_TERMINAL)
-add_custom_target(tconfig DEPENDS test_config      COMMAND $<TARGET_FILE:test_config>      COMMENT "R9-A4 gate: test_config"      USES_TERMINAL)
-add_custom_target(timex   DEPENDS test_imex        COMMAND $<TARGET_FILE:test_imex>        COMMENT "R9-F1 gate: test_imex"        USES_TERMINAL)
+add_custom_target(tconfig  DEPENDS test_config   COMMAND $<TARGET_FILE:test_config>   COMMENT "R9-A4 gate: test_config"   USES_TERMINAL)
+add_custom_target(timex    DEPENDS test_imex     COMMAND $<TARGET_FILE:test_imex>     COMMENT "R9-F1 gate: test_imex"     USES_TERMINAL)
+add_custom_target(t145     DEPENDS test_ensemble COMMAND $<TARGET_FILE:test_ensemble> COMMENT "P14.5 gate: EnsembleSolver" USES_TERMINAL)

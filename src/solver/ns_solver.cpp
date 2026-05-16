@@ -218,28 +218,22 @@ double NSSolver::advance() {
         step % cfg.amr.regrid_interval == 0)
         regrid();
 
-    // P11.8: GPU path — flat tree only.
-    // When AMR is active (max_leaf_level > 0), fall back to CPU path which handles
-    // Berger-Colella flux registers correctly.  Re-upload Q before the next GPU step
-    // because the CPU path modifies CellBlock::Q without going through the GPU pool.
+    // P11.8 / P14.4: GPU path — flat and AMR trees.
+    // P14.4 adds GPU Berger-Colella correction (GpuCfList) so the GPU path now
+    // handles AMR trees directly via _advance_amr() in GpuGraphSolver.
+    // NOTE: gpu_rhs.cu hardcodes ducros p_threshold=0.1 and blend_width=0.1;
+    // cfg.numerics.ducros_p_threshold/blend_width have no effect on GPU path (R9-D).
     if (gpu_solver_) {
         if (gpu_q_stale_) {
             gpu_solver_->upload_q();
             gpu_q_stale_ = false;
         }
-        if (tree.max_leaf_level() == 0) {
-            // Flat tree: full GPU path (no flux correction needed).
-            // NOTE: gpu_rhs.cu hardcodes ducros p_threshold=0.1 and blend_width=0.1;
-            // cfg.numerics.ducros_p_threshold/blend_width have no effect on this path (R9-D).
-            const double dt = gpu_solver_->advance(tree, cfg.time.cfl);
-            gpu_solver_->download_q(tree);
-            last_dt_ = dt;
-            t    += dt;
-            step += 1;
-            return dt;
-        }
-        // AMR active: fall through to CPU path; mark GPU Q stale for next flat step.
-        gpu_q_stale_ = true;
+        const double dt = gpu_solver_->advance(tree, cfg.time.cfl);
+        gpu_solver_->download_q(tree);
+        last_dt_ = dt;
+        t    += dt;
+        step += 1;
+        return dt;
     }
 
     // P10-A2: CPU flat-tree SSP-RK3 via CpuRk3Integrator.

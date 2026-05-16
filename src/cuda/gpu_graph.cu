@@ -132,6 +132,7 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
     ghost_list.build(tree, pool, bc_type);
     rhs_list.build(tree, pool);
     cfl_list.build(tree, pool);
+    cf_list.build(tree, pool, rhs_list.d_rhs_pool, rhs_list.d_scratch_pool);
 
     const auto& leaves = tree.leaf_indices();
     n_leaves = (int)leaves.size();
@@ -236,11 +237,67 @@ void GpuGraphSolver::_capture_graphs() {
     graph_valid = true;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// _advance_amr: P14.4 — explicit kernel sequence with Berger-Colella correction.
+// Called when the tree has C/F interfaces (cf_list.n_coarse > 0).
+// Does NOT use CUDA graphs (CF correction requires per-stage atomics into d_reg).
+// ─────────────────────────────────────────────────────────────────────────────
+double GpuGraphSolver::_advance_amr(double cfl) {
+    // Invalidate any captured flat-tree graphs — topology changed.
+    _destroy_graphs();
+
+    constexpr int TPB = 256;
+    const double dt = cfl_list.exec(cfl, stream);
+    const double* d_dt = cfl_list.d_dt;
+    const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
+
+    // Zero flux registers once before stage 1 (accumulate across all 3 stages).
+    cf_list.zero_regs(stream);
+
+    // Stage 1  — weight 1/6
+    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
+    k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+    ghost_list.exec(stream);
+    rhs_list.exec(stream, /*zero_rhs=*/false);
+    cf_list.undo_coarse_flux(stream);
+    cf_list.accum_fine_flux(stream, 1.0/6.0);
+    k_rk3s1<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt);
+    k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+
+    // Stage 2  — weight 1/6
+    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
+    ghost_list.exec(stream);
+    rhs_list.exec(stream, /*zero_rhs=*/false);
+    cf_list.undo_coarse_flux(stream);
+    cf_list.accum_fine_flux(stream, 1.0/6.0);
+    k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 0.75, 0.25);
+    k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+
+    // Stage 3  — weight 2/3
+    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
+    ghost_list.exec(stream);
+    rhs_list.exec(stream, /*zero_rhs=*/false);
+    cf_list.undo_coarse_flux(stream);
+    cf_list.accum_fine_flux(stream, 2.0/3.0);
+    k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
+    k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+
+    // Apply Berger-Colella correction to coarse Q (once, after all 3 stages).
+    cf_list.apply_correction(stream, dt);
+
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    return dt;
+}
+
 double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
     // build() must be called before advance() and after every regrid, even
     // if the leaf count is unchanged (same-count regrid reallocates d_Q
     // pointers; a stale captured graph would dereference freed memory).
     if (n_leaves == 0) return 1.0e300;
+
+    // P14.4: AMR path — explicit kernel sequence with Berger-Colella correction.
+    if (cf_list.n_coarse > 0)
+        return _advance_amr(cfl);
 
     // CFL on stream — writes d_dt to device, syncs, returns host value
     const double dt = cfl_list.exec(cfl, stream);

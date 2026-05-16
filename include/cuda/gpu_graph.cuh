@@ -31,6 +31,7 @@
 #include "gpu_ghost_fill.cuh"
 #include "gpu_rhs.cuh"
 #include "gpu_cfl.cuh"
+#include "gpu_cf.cuh"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -48,6 +49,7 @@ struct GpuGraphSolver : IGpuSolver {
     GpuGhostFillList ghost_list;
     GpuRhsList       rhs_list;
     GpuCflList       cfl_list;
+    GpuCfList        cf_list;   // P14.4: Berger-Colella CF correction
 
     // Per-leaf RK3 metadata and Qn pool
     GpuRk3LeafMeta* d_rk3_metas = nullptr;
@@ -90,4 +92,7 @@ private:
     void _run_rk3_explicit(cudaStream_t s) const;
     void _capture_graphs();
     void _destroy_graphs();
+    // P14.4: explicit per-stage kernel sequence with Berger-Colella CF correction.
+    // Used when tree has C/F interfaces (cf_list.n_coarse > 0).
+    double _advance_amr(double cfl);
 };
