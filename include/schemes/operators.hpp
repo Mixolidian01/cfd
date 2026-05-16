@@ -25,6 +25,8 @@
 #include "physics/diff_ops.hpp"
 #include "physics/face_interp.hpp"
 #include <array>
+#include <cmath>
+#include <cstdint>
 
 // ── P13.1: compile-time axis tag ─────────────────────────────────────────────
 // Enables template<Axis DIR> flux specialisations; eliminates 3-way if/else
@@ -76,6 +78,48 @@ inline std::array<double,NVAR> kep_flux_t(const Prim& L, const Prim& R) noexcept
     return F;
 }
 
+// ── P15.2: MUSCL reconstruction at block boundary faces with real neighbors ───
+// Van Albada symmetric slope limiter (C¹, avoids clip at smooth extrema).
+// Returns the limited slope given left and right finite differences sL and sR.
+inline double van_albada_slope(double sL, double sR) noexcept {
+    if (sL * sR <= 0.0) return 0.0;
+    return (sL * sR * (sL + sR)) / (sL * sL + sR * sR + 1e-300);
+}
+
+// muscl_bnd_face<DIR>: second-order MUSCL reconstruction at a block boundary
+// face between cells (n, a, b) and (n+1, a, b) along axis DIR.
+// Uses a 4-cell stencil: n-1, n, n+1, n+2 — all within the NG=2 ghost region.
+// Requires has_nbr (from tree) to confirm ghost cells hold real physics data.
+template<Axis DIR>
+inline void muscl_bnd_face(const Prim* pc, int n, int a, int b,
+                            Prim& qL, Prim& qR) noexcept {
+    const Prim& pm = pc[cell_idx_axis<DIR>(n-1, a, b)];
+    const Prim& p0 = pc[cell_idx_axis<DIR>(n,   a, b)];
+    const Prim& pp = pc[cell_idx_axis<DIR>(n+1, a, b)];
+    const Prim& p2 = pc[cell_idx_axis<DIR>(n+2, a, b)];
+
+    auto recon = [](double vm, double v0, double vp, double v2,
+                    double& outL, double& outR) noexcept {
+        outL = v0 + 0.5 * van_albada_slope(v0 - vm, vp - v0);
+        outR = vp - 0.5 * van_albada_slope(vp - v0, v2 - vp);
+    };
+
+    recon(pm.rho, p0.rho, pp.rho, p2.rho, qL.rho, qR.rho);
+    recon(pm.u,   p0.u,   pp.u,   p2.u,   qL.u,   qR.u);
+    recon(pm.v,   p0.v,   pp.v,   p2.v,   qL.v,   qR.v);
+    recon(pm.w,   p0.w,   pp.w,   p2.w,   qL.w,   qR.w);
+    recon(pm.p,   p0.p,   pp.p,   p2.p,   qL.p,   qR.p);
+
+    qL.gamma_m = p0.gamma_m;  qR.gamma_m = pp.gamma_m;
+    qL.p_inf_m = p0.p_inf_m;  qR.p_inf_m = pp.p_inf_m;
+    qL.T = qL.p / (qL.rho * R_GAS);
+    qR.T = qR.p / (qR.rho * R_GAS);
+    const double p_eff_L = qL.p + qL.gamma_m * qL.p_inf_m;
+    const double p_eff_R = qR.p + qR.gamma_m * qR.p_inf_m;
+    qL.c = std::sqrt(std::max(qL.gamma_m * p_eff_L / qL.rho, 0.0));
+    qR.c = std::sqrt(std::max(qR.gamma_m * p_eff_R / qR.rho, 0.0));
+}
+
 // ── Per-block convective RHS  dQ/dt|_conv = -(1/h)(dF/dx + dG/dy + dH/dz) ──
 // Ghost cells must be filled.  rhs is added to (not overwritten).
 void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept;
@@ -95,8 +139,12 @@ struct DucrosConfig {
 
 // ── Full RHS: convective + viscous ───────────────────────────────────────────
 // rhs_blk.Q is zeroed then filled with convective + viscous contributions.
+// has_nbr: 6-bit mask (bit d = FaceDir d) — set by tree_rhs when a same-level
+// neighbor block provides ghost data; enables MUSCL at those boundary faces.
+// Default 0 = all domain BCs, PCM fallback (safe for standalone unit tests).
 void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
-                 const DucrosConfig& ducros = DucrosConfig{}) noexcept;
+                 const DucrosConfig& ducros = DucrosConfig{},
+                 uint8_t has_nbr = 0) noexcept;
 
 // ── Tree-level RHS (loops over all leaves) ───────────────────────────────────
 // Fills ghost cells, then calls compute_rhs for every leaf block.
@@ -148,7 +196,8 @@ template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
           && SpatialReconstruction<Recon<Axis::X>>
           && EquationOfState<EOS>
 void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
-                       const DucrosConfig& ducros = DucrosConfig{}) noexcept;
+                       const DucrosConfig& ducros = DucrosConfig{},
+                       uint8_t has_nbr = 0) noexcept;
 
 // ── P14.1: ACDI phase-field advection RHS ────────────────────────────────────
 // Conservative 1st-order upwind: ∂φ/∂t = -∇·(φu).

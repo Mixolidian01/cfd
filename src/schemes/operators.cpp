@@ -161,7 +161,8 @@ static void fill_mu_cache(const Prim* pc, double* mu_arr) noexcept {
 // they can be resolved at link time.
 // =============================================================================
 void convective_rhs_impl(const Prim* pc, const double* duc,
-                          CellBlock& rhs, double h) noexcept;
+                          CellBlock& rhs, double h,
+                          uint8_t has_nbr = 0) noexcept;
 void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
                       CellBlock& rhs, double h) noexcept;
 void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
@@ -179,7 +180,8 @@ void fill_ducros_cache(const Prim* pc, double* duc, double h,
 template<Axis DIR, template<Axis> class Flux, template<Axis> class Recon>
 static void accumulate_face_typed(const Prim* pc, const double* duc,
                                    CellBlock& rhs, double ih,
-                                   int n, int a, int b) noexcept {
+                                   int n, int a, int b,
+                                   uint8_t has_nbr = 0) noexcept {
     constexpr double kep_threshold = 1.0e-8;
 
     // R6: cell_idx_axis replaces the inlined face_lr lambda; axis_view replaces
@@ -189,7 +191,18 @@ static void accumulate_face_typed(const Prim* pc, const double* duc,
     const Prim& pL = pc[Li];
     const Prim& pR = pc[Ri];
     const double theta = std::max(duc[Li], duc[Ri]);
-    const bool is_bnd = (n < ilo() || n+1 > ihi());
+
+    const bool is_left_bnd  = (n   < ilo());
+    const bool is_right_bnd = (n+1 > ihi());
+    const bool is_bnd = is_left_bnd || is_right_bnd;
+
+    // P15.2: check if this boundary face has a real same-level neighbor block.
+    // Bit layout matches FaceDir enum: XMINUS=0,XPLUS=1,YMINUS=2,YPLUS=3,ZMINUS=4,ZPLUS=5.
+    constexpr int minus_bit = (DIR==Axis::X) ? 0 : (DIR==Axis::Y) ? 2 : 4;
+    constexpr int plus_bit  = minus_bit + 1;
+    const bool has_nbr_here = is_bnd && (
+        (is_left_bnd  && ((has_nbr >> minus_bit) & 1)) ||
+        (is_right_bnd && ((has_nbr >> plus_bit)  & 1)));
 
     // face_to_ijk still needed for Recon functor (uses natural i,j,k).
     auto face_to_ijk = [](int nn, int aa, int bb, int& xi, int& yi, int& zi) {
@@ -199,7 +212,7 @@ static void accumulate_face_typed(const Prim* pc, const double* duc,
     };
 
     std::array<double,NVAR> F;
-    if (!is_bnd && theta < kep_threshold) {
+    if ((!is_bnd || has_nbr_here) && theta < kep_threshold) {
         F = kep_flux_t<DIR>(pL, pR);
     } else {
         const auto Fk = kep_flux_t<DIR>(pL, pR);
@@ -209,6 +222,11 @@ static void accumulate_face_typed(const Prim* pc, const double* duc,
             face_to_ijk(n, a, b, xi, yi, zi);
             Prim qL, qR;
             Recon<DIR>{}(pc, xi, yi, zi, qL, qR);
+            Fs = Flux<DIR>{}(qL, qR);
+        } else if (has_nbr_here) {
+            // Block boundary with real same-level neighbor: MUSCL+Flux (P15.2).
+            Prim qL, qR;
+            muscl_bnd_face<DIR>(pc, n, a, b, qL, qR);
             Fs = Flux<DIR>{}(qL, qR);
         } else {
             bool wall = (pL.p == pR.p);
@@ -234,23 +252,24 @@ static void accumulate_face_typed(const Prim* pc, const double* duc,
 
 template<template<Axis> class Flux, template<Axis> class Recon>
 static void convective_rhs_impl_typed(const Prim* pc, const double* duc,
-                                       CellBlock& rhs, double h) noexcept {
+                                       CellBlock& rhs, double h,
+                                       uint8_t has_nbr = 0) noexcept {
     const double ih = 1.0 / h;
 
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo()-1; i <= ihi(); ++i)
-        accumulate_face_typed<Axis::X,Flux,Recon>(pc, duc, rhs, ih, i, j, k);
+        accumulate_face_typed<Axis::X,Flux,Recon>(pc, duc, rhs, ih, i, j, k, has_nbr);
 
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo()-1; j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i)
-        accumulate_face_typed<Axis::Y,Flux,Recon>(pc, duc, rhs, ih, j, i, k);
+        accumulate_face_typed<Axis::Y,Flux,Recon>(pc, duc, rhs, ih, j, i, k, has_nbr);
 
     for (int k = ilo()-1; k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i)
-        accumulate_face_typed<Axis::Z,Flux,Recon>(pc, duc, rhs, ih, k, i, j);
+        accumulate_face_typed<Axis::Z,Flux,Recon>(pc, duc, rhs, ih, k, i, j, has_nbr);
 }
 
 // =============================================================================
@@ -281,7 +300,7 @@ void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 // Full RHS — P2.3 + B5 + P3.2: prim, µ, and Ducros caches built once
 // =============================================================================
 void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
-                 const DucrosConfig& ducros) noexcept
+                 const DucrosConfig& ducros, uint8_t has_nbr) noexcept
 {
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> mu_arr;
@@ -296,8 +315,8 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
         for (int i = ilo(); i <= ihi(); ++i)
             rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
 
-    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h);
-    viscous_rhs_impl   (pc.data(), mu_arr.data(),         rhs_blk, blk.h);
+    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, has_nbr);
+    viscous_rhs_impl   (pc.data(), mu_arr.data(),               rhs_blk, blk.h);
 }
 
 // =============================================================================
@@ -312,7 +331,7 @@ template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
           && SpatialReconstruction<Recon<Axis::X>>
           && EquationOfState<EOS>
 void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
-                       const DucrosConfig& ducros) noexcept
+                       const DucrosConfig& ducros, uint8_t has_nbr) noexcept
 {
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> mu_arr;
@@ -327,7 +346,7 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
         for (int i = ilo(); i <= ihi(); ++i)
             rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
 
-    convective_rhs_impl_typed<Flux,Recon>(pc.data(), duc.data(), rhs_blk, blk.h);
+    convective_rhs_impl_typed<Flux,Recon>(pc.data(), duc.data(), rhs_blk, blk.h, has_nbr);
     viscous_rhs_impl          (pc.data(), mu_arr.data(),          rhs_blk, blk.h);
 }
 
@@ -336,16 +355,16 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
 #include "physics/ideal_gas_eos.hpp"
 
 template void compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
-    const CellBlock&, CellBlock&, const DucrosConfig&) noexcept;
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
 template void compute_rhs_typed<HllcFlux,   Weno5Recon, IdealGasEOS>(
-    const CellBlock&, CellBlock&, const DucrosConfig&) noexcept;
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
 
 #include "physics/stiffened_gas_eos.hpp"
 
 template void compute_rhs_typed<HllcEsFlux, Weno5Recon, StiffenedGasEOS>(
-    const CellBlock&, CellBlock&, const DucrosConfig&) noexcept;
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
 template void compute_rhs_typed<HllcFlux, Weno5Recon, StiffenedGasEOS>(
-    const CellBlock&, CellBlock&, const DucrosConfig&) noexcept;
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
 
 // =============================================================================
 // Berger-Colella reflux: undo_cf_face_flux
@@ -537,13 +556,26 @@ void tree_rhs(BlockTree& tree,
     const int n_active = (int)order.size();
 
     // ── 3. Per-leaf RHS — parallel (fully independent per slot) ──────────────
+    // P15.2: build same-level neighbor mask per leaf for MUSCL at block boundaries.
+    auto leaf_has_nbr = [&](int nidx) -> uint8_t {
+        const auto& nd = tree.nodes[nidx];
+        uint8_t m = 0;
+        for (int d = 0; d < 6; ++d) {
+            int ni = nd.neighbours[d];
+            if (ni >= 0 && tree.nodes[ni].level == nd.level)
+                m |= uint8_t(1) << d;
+        }
+        return m;
+    };
+
     { PROFILE_SCOPE("tree_rhs/compute");
 #pragma omp parallel for schedule(dynamic,4)
       for (int oi = 0; oi < n_active; ++oi) {
           const int li       = order[oi];
           const int node_idx = leaves[li];
           if (!tree.nodes[node_idx].has_block()) continue;  // P7.1: remote leaf
-          compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li], ducros);
+          compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li], ducros,
+                      leaf_has_nbr(node_idx));
           undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
           if (cf_coarse_zero_grad)
               undo_cf_viscous_energy(tree, node_idx, rhs_blocks[li]);
@@ -595,13 +627,25 @@ void tree_rhs_typed(BlockTree& tree,
     }
     const int n_active = (int)order.size();
 
+    auto leaf_has_nbr_t = [&](int nidx) -> uint8_t {
+        const auto& nd = tree.nodes[nidx];
+        uint8_t m = 0;
+        for (int d = 0; d < 6; ++d) {
+            int ni = nd.neighbours[d];
+            if (ni >= 0 && tree.nodes[ni].level == nd.level)
+                m |= uint8_t(1) << d;
+        }
+        return m;
+    };
+
 #pragma omp parallel for schedule(dynamic,4)
     for (int oi = 0; oi < n_active; ++oi) {
         const int li       = order[oi];
         const int node_idx = leaves[li];
         if (!tree.nodes[node_idx].has_block()) continue;
         compute_rhs_typed<Flux, Recon, EOS>(
-            *tree.nodes[node_idx].block, rhs_blocks[li], ducros);
+            *tree.nodes[node_idx].block, rhs_blocks[li], ducros,
+            leaf_has_nbr_t(node_idx));
         undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
         if (cf_coarse_zero_grad)
             undo_cf_viscous_energy(tree, node_idx, rhs_blocks[li]);

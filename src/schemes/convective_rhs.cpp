@@ -43,37 +43,57 @@ static inline void face_to_ijk(int n, int a, int b,
 
 // accumulate_face<DIR>: compute the flux at one face and accumulate into rhs.
 // R6: rhs updates use axis_view<DIR> — no axis dispatch in the accumulation.
-// See operators.cpp P15.1 / P3.2 design notes for the full hybrid scheme doc.
+// P15.2: has_nbr mask enables MUSCL reconstruction at block boundaries where
+//        same-level neighbor ghost data is available.
 template <Axis DIR>
 static void accumulate_face(const Prim* pc, const double* duc,
                              CellBlock& rhs, double ih,
-                             int n, int a, int b) noexcept {
+                             int n, int a, int b,
+                             uint8_t has_nbr = 0) noexcept {
     constexpr double kep_threshold = 1.0e-8;
 
     // R6: axis_view maps (n,a,b) → the correct flat index for each axis.
-    // Li = cell_idx for the left cell, Ri for the right — no axis branch needed.
     const int Li = cell_idx_axis<DIR>(n,   a, b);
     const int Ri = cell_idx_axis<DIR>(n+1, a, b);
     const Prim& pL = pc[Li];
     const Prim& pR = pc[Ri];
     const double theta = std::max(duc[Li], duc[Ri]);
-    const bool is_bnd = (n < ilo() || n+1 > ihi());
+
+    const bool is_left_bnd  = (n   < ilo());
+    const bool is_right_bnd = (n+1 > ihi());
+    const bool is_bnd = is_left_bnd || is_right_bnd;
+
+    // P15.2: bit layout matches FaceDir enum (XMINUS=0,XPLUS=1,YMINUS=2,...).
+    constexpr int minus_bit = (DIR==Axis::X) ? 0 : (DIR==Axis::Y) ? 2 : 4;
+    constexpr int plus_bit  = minus_bit + 1;
+    const bool has_nbr_here = is_bnd && (
+        (is_left_bnd  && ((has_nbr >> minus_bit) & 1)) ||
+        (is_right_bnd && ((has_nbr >> plus_bit)  & 1)));
 
     std::array<double,NVAR> F;
-    if (!is_bnd && theta < kep_threshold) {
+    if ((!is_bnd || has_nbr_here) && theta < kep_threshold) {
+        // Smooth region (interior or real-neighbor boundary): entropy-conservative KEP.
         F = kep_flux_t<DIR>(pL, pR);
     } else {
         const auto Fk = kep_flux_t<DIR>(pL, pR);
         std::array<double,NVAR> Fs;
         if (!is_bnd) {
+            // Interior shocked face: WENO5 + HLLC-ES.
             int xi, yi, zi;
             face_to_ijk<DIR>(n, a, b, xi, yi, zi);
             Prim qL, qR;
             weno5_face_t<DIR>(pc, xi, yi, zi, qL, qR);
             Fs = hllc_es_flux_t<DIR>(qL, qR);
+        } else if (has_nbr_here) {
+            // Block boundary with real same-level neighbor: MUSCL + HLLC-ES (P15.2).
+            Prim qL, qR;
+            muscl_bnd_face<DIR>(pc, n, a, b, qL, qR);
+            Fs = hllc_es_flux_t<DIR>(qL, qR);
         } else if (is_wall_ghost(pL, pR)) {
+            // No-slip wall: use KEP (symmetric ghost fill gives zero-slip flux).
             Fs = Fk;
         } else {
+            // Domain BC (periodic self-wrap, open, CF-coarse): PCM + HLLC-ES.
             Fs = hllc_es_flux_t<DIR>(pL, pR);
         }
         const double th = is_bnd ? 1.0 : theta;
@@ -93,7 +113,8 @@ static void accumulate_face(const Prim* pc, const double* duc,
 // Non-static: called from compute_rhs / compute_rhs_typed in operators.cpp.
 // =============================================================================
 void convective_rhs_impl(const Prim* pc, const double* duc,
-                          CellBlock& rhs, double h) noexcept
+                          CellBlock& rhs, double h,
+                          uint8_t has_nbr) noexcept
 {
     PROFILE_SCOPE("convective_rhs_impl");
     const double ih = 1.0 / h;
@@ -102,17 +123,17 @@ void convective_rhs_impl(const Prim* pc, const double* duc,
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo()-1; i <= ihi(); ++i)
-        accumulate_face<Axis::X>(pc, duc, rhs, ih, i, j, k);
+        accumulate_face<Axis::X>(pc, duc, rhs, ih, i, j, k, has_nbr);
 
     // Y: n=j (normal), a=i (innermost for stride-1), b=k
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo()-1; j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i)
-        accumulate_face<Axis::Y>(pc, duc, rhs, ih, j, i, k);
+        accumulate_face<Axis::Y>(pc, duc, rhs, ih, j, i, k, has_nbr);
 
     // Z: n=k (normal), a=i (innermost for stride-1), b=j
     for (int k = ilo()-1; k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i)
-        accumulate_face<Axis::Z>(pc, duc, rhs, ih, k, i, j);
+        accumulate_face<Axis::Z>(pc, duc, rhs, ih, k, i, j, has_nbr);
 }
