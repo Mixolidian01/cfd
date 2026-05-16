@@ -1,26 +1,24 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cmake*)",
-      "Bash(git diff*)",
-      "Bash(git log*)",
-      "Bash(git show*)",
-      "Bash(git status*)",
-      "Bash(git add*)",
-      "Bash(git commit*)",
-      "Bash(git push origin to_refactor*)",
-      "Bash(grep -rn*)",
-      "Bash(find . -name*)",
-      "Bash(nvcc --version)",
-      "Bash(nvidia-smi*)"
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Agent(*)",
+      "WebSearch(*)",
+      "WebFetch(*)"
     ],
     "deny": [
+      "Bash(git push --force*)",
+      "Bash(rm -rf /*)",
+      "Bash(git reset --hard HEAD~*)",
       "Bash(git push origin main*)",
       "Bash(git push origin to_debug*)",
-      "Bash(git reset --hard*)",
-      "Bash(git checkout to_debug -- *)"
+      "Bash(git push origin to_refactor*)"
     ]
   },
+  "enableAllProjectMcpServers": true,
   "hooks": {
     "PreToolUse": [
       {

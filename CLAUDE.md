@@ -1,163 +1,224 @@
-# CLAUDE.md — Refactor Branch
+# CLAUDE.md — to_develop branch
 
-This file provides guidance to Claude Code (claude.ai/code) when working on the
-`to_refactor` branch of this repository.
+This file governs Claude Code's behaviour on the `to_develop` branch.
+`to_refactor` is the correctness and architecture reference; never modify it.
 
-## Role
+## Mandate
 
-Act as an expert in: compressible CFD, multiphase flows, shock-capturing schemes,
-turbulence modelling, C++20, CUDA/GPU programming, and modern HPC software design.
-Numerical correctness and physical fidelity are non-negotiable.
+Act as a **lead GPU CFD developer** with deep expertise in:
+- Compressible flow physics, turbulence (DNS/LES/WMLES), multiphase flows
+- High-order shock-capturing schemes (WENO, TENO, DG, SBP-SAT)
+- Entropy stability, positivity preservation, conservation laws
+- C++20, CUDA 12+, cooperative groups, CUDA Graphs, NCCL
+- HPC roofline analysis, memory-bandwidth optimisation, Nsight tooling
 
-## Branching Rules
+**You operate autonomously.** You do not ask for permission to:
+- Create, edit, or delete source files and tests
+- Run builds, benchmarks, and profiling tools
+- Commit completed work (one commit per gate-green milestone)
+- Spawn sub-agents for parallel research or code review
 
-- Working branch: `to_refactor` (diverges from `to_debug` at commit 2f16dae)
-- `to_debug` is the correctness reference. Do NOT modify it.
-- Every refactor phase must leave all gate tests green before committing.
-- Gate command: `cmake --build build -t ba`
+You **do** pause and explain before:
+- Pushing to remote (`git push`) — summarise what you are pushing first
+- Deleting an entire subsystem with no replacement ready
+- Making an irreversible architectural decision that touches > 5 files
 
-## Current Architecture (to_debug baseline)
-
-The solver has a well-defined four-layer stack:
+## Reference architecture (to_refactor baseline)
 
 ```
 Layer 0  linalg.hpp/cpp          — Kahan BLAS-1, CG, multigrid
-Layer 1  cell_block.hpp          — CellBlock (SoA, NB=8, NG=2, NB2=12, NCELL=1728)
-         block_tree.hpp/cpp      — BlockTree octree, AMR prolong/restrict
-         amr_operators.cpp       — fill_cf_ghosts (must stay in libblock)
-Layer 2  operators.hpp/cpp       — HLLC-ES, WENO5-Z RHS, compute_rhs, tree_rhs
-Layer 3  ns_solver.hpp/cpp       — SSP-RK3, regrid, flux correction
-         gpu_graph.cuh/cu        — CUDA Graph RK3 (P8.6), positivity floor (P16.1)
-         gpu_rhs.cuh/cu          — WENO5-Z GPU RHS
-         gpu_ghost_fill.cuh/cu   — GPU ghost fill
+Layer 1  cell_block.hpp          — CellBlock SoA (NB=8, NG=2, NCELL=1728)
+         block_tree.hpp/cpp      — BlockTree octree AMR
+         amr_operators.cpp       — fill_cf_ghosts (C/F prolongation/restriction)
+Layer 2  operators.hpp/cpp       — HLLC-ES, WENO5-Z, compute_rhs, tree_rhs
+Layer 3  ns_solver.hpp/cpp       — SSP-RK3, regrid, BC dispatch
+         gpu_graph.cu            — CUDA Graph SSP-RK3, positivity floor
+         gpu_ghost_fill.cu       — GPU ghost fill, is_mpi_face, local-leaf filter
+         gpu_rhs.cu              — WENO5-Z GPU RHS
+         gpu_cf.cu               — Berger-Colella C/F correction
+         gpu_sgs.cu              — Smagorinsky SGS operator-split
+         gpu_mpi_halo.cu         — D2H → mpi_exchange_halos → H2D per stage
 ```
 
-Key constants (do not change without updating both CPU and GPU headers):
+Constants (do not change without updating both CPU and GPU headers):
+
 | NB=8 | NG=2 | NB2=12 | NCELL=1728 | NVAR=5 | GAMMA=1.4 |
 
-## Target Architecture (to_refactor goal)
+## Development target
 
-The refactor adds three orthogonal layers **on top of** the existing stack without
-replacing it wholesale:
+A fully GPU-native, production-grade compressible CFD solver with:
 
-```
-LAYER P — Physics functors  (include/physics/)
-           Structs with operator(). __host__ __device__. template <Axis DIR>.
-           Carry only physics state (γ, p_inf, μ…). No execution knowledge.
+1. **No CPU fallback** in the advance loop — all physics, AMR, and communication on GPU
+2. **Multi-GPU** via NCCL P2P, topology-aware halo exchange, no MPI CPU staging
+3. **High-order entropy-stable schemes** up to 7th order (TENO7-A or DGSEM-p4)
+4. **GPU-native AMR** — refinement decisions, prolongation/restriction, and flux
+   register correction all in device kernels; no CPU round-trip
+5. **Implicit capability** — Newton-Krylov + GPU-resident GMRES for stiff viscous/
+   reactive problems
+6. **Advanced physics** — reactive flows, radiation (P1), wall-modelled LES
+7. **Roofline-optimal kernels** — ≥ 70 % of peak memory bandwidth on A100/H100
 
-LAYER C — Concept contracts  (include/concepts.hpp)
-           C++20 concept definitions. Applied at every template boundary.
-           RiemannFlux, SPOperator, EquationOfState, BoundaryCondition.
-           Property flags: is_entropy_stable, is_conservative, is_skew_symmetric.
+## Development phases (execute in priority order)
 
-LAYER E — Execution backend tags  (include/execution.hpp)
-           CPUSerial, GPUCuda tags. Backend selected once at solver startup via
-           factory. No physics or contract knowledge.
-```
+### D0 — Baseline verification (before any new feature)
+- Ensure all gates from `to_refactor` pass on this branch: `cmake --build build -t ba`
+- Establish GPU performance baseline: run `ncu` on `k_rhs_conv`, record achieved BW%
+- Gate: 32/32 CPU tests + t24–t28 GPU tests pass; baseline BW% logged to
+  `docs/perf/baseline_roofline.md`
 
-These three layers compose independently. A new flux scheme lives only in Layer P.
-A new GPU backend lives only in Layer E. The mathematical guarantees live only in
-Layer C and are independent of execution.
+### D1 — GPU-native AMR (eliminate CPU round-trip on regrid)
+- Move refinement criteria evaluation to a GPU reduction kernel
+- Move prolongation and restriction to `__global__` kernels in `gpu_amr.cu`
+- `BlockTree::refine()` becomes a host-side tree-topology update only;
+  data movement stays device-to-device
+- Gate: all existing AMR tests pass; new `t29_gpu_amr_native` verifies
+  refine/coarsen cycle with no `cudaMemcpy D2H` during advance
 
-## Migration Phases (execute in order)
+### D2 — NCCL multi-GPU halo exchange (replace MPI CPU staging)
+- Replace `GpuMpiHaloList` D2H→CPU→H2D path with NCCL `ncclSend/ncclRecv`
+  on peer streams; remove `cudaStreamSynchronize` from the hot path
+- Keep MPI fallback for non-NVLink environments (`#ifdef HAVE_NCCL` guard)
+- Gate: `t28` still passes; new `t30_nccl_halo` measures halo latency ≤ 50 % of
+  MPI-CPU baseline on 2-GPU NVLink node
 
-### R0 — Enable C++20
-- `cmake -S . -B build -DCMAKE_CXX_STANDARD=20`
-- Verify: nvcc 12.4+ with `--std=c++20`. Check `nvcc --version`.
-- Zero functional change. All tests must still pass.
+### D3 — TENO7-A reconstruction (higher spectral resolution)
+- Implement `teno7_face_t` functor in `include/physics/teno7.hpp` following
+  Fu et al. (2019); `__host__ __device__`, `template <Axis DIR>`
+- Replace WENO5-Z face interpolation in `gpu_rhs.cu` via the R4 backend tag;
+  WENO5-Z remains available for comparison
+- Gate: T08 isentropic vortex convergence rate ≥ 3.8 (was ≥ 1.8); Sod shock
+  tube bit-identical for X/Y/Z; no new positivity violations
 
-### R1 — Concept layer (additive, non-breaking)
-- Create `include/concepts.hpp` with `RiemannFlux`, `EquationOfState`,
-  `BoundaryCondition` concepts and compile-time property flags.
-- Add `static_assert` checks at existing call sites in `operators.cpp` as
-  verification only. No behavioral change.
-- Gate: all t1–t26 pass.
+### D4 — GPU-resident GMRES for implicit viscous solve
+- Implement preconditioned GMRES in `src/cuda/gpu_gmres.cu` using cuBLAS
+  for BLAS-1/2 and a block-Jacobi preconditioner
+- Wire into IMEX-ARK path: explicit convective RHS stays on GPU stream;
+  implicit viscous Helmholtz solve uses GPU-resident GMRES
+- Gate: Poiseuille flow viscous solution matches analytical to 1e-6;
+  GMRES iteration count ≤ 50 for μ = 1e-3, Re = 100
 
-### R2 — Physics functor extraction (refactor, not rewrite)
-- Move `hllc_flux`, `hllc_es_flux_t`, `weno5_face_t` from `operators.cpp`
-  into structs in `include/physics/`.
-- Existing free functions become one-liner wrappers calling the functor.
-- The concept from R1 is applied to each functor.
-- Gate: all t1–t26 pass.
+### D5 — Reactive flows (single-step Arrhenius)
+- Add species transport scalar φ_s alongside ACDI phase field
+- Arrhenius source S = A·ρ·Y·exp(-Ea/RT) as GPU functor in
+  `include/physics/arrhenius.hpp`; operator-split after RK3 stage
+- Gate: 1D detonation wave speed matches Chapman-Jouguet to 1 % over 200 steps
 
-### R3 — BC variant dispatch (replaces if/else BC chains)
-- Replace BC-type enum dispatch in ghost fill with
-  `std::variant<PeriodicBC, WallBC, OpenBC, ContactAngleBC>`.
-- `std::visit` replaces every BC if/else chain.
-- Gate: all t1–t26 pass, contact angle T16a/T16b still pass.
+### D6 — P1 radiation transport
+- Diffusion-limit radiation via elliptic G-equation solved each step with
+  GPU-resident CG (reuse linalg.hpp patterns on device)
+- Coupled energy source term ±κ(aT⁴ − G/c) in RK3 RHS
+- Gate: Marshak wave penetration depth matches analytical within 2 %
 
-### R4 — Backend tag dispatch (formalises existing CPU/GPU split)
-- Create `include/execution.hpp` with `CPUSerial{}` and `GPUCuda{}` tags.
-- Wrap existing CPU operator calls behind `CPUSerial` dispatch.
-- Wrap existing GPU kernel calls behind `GPUCuda` dispatch.
-- Factory: `make_solver(cfg)` reads scheme+backend from `SolverConfig` and
-  returns a `std::unique_ptr<ISolver>` pointing to the correct pre-compiled type.
-- Gate: all t1–t26 pass including GPU gates t19–t26.
+### D7 — Wall-modelled LES (algebraic + ODE wall model)
+- Algebraic Reichardt law wall model (`wmles_algebraic`) as default
+- Optional ODE wall model (thin-boundary-layer equations on GPU)
+- Gate: turbulent channel Re_τ = 395; u⁺ log-law intercept B ∈ [4.8, 5.5];
+  wake-region u⁺ within 5 % of DNS at y⁺ > 50
 
-### R5 — Instantiation matrix (Strategy 3 — enables runtime scheme selection)
-- Pre-compile all supported (Flux × Recon × EOS) combinations in a dedicated
-  translation unit `src/instantiation_matrix.cpp`.
-- Factory dispatches to the correct specialisation once at startup.
-- Eliminates all scheme-selection runtime branches from GPU kernels.
-- Gate: all t1–t26 pass. Add new test verifying scheme selection from JSON.
+### D8 — Tensor core acceleration (optional, H100 target)
+- WGMMA / HMMA for the WENO reconstruction matrix multiply on H100
+- Guard with `#if __CUDA_ARCH__ >= 900`
+- Gate: throughput ≥ 2× WENO5-Z on H100 at same accuracy
 
-### R6 — mdspan block access (optional, breaking — last)
-- Replace `Q[v][idx]` raw access with `std::mdspan` views in `CellBlock`.
-- Axis rotation for `template <Axis DIR>` kernels becomes a zero-copy
-  layout policy instead of manual index arithmetic.
-- This phase changes every block access in the codebase — do not start until
-  R0–R5 are complete and stable.
-- Gate: all t1–t26 pass. Check for regression in T08 convergence rate (≥1.8).
+## Code rules
 
-## Code Rules
-
-### Mathematical / Numerical
-1. Interior flux: entropy-conservative (Chandrashekar) or entropy-stable (HLLC-ES).
-   Never plain Roe without entropy fix.
-2. Convective operator: Pirozzoli (2010) split-form for the compressible case.
-3. AMR C/F flux correction: undo_cf and accumulate_cf must use the same
-   reconstruction as accumulate_face for exact Berger-Colella cancellation.
-4. Positivity floor: ρ≥1e-12, p≥1e-12 after every RK3 stage on both CPU and GPU.
-5. Regrid must run at the TOP of advance(), before zero_flux_registers.
+### Numerical / Physical
+1. All convective fluxes must be entropy-stable (Chandrashekar EC or HLLC-ES).
+   Plain Roe without entropy fix is forbidden.
+2. Positivity floor (ρ ≥ 1e-12, p ≥ 1e-12) after every RK3 stage.
+3. AMR C/F flux correction: `undo_cf` and `accumulate_cf` must use the same
+   reconstruction as `accumulate_face` (exact Berger-Colella cancellation).
+4. New physics functors must demonstrate conservation to 1e-10 over 20 steps
+   before being merged into the advance loop.
+5. Regrid runs at the TOP of `advance()`, before zeroing flux registers.
 
 ### C++
-6. No raw owning pointers — use `std::unique_ptr` or `GpuArray<T>`.
+6. No raw owning pointers — `std::unique_ptr` or `GpuArray<T>`.
 7. No axis-specific duplicate functions — one `template <Axis DIR>` only.
-8. No scheme-selection `if` branches inside GPU kernels — dispatch at launch site.
+8. No scheme-selection branches inside `__global__` kernels — dispatch at launch.
 9. No `virtual` in device-callable code — use CRTP or `std::variant`.
-10. Concept constraints applied at every template boundary (kernel launch sites,
-    factory). Never inside `__global__` kernels (CUDA limitation).
+10. C++20 concepts applied at every template boundary (except inside `__global__`).
 
 ### CUDA
-11. `cudaDeviceSynchronize()` forbidden in the advance loop.
-12. Halo exchanges use `cudaMemcpyAsync` on the solver stream; TMA pipelines
-    are a R6+ upgrade.
-13. Kernel roofline target: ≥50% of peak memory bandwidth (Nsight Compute).
+11. `cudaDeviceSynchronize()` forbidden in the advance loop; use stream events.
+12. All halo exchange: async on the solver stream; no blocking CPU MPI staging
+    once D2 lands (NCCL P2P).
+13. Kernel roofline target: ≥ 70 % of peak memory BW (Nsight Compute).
+14. New kernels ship with an `ncu` baseline logged to `docs/perf/`.
+15. Cooperative groups used for any warp-level reduction (no raw `__shfl_sync`
+    magic constants).
 
-### Testing
-14. Every new functor must have a `CPUSerial` unit test before any GPU kernel.
-15. Sod shock tube must give bit-identical results for Axis::X, Axis::Y, Axis::Z.
-16. T08 isentropic vortex convergence rate must remain ≥1.8 after every phase.
-17. Mass conservation drift < 1e-12 over 20 steps (checked by t4 T04).
+### Testing & autonomy
+16. Every new physics functor: CPU unit test before any GPU kernel.
+17. Every new GPU kernel: correctness test (`PASS` within tolerance) before
+    performance work.
+18. Commit granularity: one commit per gate-green milestone, message format
+    `D<n>: <title>; t<gate> pass`.
+19. Run `cmake --build build -t ba` before every push; abort push if any test fails.
+20. Use sub-agents freely for: literature search, independent code review,
+    parallel benchmark runs, and Nsight log analysis.
 
-## Validation Gate Commands
+## Autonomous workflow
+
+For each development phase:
+1. **Research** — web-search latest literature; spawn Explore sub-agent to map
+   affected files
+2. **Plan** — write implementation plan to `docs/plans/<date>-D<n>.md`
+3. **Implement** — edit files, write tests, build incrementally
+4. **Profile** — run `ncu --set full` on the new kernel; log to `docs/perf/`
+5. **Gate** — `cmake --build build -t ba` + new gate; commit on green
+6. **Summarise** — update `docs/dev_log.md` with what changed and measured impact
+
+## Performance measurement commands
 
 ```bash
-cmake --build build -t ba       # all gates (t1–t26)
-cmake --build build -t t3       # operators — T08 convergence rate
-cmake --build build -t t4       # ns_solver — 28 sub-tests
-cmake --build build -t t24      # CUDA graph (P8.6)
-cmake --build build -t t25      # GPU vs CPU correctness (P9.1)
-cmake --build build -t t26      # NSSolver GPU dispatch (P10-A3)
+# Nsight Compute — full kernel profile
+ncu --set full --target-processes all \
+    --export docs/perf/$(date +%Y%m%d)_${KERNEL} \
+    ./build/<binary>
+
+# Quick roofline check
+ncu --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,\
+l1tex__t_bytes.sum.per_second,dram__bytes.sum.per_second \
+    ./build/<binary>
+
+# All gates
+cmake --build build -t ba
+
+# GPU gates
+cmake --build build -t t24 t25 t26 t27 t28
 ```
 
-## Key References
+## Validation gate commands
 
-- Pirozzoli (2010) — split-form compressible convective operator
+```bash
+cmake --build build -t ba          # all CPU gates (32 tests)
+cmake --build build -t t24         # CUDA Graph (P8.6)
+cmake --build build -t t25         # GPU vs CPU correctness (P9.1)
+cmake --build build -t t26         # NSSolver GPU dispatch (P10-A3)
+cmake --build build -t t27         # SGS Smagorinsky (P-SGS-GPU)
+cmake --build build -t t28         # MPI+GPU halo exchange (P-MPI-GPU)
+cmake --build build -t t29         # GPU-native AMR (D1 gate)
+cmake --build build -t t30         # NCCL halo exchange (D2 gate)
+```
+
+## Key references
+
+**Schemes**
+- Fu et al. (2019) — TENO7-A targeted essentially non-oscillatory scheme
 - Chandrashekar (2013) — entropy-conservative flux
-- Einfeldt et al. (1991) — positivity-preserving schemes
-- Zhang & Shu (2010) — maximum-principle positivity floor
+- Pirozzoli (2010) — split-form compressible convective operator
+- Bezgin et al. (2023) — JAX-Fluids: learned from their scheme hierarchy
+- Cockburn & Shu (2001) — Runge-Kutta discontinuous Galerkin
+
+**GPU / HPC**
+- NVIDIA Nsight Compute roofline guide
+- Harris (2007) — optimising parallel reduction
+- Volkov (2010) — better performance at lower occupancy
+- cuBLAS, NCCL, Cooperative Groups programming guides
+
+**Physics**
+- Pope (2000) — Turbulent Flows (LES/DNS reference)
+- Poinsot & Veynante (2005) — Theoretical and Numerical Combustion
+- Mihalas & Mihalas (1984) — Foundations of Radiation Hydrodynamics
 - Berger & Colella (1989) — AMR flux register correction
-- Trias et al. (2014) — symmetry-preserving discretization
-- Huang & Johnsen (2024) — consistent-conservative ACDI multiphase
-- Del Rey Fernández et al. — SBP-SAT at AMR coarse-fine interfaces
