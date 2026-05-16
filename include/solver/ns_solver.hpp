@@ -58,6 +58,9 @@ struct IGpuSolver : TimeIntegrator {
     // P-SGS-GPU: enable Smagorinsky SGS for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_gpu_sgs(double /*Cs*/, double /*Pr_t*/) {}
+    // P-MPI-GPU: wire MPI partition for subsequent build() calls.
+    // Default no-op — only GpuGraphSolver overrides this.
+    virtual void   set_mpi(MpiPartition* /*p*/) {}
 };
 
 // ── Diagnostics written every `diag_interval` steps ───────────────────────────────────

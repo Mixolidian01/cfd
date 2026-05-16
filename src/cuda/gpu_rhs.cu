@@ -490,8 +490,10 @@ void GpuRhsList::build(const BlockTree& tree, const GpuPool& pool) {
     cudaFree(d_scratch_pool); d_scratch_pool = nullptr;
     cudaFree(d_rhs_pool);     d_rhs_pool     = nullptr;
 
-    const auto& leaves = tree.leaf_indices();
-    n_leaves = (int)leaves.size();
+    std::vector<int> local;
+    for (int idx : tree.leaf_indices())
+        if (tree.nodes[idx].has_block()) local.push_back(idx);
+    n_leaves = (int)local.size();
     if (n_leaves == 0) return;
 
     const size_t scratch_bytes = (size_t)SCRATCH_NCOMP * NCELL * n_leaves * sizeof(double);
@@ -501,7 +503,7 @@ void GpuRhsList::build(const BlockTree& tree, const GpuPool& pool) {
 
     std::vector<GpuLeafRhsMeta> h_metas(n_leaves);
     for (int li = 0; li < n_leaves; ++li) {
-        const BlockNode& nd = tree.nodes[leaves[li]];
+        const BlockNode& nd = tree.nodes[local[li]];
         GpuLeafRhsMeta& meta = h_metas[li];
         meta.d_Q      = pool.d_Q(nd.block.get());
         meta.d_RHS    = d_rhs_pool     + (size_t)li * NVAR           * NCELL;

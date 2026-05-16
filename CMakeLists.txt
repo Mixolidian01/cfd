@@ -188,10 +188,11 @@ if(NVCC)
         ${_S}/schemes/viscous_rhs.cpp
         ${_S}/schemes/rhs_sensors.cpp
     )
-    set(_GPU_NS                                         # full solver set (t25, t26, t27)
-        ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
-        ${_S}/cuda/gpu_rhs.cu   ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
-        ${_S}/cuda/gpu_cf.cu    ${_S}/cuda/gpu_sgs.cu
+    set(_GPU_NS                                         # full solver set (t25, t26, t27, t28)
+        ${_S}/cuda/gpu_graph.cu    ${_S}/cuda/gpu_ghost_fill.cu
+        ${_S}/cuda/gpu_rhs.cu      ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
+        ${_S}/cuda/gpu_cf.cu       ${_S}/cuda/gpu_sgs.cu
+        ${_S}/cuda/gpu_mpi_halo.cu
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
@@ -270,7 +271,7 @@ if(NVCC)
         SRCS ${_T}/test_p86_gpu_graph.cu
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
-             ${_S}/cuda/gpu_sgs.cu  ${_GPU_POOL}
+             ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_GPU_POOL}
              ${_GPU_OPS}
     )
     add_nvcc_gate(TARGET t27 BIN t27_gpu_sgs       COMMENT "P-SGS-GPU Smagorinsky kernel"
@@ -278,7 +279,7 @@ if(NVCC)
         SRCS ${_T}/test_p_sgs_gpu.cu
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
-             ${_S}/cuda/gpu_sgs.cu  ${_GPU_POOL}
+             ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_GPU_POOL}
              ${_GPU_OPS}
              ${_S}/models/sgs.cpp
     )
@@ -290,8 +291,43 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_p10a3_gpu_nssolver.cu ${_GPU_NS}
     )
+
+    # add_nvcc_mpi_gate: like add_nvcc_gate but runs binary via "mpirun -n 2"
+    function(add_nvcc_mpi_gate)
+        cmake_parse_arguments(A "" "TARGET;BIN;COMMENT" "EXTRA_FLAGS;EXTRA_LIBS;MPI_INC;SRCS" ${ARGN})
+        set(_bin ${CMAKE_BINARY_DIR}/${A_BIN})
+        set(_mpi_inc_flags "")
+        foreach(_d ${A_MPI_INC})
+            list(APPEND _mpi_inc_flags -I${_d})
+        endforeach()
+        add_custom_command(
+            OUTPUT  ${_bin}
+            COMMAND ${NVCC} ${_NVCC_BASE} ${A_EXTRA_FLAGS} ${_mpi_inc_flags} ${A_SRCS}
+                    -o ${_bin} -lm ${A_EXTRA_LIBS}
+            DEPENDS ${A_SRCS}
+            COMMENT "nvcc: compiling ${A_COMMENT}"
+            VERBATIM
+        )
+        add_custom_target(${A_TARGET}
+            DEPENDS ${_bin}
+            COMMAND mpirun -n 2 ${_bin}
+            COMMENT "${A_TARGET} gate: ${A_COMMENT}"
+            USES_TERMINAL
+        )
+    endfunction()
+
+    if(MPI_CXX_FOUND)
+        add_nvcc_mpi_gate(TARGET t28 BIN t28_gpu_mpi_halo  COMMENT "P-MPI-GPU halo exchange"
+            EXTRA_FLAGS ${_WNO} -DHAVE_MPI=1
+            EXTRA_LIBS  ${MPI_CXX_LIBRARIES} ${_LZ4}
+            MPI_INC     ${MPI_CXX_INCLUDE_DIRS}
+            SRCS ${_T}/test_gpu_mpi_halo.cu ${_GPU_NS}
+        )
+    else()
+        message(STATUS "MPI not found — t28 (GPU MPI halo) skipped")
+    endif()
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28 skipped")
 endif()
 
 # =============================================================================

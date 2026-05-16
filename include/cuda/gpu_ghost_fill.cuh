@@ -26,6 +26,9 @@
 #include <vector>
 #include <cstdint>
 
+// Forward declaration — full definition in mpi/mpi_comm.hpp.
+struct MpiPartition;
+
 // ── Per-leaf GPU ghost fill metadata ─────────────────────────────────────────
 // Built on host, uploaded to device, reused every RK3 stage until next regrid.
 struct alignas(64) GpuLeafGhostMeta {
@@ -37,7 +40,7 @@ struct alignas(64) GpuLeafGhostMeta {
                                    // +1=neighbor is finer (→zero-grad fallback in P8.2)
     int8_t  cf_oct;                // child octant of THIS block (for CF fine←coarse)
     int8_t  bc_type;               // 0=periodic self-wrap, 1=wall, 2=open
-    int8_t  _pad[5];
+    int8_t  is_mpi_face[NFACES];   // 1 = ghost already filled via MPI; skip k_fill_faces
 };
 static_assert(sizeof(GpuLeafGhostMeta) <= 128, "GpuLeafGhostMeta too large");
 
@@ -52,7 +55,10 @@ struct GpuGhostFillList {
     ~GpuGhostFillList();
 
     // Rebuild after regrid.  bc_type: 0=periodic, 1=wall, 2=open.
-    void build(const BlockTree& tree, const GpuPool& pool, int bc_type);
+    // mpi_part: when non-null, marks remote-rank faces as is_mpi_face so the
+    // kernel skips them (ghost cells are pre-filled by GpuMpiHaloList::exchange).
+    void build(const BlockTree& tree, const GpuPool& pool, int bc_type,
+               const MpiPartition* mpi_part = nullptr);
 
     // Launch kernels for face fill + edge/corner fill on the given stream.
     void exec(cudaStream_t stream = nullptr) const;

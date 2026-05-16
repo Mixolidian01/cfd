@@ -228,15 +228,17 @@ GpuSgsList::~GpuSgsList()
 void GpuSgsList::build(const BlockTree& tree, const GpuPool& pool,
                        double Cs, double Pr_t)
 {
-    const auto& leaves = tree.leaf_indices();
-    n_leaves = (int)leaves.size();
+    std::vector<int> local;
+    for (int idx : tree.leaf_indices())
+        if (tree.nodes[idx].has_block()) local.push_back(idx);
+    n_leaves = (int)local.size();
     if (n_leaves == 0) return;
 
     const double SGS_CP  = GPU_GAMMA * GPU_R_GAS / (GPU_GAMMA - 1.0);
 
     std::vector<GpuSgsMeta> h_metas(n_leaves);
     for (int li = 0; li < n_leaves; ++li) {
-        const BlockNode& nd = tree.nodes[leaves[li]];
+        const BlockNode& nd = tree.nodes[local[li]];
         const double h      = nd.block->h;
         h_metas[li].d_Q     = pool.d_Q(nd.block.get());
         h_metas[li].h       = h;

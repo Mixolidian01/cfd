@@ -28,11 +28,13 @@
 #include "solver/ns_solver.hpp"     // IGpuSolver interface (pure C++)
 #include "mesh/cell_block.hpp"
 #include "mesh/block_tree.hpp"
+#include "mpi/mpi_comm.hpp"
 #include "gpu_ghost_fill.cuh"
 #include "gpu_rhs.cuh"
 #include "gpu_cfl.cuh"
 #include "gpu_cf.cuh"
 #include "gpu_sgs.cuh"
+#include "gpu_mpi_halo.cuh"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -50,13 +52,17 @@ struct GpuGraphSolver : IGpuSolver {
     GpuGhostFillList ghost_list;
     GpuRhsList       rhs_list;
     GpuCflList       cfl_list;
-    GpuCfList        cf_list;   // P14.4: Berger-Colella CF correction
-    GpuSgsList       sgs_list;  // P-SGS-GPU: Smagorinsky operator split
+    GpuCfList        cf_list;      // P14.4: Berger-Colella CF correction
+    GpuSgsList       sgs_list;     // P-SGS-GPU: Smagorinsky operator split
+    GpuMpiHaloList   mpi_halo_;    // P-MPI-GPU: D2H→MPI→H2D per RK3 stage
 
     // SGS parameters — set via set_gpu_sgs() before build().
     bool   sgs_enabled = false;
     double sgs_Cs_     = 0.16;
     double sgs_Pr_t_   = 0.9;
+
+    // MPI partition — set via set_mpi() before build().
+    MpiPartition* mpi_part_ = nullptr;
 
     // Per-leaf RK3 metadata and Qn pool
     GpuRk3LeafMeta* d_rk3_metas = nullptr;
@@ -84,6 +90,9 @@ struct GpuGraphSolver : IGpuSolver {
         sgs_Cs_ = Cs; sgs_Pr_t_ = Pr_t; sgs_enabled = true;
     }
 
+    // P-MPI-GPU: wire MPI partition for subsequent build() calls.
+    void set_mpi(MpiPartition* p) override { mpi_part_ = p; }
+
     // Rebuild all component lists from the tree; invalidates any captured graphs.
     // bc_type: 0=periodic, 1=wall, 2=open.
     void build(const BlockTree& tree, const GpuPool& pool, int bc_type = 0) override;
@@ -102,7 +111,7 @@ struct GpuGraphSolver : IGpuSolver {
     void upload_q() const override;
 
 private:
-    void _run_rk3_explicit(cudaStream_t s) const;
+    void _run_rk3_explicit(cudaStream_t s);
     void _capture_graphs();
     void _destroy_graphs();
     // P14.4: explicit per-stage kernel sequence with Berger-Colella CF correction.

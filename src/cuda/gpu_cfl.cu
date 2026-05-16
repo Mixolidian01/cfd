@@ -126,13 +126,15 @@ void GpuCflList::build(const BlockTree& tree, const GpuPool& pool) {
     cudaFree(d_dt_bits); d_dt_bits = nullptr;
     cudaFree(d_dt);      d_dt      = nullptr;
 
-    const auto& leaves = tree.leaf_indices();
-    n_leaves = (int)leaves.size();
+    std::vector<int> local;
+    for (int idx : tree.leaf_indices())
+        if (tree.nodes[idx].has_block()) local.push_back(idx);
+    n_leaves = (int)local.size();
     if (n_leaves == 0) return;
 
     std::vector<GpuLeafCflMeta> h_metas(n_leaves);
     for (int li = 0; li < n_leaves; ++li) {
-        const BlockNode& nd = tree.nodes[leaves[li]];
+        const BlockNode& nd = tree.nodes[local[li]];
         h_metas[li].d_Q    = pool.d_Q(nd.block.get());
         h_metas[li].h      = nd.block->h;
         h_metas[li]._pad[0]= h_metas[li]._pad[1] = 0;

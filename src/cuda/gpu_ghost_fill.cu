@@ -9,6 +9,7 @@
 
 #include "cuda/gpu_ghost_fill.cuh"
 #include "cuda/gpu_meta_buffer.cuh"
+#include "mpi/mpi_comm.hpp"
 #include <cassert>
 #include <stdexcept>
 #include <string>
@@ -146,6 +147,8 @@ __device__ __forceinline__ static void fill_wall(
 __global__ void k_fill_faces(const GpuLeafGhostMeta* metas) {
     const GpuLeafGhostMeta& m = metas[blockIdx.x];
     const int face = blockIdx.y;
+    // P-MPI-GPU: ghost cells on remote-rank faces are pre-filled via MPI exchange.
+    if (m.is_mpi_face[face]) return;
     const int axis = face >> 1;
     const int side = face & 1;
 
@@ -252,17 +255,21 @@ GpuGhostFillList::~GpuGhostFillList() {
     if (d_metas) { cudaFree(d_metas); d_metas = nullptr; }
 }
 
-void GpuGhostFillList::build(const BlockTree& tree, const GpuPool& pool, int bc_type) {
-    const auto& leaves = tree.leaf_indices();
-    const int n = static_cast<int>(leaves.size());
+void GpuGhostFillList::build(const BlockTree& tree, const GpuPool& pool, int bc_type,
+                              const MpiPartition* mpi_part) {
+    // Only process local leaves (non-null block); remote MPI leaves are not filled here.
+    std::vector<int> local;
+    for (int idx : tree.leaf_indices())
+        if (tree.nodes[idx].has_block()) local.push_back(idx);
+    const int n = static_cast<int>(local.size());
 
     std::vector<GpuLeafGhostMeta> h(n);
     for (int ii = 0; ii < n; ++ii) {
-        const int li = leaves[ii];
+        const int li = local[ii];
         const BlockNode& nd = tree.nodes[li];
         GpuLeafGhostMeta& m = h[ii];
 
-        m.d_Q     = nd.block ? pool.d_Q(nd.block.get()) : nullptr;
+        m.d_Q     = pool.d_Q(nd.block.get());
         m.bc_type = static_cast<int8_t>(bc_type);
         m.cf_oct  = 0;
         if (nd.parent >= 0) {
@@ -272,6 +279,7 @@ void GpuGhostFillList::build(const BlockTree& tree, const GpuPool& pool, int bc_
 
         for (int d = 0; d < NFACES; ++d) {
             const int ni = nd.neighbours[d];
+            m.is_mpi_face[d] = mpi_is_remote(mpi_part, ni) ? 1 : 0;
             if (ni >= 0 && tree.nodes[ni].has_block() &&
                 pool.has_device(tree.nodes[ni].block.get())) {
                 m.d_nb[d]    = pool.d_Q(tree.nodes[ni].block.get());

@@ -19,6 +19,7 @@
 #include "cuda/gpu_constants.cuh"
 #include "cuda/gpu_check.cuh"
 #include "cuda/gpu_meta_buffer.cuh"
+#include "mpi/mpi_comm.hpp"
 #include <vector>
 
 // Verify GPU constants match CPU constants (both headers available here)
@@ -129,19 +130,23 @@ void GpuGraphSolver::_destroy_graphs() {
 void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_type) {
     _destroy_graphs();
 
-    ghost_list.build(tree, pool, bc_type);
+    ghost_list.build(tree, pool, bc_type, mpi_part_);
     rhs_list.build(tree, pool);
     cfl_list.build(tree, pool);
     cf_list.build(tree, pool, rhs_list.d_rhs_pool, rhs_list.d_scratch_pool);
     if (sgs_enabled) sgs_list.build(tree, pool, sgs_Cs_, sgs_Pr_t_);
+    if (mpi_part_) mpi_halo_.build(tree, pool, mpi_part_);
 
-    const auto& leaves = tree.leaf_indices();
-    n_leaves = (int)leaves.size();
+    // Only process local leaves (those with an allocated block; remote MPI leaves have null).
+    std::vector<int> local;
+    for (int idx : tree.leaf_indices())
+        if (tree.nodes[idx].has_block()) local.push_back(idx);
+    n_leaves = (int)local.size();
     download_pairs.clear();
 
     if (n_leaves == 0) return;
 
-    // Qn pool: one GPU_NVAR*GPU_NCELL double buffer per leaf
+    // Qn pool: one GPU_NVAR*GPU_NCELL double buffer per local leaf
     if (d_Qn_pool) { cudaFree(d_Qn_pool); d_Qn_pool = nullptr; }
     CUDA_CHECK(cudaMalloc(&d_Qn_pool,
         (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double)));
@@ -150,7 +155,7 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
     std::vector<GpuRk3LeafMeta> h_metas(n_leaves);
     download_pairs.reserve(n_leaves);
     for (int li = 0; li < n_leaves; ++li) {
-        const BlockNode& nd = tree.nodes[leaves[li]];
+        const BlockNode& nd = tree.nodes[local[li]];
         double* dptr = pool.d_Q(nd.block.get());
         h_metas[li].d_Q  = dptr;
         h_metas[li].d_Qn = d_Qn_pool + (size_t)li * GPU_NVAR * GPU_NCELL;
@@ -163,7 +168,9 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
 // One full SSP-RK3 step executed explicitly (not via graphs).
 // d_rhs_pool is zeroed via cudaMemsetAsync before each stage on stream s so
 // that this path is identical to the replay path (same zero+launch order).
-void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) const {
+// When MPI is active, mpi_halo_.exchange() syncs the stream, downloads real
+// cell planes to CPU, does MPI exchange, and uploads ghost cells back to GPU.
+void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
     constexpr int TPB = 256;
     const double* d_dt = cfl_list.d_dt;
     const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
@@ -172,6 +179,7 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) const {
 
     // Stage 1
     CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
+    mpi_halo_.exchange(s);   // no-op for single-rank
     ghost_list.exec(s);
     rhs_list.exec(s, /*zero_rhs=*/false);
     k_rk3s1<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
@@ -179,6 +187,7 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) const {
 
     // Stage 2
     CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
+    mpi_halo_.exchange(s);
     ghost_list.exec(s);
     rhs_list.exec(s, /*zero_rhs=*/false);
     k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, 0.75, 0.25);
@@ -186,6 +195,7 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) const {
 
     // Stage 3
     CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
+    mpi_halo_.exchange(s);
     ghost_list.exec(s);
     rhs_list.exec(s, /*zero_rhs=*/false);
     k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
@@ -248,7 +258,12 @@ double GpuGraphSolver::_advance_amr(double cfl) {
     _destroy_graphs();
 
     constexpr int TPB = 256;
-    const double dt = cfl_list.exec(cfl, stream);
+    const double dt_local = cfl_list.exec(cfl, stream);
+    const double dt       = mpi_allreduce_min(dt_local, mpi_part_);
+    if (mpi_halo_.active()) {
+        CUDA_CHECK(cudaMemcpy(cfl_list.d_dt, &dt,
+                              sizeof(double), cudaMemcpyHostToDevice));
+    }
     const double* d_dt = cfl_list.d_dt;
     const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
 
@@ -258,6 +273,7 @@ double GpuGraphSolver::_advance_amr(double cfl) {
     // Stage 1  — weight 1/6
     CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
     k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+    mpi_halo_.exchange(stream);
     ghost_list.exec(stream);
     rhs_list.exec(stream, /*zero_rhs=*/false);
     cf_list.undo_coarse_flux(stream);
@@ -267,6 +283,7 @@ double GpuGraphSolver::_advance_amr(double cfl) {
 
     // Stage 2  — weight 1/6
     CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
+    mpi_halo_.exchange(stream);
     ghost_list.exec(stream);
     rhs_list.exec(stream, /*zero_rhs=*/false);
     cf_list.undo_coarse_flux(stream);
@@ -276,6 +293,7 @@ double GpuGraphSolver::_advance_amr(double cfl) {
 
     // Stage 3  — weight 2/3
     CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
+    mpi_halo_.exchange(stream);
     ghost_list.exec(stream);
     rhs_list.exec(stream, /*zero_rhs=*/false);
     cf_list.undo_coarse_flux(stream);
@@ -306,21 +324,31 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
     if (cf_list.n_coarse > 0)
         return _advance_amr(cfl);
 
-    // CFL on stream — writes d_dt to device, syncs, returns host value
-    const double dt = cfl_list.exec(cfl, stream);
+    // CFL on stream — writes d_dt to device, syncs, returns host value.
+    // P-MPI-GPU: allreduce across ranks so every rank uses the same dt,
+    // then write the global value back to d_dt for the RK3 update kernels.
+    const double dt_local = cfl_list.exec(cfl, stream);
+    const double dt       = mpi_allreduce_min(dt_local, mpi_part_);
+    if (mpi_halo_.active()) {
+        CUDA_CHECK(cudaMemcpy(cfl_list.d_dt, &dt,
+                              sizeof(double), cudaMemcpyHostToDevice));
+    }
 
     const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
 
-    if (!graph_valid) {
-        // First step after build: run explicit then capture sub-graphs.
-        // SGS runs after the full RK3 cycle (outside captured graphs).
+    // P-MPI-GPU: when MPI is active, CUDA graphs cannot be used (they cannot
+    // capture CPU MPI calls).  Always run the explicit kernel sequence.
+    const bool use_explicit = !graph_valid || mpi_halo_.active();
+
+    if (use_explicit) {
         _run_rk3_explicit(stream);
         if (sgs_enabled) {
             ghost_list.exec(stream);
             sgs_list.exec(cfl_list.d_dt, stream);
         }
         CUDA_CHECK(cudaStreamSynchronize(stream));
-        _capture_graphs();
+        // Capture graphs only for single-rank runs (MPI cannot be captured).
+        if (!mpi_halo_.active()) _capture_graphs();
     } else {
         // Graph replay: zero RHS on stream before each sub-graph launch
         // (memset is a plain stream op, never a captured graph node)
