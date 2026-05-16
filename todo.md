@@ -326,3 +326,20 @@ endif()
 ```
 
 **After installing `libonnxruntime-dev`**, re-run `cmake -S . -B build` and rebuild `t11`.
+
+---
+
+## Priority Queue — 2026-05-16
+
+> Recorded after gap analysis on `to_refactor` branch (all 30 gate tests pass at this point).
+> Items ordered by effort/impact ratio; start each only after the previous gate is green.
+
+| Priority | ID | Status | Item | Estimated effort |
+|----------|----|--------|------|-----------------|
+| 1 | T2 | ✅ | **Profiler annotations** — `include/profiling/profiler.hpp` already exists; added `PROFILE_SCOPE` to `convective_rhs_impl` (convective_rhs.cpp), `viscous_rhs_impl` (viscous_rhs.cpp), `fill_cf_ghosts` (amr_operators.cpp). Outer scopes (`tree_rhs/ghost_fill`, `tree_rhs/compute`, `CpuRk3/stage*`, `mpi_exchange_halos`) already annotated. | 1 hour — done |
+| 2 | P15.2 | ⚠️ | **MUSCL at block boundary faces** — root cause identified: topology-unaware ghost fill injects vortex IC slopes at domain faces, breaking TVD limiters. Fix: pass `is_real_neighbor` flag into `accumulate_face` to gate MUSCL only on true block–block faces. | 1–2 days |
+| 3 | ONNX | ❌ | **Install `libonnxruntime-dev`** — `.deb` files at `/home/dkoffibi/`. Command: `sudo dpkg -i /home/dkoffibi/libonnxruntime1.21_1.21.0+dfsg-2_amd64.deb && sudo dpkg -i /home/dkoffibi/libonnxruntime-dev_1.21.0+dfsg-2_amd64.deb`. Then rebuild with ONNX enabled; unlocks `test_neural_sgs`. | 30 min |
+| 4 | P13.7 | 🔲 | **TMA async halo exchanges** — Hopper H100/H200 only; replace `cudaMemcpyAsync` ghost fill with TMA prefetch. Non-blocking on other hardware. | 2 weeks |
+| 5 | P14.3 | 🔲 | **Neural SGS via JAX-Fluids adjoint + TensorRT** — end-to-end AD surrogate; ONNX export → TRT inference. Requires P3 (ONNX installed). | 2 months |
+| 6 | P14.4 | 🔲 | **GPU AMR subcycling** — two CUDA streams (coarse/fine), CUDA event sync, LTS-aware flux register weights on device. | 3 months |
+| 7 | P14.5 | 🔲 | **GPU ensemble UQ + EnKF** — multiple simultaneous GPU solvers; `MPI_Allreduce` ensemble moments; posterior update at observations. | 2 months |

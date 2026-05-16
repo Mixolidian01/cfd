@@ -8,6 +8,7 @@
 
 #include "schemes/operators.hpp"
 #include "physics/weno5_recon.hpp"
+#include "profiling/profiler.hpp"
 
 #include <cmath>
 #include <algorithm>
@@ -94,6 +95,7 @@ static void accumulate_face(const Prim* pc, const double* duc,
 void convective_rhs_impl(const Prim* pc, const double* duc,
                           CellBlock& rhs, double h) noexcept
 {
+    PROFILE_SCOPE("convective_rhs_impl");
     const double ih = 1.0 / h;
 
     // X: n=i (normal), a=j, b=k

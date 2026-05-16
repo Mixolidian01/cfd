@@ -7,6 +7,7 @@
 #include "schemes/operators.hpp"
 #include "physics/diff_ops.hpp"
 #include "physics/face_interp.hpp"
+#include "profiling/profiler.hpp"
 #include <cmath>
 
 static constexpr double CP = CPU_CP;
@@ -18,6 +19,7 @@ static constexpr double CP = CPU_CP;
 void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
                       CellBlock& rhs, double h) noexcept
 {
+    PROFILE_SCOPE("viscous_rhs_impl");
     const double ih = 1.0 / h;
 
     auto U  = [&](int ii,int jj,int kk){ return pc[cell_idx(ii,jj,kk)].u; };

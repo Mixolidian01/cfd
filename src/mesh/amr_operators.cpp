@@ -7,6 +7,7 @@
 //           0‥3 instead of 0‥3 and 4‥7, breaking volume conservation.
 // FIX C3: should_refine uses centred 2nd-order gradient
 #include "mesh/amr_operators.hpp"
+#include "profiling/profiler.hpp"
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -92,6 +93,7 @@ static_assert(NB >= 5, "fill_cf_ghosts: need NB >= 5 for the 5-cell stencil");
 
 void fill_cf_ghosts(CellBlock& fine, const CellBlock& coarse,
                     int child_octant, int axis, int side) {
+    PROFILE_SCOPE("fill_cf_ghosts");
     const int ix = oct_ix(child_octant);
     const int iy = oct_iy(child_octant);
     const int iz = oct_iz(child_octant);
