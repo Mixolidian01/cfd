@@ -104,7 +104,7 @@ A3a–A3c (coarsen + mass conservation round-trip), A4 (NSSolver 10-step advance
 
 ---
 
-## D2 — GPU face-pack halo exchange  (2026-05-17  pending)
+## D2 — GPU face-pack halo exchange  (2026-05-17  e32fa9f)
 
 **Gate:** t28 (GM1–GM4) still passes; new `t30_cuda_aware_halo` (D30a–D30d) verifies pack/unpack
 correctness, mass conservation, and ≥ 6× buffer-size reduction.
