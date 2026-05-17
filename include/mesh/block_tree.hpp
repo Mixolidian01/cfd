@@ -191,12 +191,40 @@ struct BlockTree {
         on_block_free_  = std::move(free_cb);
     }
 
+    // D1: GPU-native AMR callbacks — when set, refine()/coarsen() bypass CPU
+    // prolongation/restriction and leave all Q data movement to these callbacks.
+    //
+    // on_gpu_prolong_: called after child nodes are created but before the parent
+    //   block is destroyed.  The callback must:
+    //   (a) allocate GPU buffers for each child, (b) launch k_prolong D2D from
+    //   parent GPU → children GPU, (c) free the parent GPU buffer.
+    //   Signature: (parent_blk*, [child_blk* × 8])
+    //
+    // on_gpu_coarsen_: called with the parent and its 8 children still alive.
+    //   The callback must:
+    //   (a) allocate a GPU buffer for the parent, (b) launch k_restrict D2D from
+    //   children GPU → parent GPU, (c) free all 8 child GPU buffers.
+    //   Signature: (parent_blk*, [child_blk* × 8])
+    //
+    // When set, the CPU on_block_alloc_/on_block_free_ callbacks are ignored for
+    // refine/coarsen (but may still be called for initial alloc at startup).
+    void set_gpu_amr_callbacks(
+        std::function<void(CellBlock*, CellBlock* const[8])> prolong_cb,
+        std::function<void(CellBlock*, CellBlock* const[8])> coarsen_cb) noexcept {
+        on_gpu_prolong_  = std::move(prolong_cb);
+        on_gpu_coarsen_  = std::move(coarsen_cb);
+    }
+
 private:
     double domain_L_ = 1.0;
 
     // P8.1: GPU lifecycle callbacks (see set_gpu_callbacks above)
     std::function<void(CellBlock*)> on_block_alloc_;
     std::function<void(CellBlock*)> on_block_free_;
+
+    // D1: GPU-native prolong/restrict callbacks (see set_gpu_amr_callbacks above)
+    std::function<void(CellBlock*, CellBlock* const[8])> on_gpu_prolong_;
+    std::function<void(CellBlock*, CellBlock* const[8])> on_gpu_coarsen_;
 
     // P1.1: free-list allocator
     // alloc_node()       — pop one slot (or append)

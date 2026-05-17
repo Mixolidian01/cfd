@@ -346,13 +346,9 @@ void BlockTree::refine(int idx) {
 
     int      saved_level  = nodes[idx].level;
     uint32_t saved_morton = nodes[idx].morton;
-    CellBlock parent_data = *nodes[idx].block;  // cache before any resize
+    CellBlock parent_data = *nodes[idx].block;  // cache geometry
 
-    // P8.1: free GPU buffer for parent before replacing the block.
-    if (on_block_free_) on_block_free_(nodes[idx].block.get());
-
-    // A05-fix: allocate 8 children as a CONTIGUOUS group so that
-    // first_child + oct is always valid regardless of free-list state.
+    // A05-fix: allocate 8 children as a CONTIGUOUS group.
     int first = alloc_node_group(8);
     nodes[idx].first_child = first;
 
@@ -364,16 +360,28 @@ void BlockTree::refine(int idx) {
         ch.level       = saved_level + 1;
         ch.morton      = child_morton(saved_morton, oct);
         ch.neighbours.fill(-1);
-        set_child_geometry(idx, oct, ci);
+        set_child_geometry(idx, oct, ci);  // creates child CellBlock with geometry
     }
 
-    nodes[idx].block = std::make_unique<CellBlock>(parent_data);
-    prolongate_to_children(idx);
-
-    // P8.1: alloc GPU buffers for children after prolongation (CPU data ready).
-    if (on_block_alloc_) {
+    if (on_gpu_prolong_) {
+        // D1 GPU-native path: original block still in pool (not freed yet).
+        // Callback owns: alloc children GPU, D2D prolong parent→children, free parent GPU.
+        // CPU Q in children is uninitialized — GPU is authoritative.
+        CellBlock* children[8];
         for (int oct = 0; oct < 8; ++oct)
-            on_block_alloc_(nodes[first + oct].block.get());
+            children[oct] = nodes[first + oct].block.get();
+        on_gpu_prolong_(nodes[idx].block.get(), children);
+        // block is freed by callback; reset() here only nulls the unique_ptr.
+    } else {
+        // Original CPU path: free parent GPU (while original block still alive),
+        // then replace with parent_data copy for prolongation, then upload children.
+        if (on_block_free_) on_block_free_(nodes[idx].block.get());
+        nodes[idx].block = std::make_unique<CellBlock>(parent_data);
+        prolongate_to_children(idx);
+        if (on_block_alloc_) {
+            for (int oct = 0; oct < 8; ++oct)
+                on_block_alloc_(nodes[first + oct].block.get());
+        }
     }
 
     nodes[idx].block.reset();
@@ -400,18 +408,24 @@ void BlockTree::coarsen(int parent_idx) {
         nodes[parent_idx].block =
             std::make_unique<CellBlock>(ox, oy, oz, h_par);
     }
-    restrict_to_parent(parent_idx);
 
-    // P8.1: alloc GPU buffer for parent after restriction (CPU data ready).
-    if (on_block_alloc_) on_block_alloc_(nodes[parent_idx].block.get());
+    if (on_gpu_coarsen_) {
+        // D1 GPU-native path: callback owns all device-buffer management
+        // (alloc parent GPU, D2D restrict children→parent, free children GPU).
+        CellBlock* children[8];
+        for (int oct = 0; oct < 8; ++oct)
+            children[oct] = nodes[fc + oct].block.get();
+        on_gpu_coarsen_(nodes[parent_idx].block.get(), children);
+    } else {
+        restrict_to_parent(parent_idx);
+        if (on_block_alloc_) on_block_alloc_(nodes[parent_idx].block.get());
+        if (on_block_free_) {
+            for (int oct = 0; oct < 8; ++oct)
+                on_block_free_(nodes[fc + oct].block.get());
+        }
+    }
 
     nodes[parent_idx].first_child = -1;
-
-    // P8.1: free GPU buffers for children before free_node destroys the blocks.
-    if (on_block_free_) {
-        for (int oct = 0; oct < 8; ++oct)
-            on_block_free_(nodes[fc + oct].block.get());
-    }
 
     for (int oct = 0; oct < 8; ++oct)
         free_node(fc + oct);

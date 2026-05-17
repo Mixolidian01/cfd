@@ -1,5 +1,5 @@
 #pragma once
-// P8.6: CUDA Graph re-capture on regrid.
+// P8.6 / D1: CUDA Graph re-capture on regrid; GPU-native AMR.
 //
 // GpuGraphSolver wraps the full SSP-RK3 loop (ghost fill + WENO5-Z RHS +
 // RK3 update) into three per-stage CUDA sub-graphs (s1, s2, s3) that are:
@@ -35,6 +35,8 @@
 #include "gpu_cf.cuh"
 #include "gpu_sgs.cuh"
 #include "gpu_mpi_halo.cuh"
+#include "gpu_pool.hpp"
+#include "gpu_amr.cuh"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -109,6 +111,16 @@ struct GpuGraphSolver : IGpuSolver {
     // P11.8: Copy CPU CellBlock Q → device (reverse of download_q).
     // Called before GPU advance() when CPU path ran the previous step (AMR fallback).
     void upload_q() const override;
+
+    // D1: GPU-native AMR regrid.
+    // Evaluates the refinement sensor on GPU, updates tree topology on CPU, and
+    // moves Q data exclusively via D2D GPU kernels (no large D2H memcpy for Q).
+    // Returns true if the topology changed (build() must be called after).
+    // cfg_max_level: max refinement level from NSSolverConfig.
+    // refine_thr / coarsen_thr: normalised gradient thresholds (defaults match CPU path).
+    bool gpu_regrid(BlockTree& tree, GpuPool& pool, int bc_type,
+                    int cfg_max_level,
+                    float refine_thr = 0.05f, float coarsen_thr = 0.01f);
 
 private:
     void _run_rk3_explicit(cudaStream_t s);

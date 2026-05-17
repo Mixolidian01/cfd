@@ -26,7 +26,7 @@ Format: `## D<n> — <title>  (<date>  <commit>)`
 
 ---
 
-## D0.5 — Shared-memory tiling analysis  (2026-05-17  pending)
+## D0.5 — Shared-memory tiling analysis  (2026-05-17  ca08faf)
 
 **Gate:** T08 convergence rate ≥ 1.8 (unchanged); BW% logged to `docs/perf/`.
 
@@ -55,3 +55,49 @@ forward path to ≥ 55% BW.
 
 **GPU gates (all PASS with reverted exec):** t24 (G1–G4), t25 (N1–N4), t26 (A1–A4b),
 t27 (S1–S3), t28 (GM1–GM4).
+
+---
+
+## D1 — GPU-native AMR  (2026-05-17  pending)
+
+**Gate:** All existing tests pass; new `t29_gpu_amr_native` (A1–A4) verifies refine/coarsen
+cycle with only n_leaves floats transferred D2H (sensor values); full Q stays GPU-resident.
+
+**What was done:**
+
+- **`gpu_amr.cu`** — Added `k_refine_sensor` kernel: one block per leaf, NB³ threads, shared-memory
+  block-max reduction.  Computes `max(|∇ρ|·h/|ρ|)` over interior cells as the refinement indicator.
+  Added `gpu_eval_refine_sensor()` host helper that batches sensor evaluation across all leaves.
+
+- **`block_tree.hpp/cpp`** — Added `on_gpu_prolong_` / `on_gpu_coarsen_` callbacks and
+  `set_gpu_amr_callbacks()` accessor.  Restructured `refine()` into a GPU-native branch (original
+  CellBlock NOT replaced; callback receives valid pool pointer and does alloc-children / D2D-prolong /
+  free-parent) and a CPU branch (calls `on_block_free_` on original before `make_unique` replaces it,
+  then `on_block_alloc_` for children).  Equivalent restructure in `coarsen()`.  Critical bug fixed:
+  original GPU path incorrectly replaced the parent CellBlock before the callback ran, invalidating the
+  GpuPool pointer map and causing an illegal memory access in k_prolong.
+
+- **`gpu_graph.cu`** — Implemented `GpuGraphSolver::gpu_regrid()`:
+  1. Evaluate sensor on all leaves (GPU kernel), download only n_leaves floats.
+  2. CPU loop identifies to_refine (sensor > thr && level < max) and to_coarsen (all 8 siblings below
+     coarsen_thr) candidate lists.
+  3. Set GPU AMR callbacks on tree; run refine + coarsen + balance() passes (balance callbacks active).
+  4. Clear callbacks; rebuild_neighbours(); rebuild GPU lists via `build(tree, pool, bc_type)`.
+  - The prolong callback: alloc 8 children, build GpuProlongMeta batch, exec_prolong(stream), sync,
+    free parent.  All data movement is D2D.
+  - The coarsen callback: alloc parent, build GpuRestrictMeta, exec_restrict(stream), sync, free
+    8 children.
+
+- **`ns_solver.cpp`** — Modified advance() regrid branch: if `gpu_solver_->gpu_regrid()` returns true,
+  skip the CPU `regrid()` call; if no gpu_solver or returns false, fall back to CPU path.
+
+- **`CMakeLists.txt`** — Added `gpu_amr.cu` to `_GPU_NS`, t24, and t27 source lists to fix linker
+  errors.  Added t29 gate with `_GPU_NS` sources.
+
+**Mass conservation:** piecewise-constant D2D prolong+restrict conserves mass to machine precision
+(A2c, A3c both < 1e-10).
+
+**t29 gate (all PASS):** A1a, A1b (no-op on uniform IC), A2a–A2c (refine + mass conservation),
+A3a–A3c (coarsen + mass conservation round-trip), A4 (NSSolver 10-step advance with gpu_regrid).
+
+**No regressions:** t24 (G1–G4), t25 (N1–N4), t26 (A1–A4b), t27 (S1–S3), t28 (GM1–GM4) all PASS.

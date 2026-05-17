@@ -214,9 +214,13 @@ double NSSolver::advance() {
     // A05-fix5: regrid on Q^n BEFORE the RK3 cycle so that the tree
     // topology is immutable during zero_regs → stages → apply_correction.
     // step > 0 guard: skip at step 0 (initial IC, no dynamics yet).
+    // D1: prefer GPU-native regrid (sensor on GPU, D2D prolong/restrict, no large D2H).
     if (cfg.amr.regrid_interval > 0 && step > 0 &&
-        step % cfg.amr.regrid_interval == 0)
-        regrid();
+        step % cfg.amr.regrid_interval == 0) {
+        if (!gpu_solver_ || !gpu_solver_->gpu_regrid(
+                tree, *gpu_pool_, bc_to_int(cfg.bc.variant), cfg.amr.max_level))
+            regrid();
+    }
 
     // P11.8 / P14.4: GPU path — flat and AMR trees.
     // P14.4 adds GPU Berger-Colella correction (GpuCfList) so the GPU path now

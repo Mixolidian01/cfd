@@ -192,7 +192,7 @@ if(NVCC)
         ${_S}/cuda/gpu_graph.cu    ${_S}/cuda/gpu_ghost_fill.cu
         ${_S}/cuda/gpu_rhs.cu      ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
         ${_S}/cuda/gpu_cf.cu       ${_S}/cuda/gpu_sgs.cu
-        ${_S}/cuda/gpu_mpi_halo.cu
+        ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
@@ -271,7 +271,8 @@ if(NVCC)
         SRCS ${_T}/test_p86_gpu_graph.cu
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
-             ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_GPU_POOL}
+             ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
+             ${_GPU_POOL}
              ${_GPU_OPS}
     )
     add_nvcc_gate(TARGET t27 BIN t27_gpu_sgs       COMMENT "P-SGS-GPU Smagorinsky kernel"
@@ -279,7 +280,8 @@ if(NVCC)
         SRCS ${_T}/test_p_sgs_gpu.cu
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
-             ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_GPU_POOL}
+             ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
+             ${_GPU_POOL}
              ${_GPU_OPS}
              ${_S}/models/sgs.cpp
     )
@@ -290,6 +292,10 @@ if(NVCC)
     add_nvcc_gate(TARGET t26 BIN t26_gpu_nssolver_dispatch COMMENT "P10-A3 NSSolver GPU dispatch"
         EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_p10a3_gpu_nssolver.cu ${_GPU_NS}
+    )
+    add_nvcc_gate(TARGET t29 BIN t29_gpu_amr_native COMMENT "D1 GPU-native AMR (no D2H Q)"
+        EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
+        SRCS ${_T}/test_t29_gpu_amr_native.cu ${_GPU_NS}
     )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
@@ -347,7 +353,7 @@ if(NVCC)
         message(STATUS "MPI not found — t28 (GPU MPI halo) skipped")
     endif()
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28/t29 skipped")
 endif()
 
 # =============================================================================

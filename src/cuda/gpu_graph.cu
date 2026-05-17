@@ -19,7 +19,10 @@
 #include "cuda/gpu_constants.cuh"
 #include "cuda/gpu_check.cuh"
 #include "cuda/gpu_meta_buffer.cuh"
+#include "cuda/gpu_amr.cuh"
+#include "gpu_pool.hpp"
 #include "mpi/mpi_comm.hpp"
+#include "mesh/block_tree.hpp"
 #include <vector>
 
 // Verify GPU constants match CPU constants (both headers available here)
@@ -377,6 +380,150 @@ void GpuGraphSolver::download_q(const BlockTree& /*tree*/) const {
         for (int v = 0; v < NVAR; ++v)
             blk->Q[v].assign_from_flat(h_buf + v * NCELL);
     }
+}
+
+// D1: GPU-native AMR regrid.
+// ─────────────────────────────────────────────────────────────────────────────
+bool GpuGraphSolver::gpu_regrid(BlockTree& tree, GpuPool& pool, int bc_type,
+                                int cfg_max_level,
+                                float refine_thr, float coarsen_thr)
+{
+    const auto& leaves = tree.leaf_indices();
+    const int n = (int)leaves.size();
+    if (n == 0) return false;
+
+    // ── Step 1: evaluate refinement sensor on GPU ─────────────────────────────
+    // Collect device Q pointers and cell sizes for all leaves.
+    std::vector<const double*> d_Q_ptrs(n);
+    std::vector<float>          h_vals(n);
+    for (int i = 0; i < n; ++i) {
+        const BlockNode& nd = tree.nodes[leaves[i]];
+        d_Q_ptrs[i] = pool.d_Q(nd.block.get());
+        h_vals[i]   = (float)nd.block->h;
+    }
+
+    float* d_sensor = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_sensor, n * sizeof(float)));
+
+    gpu_eval_refine_sensor(d_Q_ptrs.data(), h_vals.data(), n, d_sensor, stream);
+
+    // Download sensor values (tiny: n floats, not Q arrays).
+    std::vector<float> h_sensor(n);
+    CUDA_CHECK(cudaMemcpy(h_sensor.data(), d_sensor, n * sizeof(float),
+                          cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(d_sensor));
+
+    // ── Step 2: decide which leaves to refine / coarsen ──────────────────────
+    const float coarsen_grad = coarsen_thr * 0.5f;  // matches CPU should_coarsen
+
+    std::vector<int> to_refine, to_coarsen;
+    for (int i = 0; i < n; ++i) {
+        const BlockNode& nd = tree.nodes[leaves[i]];
+        if (nd.level < cfg_max_level && h_sensor[i] > refine_thr)
+            to_refine.push_back(leaves[i]);
+    }
+
+    // Coarsen: 8-sibling groups all below threshold.
+    // Build set of refine candidates for fast lookup.
+    for (int i = 0; i < n; ++i) {
+        int p = tree.nodes[leaves[i]].parent;
+        if (p < 0) continue;
+        int fc = tree.nodes[p].first_child;
+        if (fc < 0) continue;
+        bool all_leaf   = true;
+        bool all_coarse = true;
+        for (int oct = 0; oct < 8; ++oct) {
+            int ci = fc + oct;
+            if (!tree.nodes[ci].is_leaf()) { all_leaf = false; break; }
+            // Use the sensor value: coarsen only if all siblings are smooth.
+            // Find this sibling's index in our leaves list.
+            bool found = false;
+            for (int j = 0; j < n; ++j) {
+                if (leaves[j] == ci) {
+                    if (h_sensor[j] > coarsen_grad) all_coarse = false;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) { all_coarse = false; }
+        }
+        if (all_leaf && all_coarse) {
+            bool dup = false;
+            for (int pc : to_coarsen) if (pc == p) { dup = true; break; }
+            if (!dup) to_coarsen.push_back(p);
+        }
+    }
+
+    if (to_refine.empty() && to_coarsen.empty()) return false;
+
+    // ── Step 3: wire GPU AMR callbacks and update tree topology ──────────────
+    // on_gpu_prolong_: alloc 8 child GPU buffers, D2D k_prolong, free parent GPU.
+    tree.set_gpu_amr_callbacks(
+        [&](CellBlock* parent, CellBlock* const children[8]) {
+            double* d_parent = pool.d_Q(parent);
+            std::vector<GpuProlongMeta> ops(8);
+            for (int oct = 0; oct < 8; ++oct) {
+                pool.alloc(children[oct]);
+                ops[oct].d_coarse_Q = d_parent;
+                ops[oct].d_fine_Q   = pool.d_Q(children[oct]);
+                ops[oct].oct        = oct;
+                ops[oct]._pad       = 0;
+            }
+            GpuAmrList amr;
+            amr.build_prolong(ops);
+            amr.exec_prolong(stream);
+            // Now safe to free parent GPU buffer (kernel is queued on stream).
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            pool.free(parent);
+        },
+        [&](CellBlock* parent, CellBlock* const children[8]) {
+            pool.alloc(parent);
+            GpuRestrictMeta meta;
+            meta.d_coarse_Q = pool.d_Q(parent);
+            for (int oct = 0; oct < 8; ++oct)
+                meta.d_children_Q[oct] = pool.d_Q(children[oct]);
+            GpuAmrList amr;
+            amr.build_restrict({meta});
+            amr.exec_restrict(stream);
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+            // Free children GPU buffers after restriction completes.
+            for (int oct = 0; oct < 8; ++oct)
+                pool.free(children[oct]);
+        }
+    );
+
+    // Refine pass — each refine() calls rebuild_neighbours internally.
+    for (int li : to_refine) {
+        if (!tree.nodes[li].is_leaf()) continue;
+        tree.refine(li);
+    }
+
+    // Coarsen pass — sensors collected from pre-refine leaf list (correct).
+    for (int p : to_coarsen) {
+        int fc = tree.nodes[p].first_child;
+        if (fc < 0) continue;
+        bool all_leaf = true;
+        for (int oct = 0; oct < 8; ++oct)
+            if (!tree.nodes[fc + oct].is_leaf()) { all_leaf = false; break; }
+        if (!all_leaf) continue;
+        tree.coarsen(p);
+    }
+
+    // Enforce 2:1 balance — may trigger additional GPU-native refines (callbacks active).
+    tree.balance();
+
+    // Clear GPU AMR callbacks after ALL topology changes (refine + coarsen + balance).
+    tree.set_gpu_amr_callbacks(nullptr, nullptr);
+
+    // Rebuild neighbour pointers after all changes.
+    // CPU Q ghost cells are intentionally stale (GPU is authoritative).
+    // GPU ghost fill will run at the start of the next advance().
+    tree.rebuild_neighbours();
+
+    // ── Step 4: rebuild GPU lists with new topology ───────────────────────────
+    build(tree, pool, bc_type);
+
+    return true;
 }
 
 // P11.8: CPU → GPU re-upload (reverse of download_q).

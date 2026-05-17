@@ -61,6 +61,14 @@ struct IGpuSolver : TimeIntegrator {
     // P-MPI-GPU: wire MPI partition for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_mpi(MpiPartition* /*p*/) {}
+
+    // D1: GPU-native AMR regrid.  Default returns false (fall back to CPU regrid).
+    // GpuGraphSolver overrides this to run refinement sensor on GPU and do D2D
+    // prolongation/restriction without large D2H Q transfers.
+    virtual bool   gpu_regrid(BlockTree& /*tree*/, GpuPool& /*pool*/,
+                               int /*bc_type*/, int /*max_level*/,
+                               float /*refine_thr*/ = 0.05f,
+                               float /*coarsen_thr*/ = 0.01f) { return false; }
 };
 
 // ── Diagnostics written every `diag_interval` steps ───────────────────────────────────

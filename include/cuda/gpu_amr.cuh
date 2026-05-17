@@ -1,5 +1,5 @@
 #pragma once
-// P8.4: GPU AMR prolongation and restriction kernels.
+// P8.4 / D1: GPU AMR prolongation, restriction, and refinement sensor kernels.
 //
 // k_prolong: piecewise-constant coarse→fine injection.
 //   Grid: n_prolong blocks (one per (coarse,fine) pair).
@@ -37,6 +37,18 @@ struct alignas(8) GpuRestrictMeta {
 };
 static_assert(sizeof(GpuRestrictMeta) == 72, "GpuRestrictMeta size mismatch");
 
+// ── Refinement sensor ─────────────────────────────────────────────────────────
+// k_refine_sensor: one block per leaf.
+//   Block: dim3(GPU_NB, GPU_NB, GPU_NB) = 512 threads.
+//   Computes max(|∇ρ|·h / |ρ|) over interior cells and writes to d_sensor[blockIdx.x].
+//   Used by GpuGraphSolver::gpu_regrid() to decide refine/coarsen without D2H of Q.
+struct GpuSensorMeta {
+    const double* d_Q;     // device Q array for this leaf (NVAR × GPU_NCELL)
+    float         h;       // cell size
+    int32_t       _pad;
+};
+static_assert(sizeof(GpuSensorMeta) == 16, "GpuSensorMeta size mismatch");
+
 // ── AMR operation list ────────────────────────────────────────────────────────
 struct GpuAmrList {
     GpuProlongMeta*  d_prolong  = nullptr;
@@ -61,3 +73,15 @@ struct GpuAmrList {
     // Launch k_restrict for all registered pairs; synchronises if stream==nullptr.
     void exec_restrict(cudaStream_t stream = nullptr) const;
 };
+
+// ── Refinement sensor utility ─────────────────────────────────────────────────
+// Evaluate the AMR refinement sensor for each leaf on GPU.
+//   d_sensor[leaf_idx] = max(|∇ρ|·h / |ρ|) over interior cells.
+// n_leaves leaves with their Q arrays at d_Q_ptrs[i] and cell sizes h_vals[i].
+// Result is in d_sensor (device, float, size = n_leaves).
+void gpu_eval_refine_sensor(
+    const double* const* d_Q_ptrs,  // host array of n_leaves device pointers
+    const float*         h_vals,    // host array of n_leaves cell sizes
+    int                  n_leaves,
+    float*               d_sensor,  // device output (float per leaf)
+    cudaStream_t         stream = nullptr);
