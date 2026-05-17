@@ -315,6 +315,12 @@ if(NVCC)
              ${_S}/cuda/gpu_source.cu
              ${_GPU_NS}
     )
+    add_nvcc_gate(TARGET t34 BIN t34_p1_gpu COMMENT "D6 GPU P1 radiation transport (Marshak wave)"
+        EXTRA_FLAGS ${_WNO}  EXTRA_LIBS -lcublas
+        SRCS ${_T}/test_t34_p1_gpu.cu
+             ${_S}/cuda/gpu_p1.cu
+             ${_GPU_NS}
+    )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu
