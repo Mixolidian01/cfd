@@ -66,6 +66,9 @@ struct GpuGraphSolver : IGpuSolver {
     // MPI partition — set via set_mpi() before build().
     MpiPartition* mpi_part_ = nullptr;
 
+    // BC type last passed to build() — used by advance_imex() for Helmholtz ghost fill.
+    int bc_type_ = 0;
+
     // Per-leaf RK3 metadata and Qn pool
     GpuRk3LeafMeta* d_rk3_metas = nullptr;
     double*          d_Qn_pool   = nullptr;
@@ -111,6 +114,11 @@ struct GpuGraphSolver : IGpuSolver {
     // P11.8: Copy CPU CellBlock Q → device (reverse of download_q).
     // Called before GPU advance() when CPU path ran the previous step (AMR fallback).
     void upload_q() const override;
+
+    // D4: IMEX-Euler — SSP-RK3 explicit step then per-leaf implicit Helmholtz
+    // viscous correction via GPU GMRES.  mu: constant dynamic viscosity.
+    // Defined in gpu_imex.cu (not in _GPU_NS; only linked for t32).
+    double advance_imex(const BlockTree& tree, double cfl, double mu);
 
     // D1: GPU-native AMR regrid.
     // Evaluates the refinement sensor on GPU, updates tree topology on CPU, and

@@ -131,6 +131,7 @@ void GpuGraphSolver::_destroy_graphs() {
 }
 
 void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_type) {
+    bc_type_ = bc_type;
     _destroy_graphs();
 
     ghost_list.build(tree, pool, bc_type, mpi_part_);

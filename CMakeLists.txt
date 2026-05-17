@@ -302,6 +302,13 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_t31_teno5a_gpu.cu ${_GPU_NS}
     )
+    add_nvcc_gate(TARGET t32 BIN t32_gpu_gmres COMMENT "D4 GPU GMRES Helmholtz viscous solve"
+        EXTRA_FLAGS ${_WNO}  EXTRA_LIBS -lcublas
+        SRCS ${_T}/test_t32_gpu_gmres.cu
+             ${_S}/cuda/gpu_gmres.cu
+             ${_S}/cuda/gpu_imex.cu
+             ${_GPU_NS}
+    )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu
@@ -364,7 +371,7 @@ if(NVCC)
         message(STATUS "MPI not found — t28/t30 (GPU MPI halo) skipped")
     endif()
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28/t29/t30/t31 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28/t29/t30/t31/t32 skipped")
 endif()
 
 # =============================================================================
