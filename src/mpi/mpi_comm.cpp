@@ -104,9 +104,7 @@ void mpi_alloc_local_blocks(BlockTree& tree, const MpiPartition& part,
 //   [4-byte LE leaf_index][4-byte LE face_dir][NG×NB2×NB2×NVAR doubles]
 // =============================================================================
 
-// Number of doubles in one halo face
-static constexpr int HALO_FACE_DOUBLES = NG * NB2 * NB2 * NVAR;
-static constexpr int HALO_FACE_HEADER  = 2;   // leaf_index + face_dir (as int32)
+// HALO_FACE_DOUBLES defined in mpi_comm.hpp
 
 struct FaceEntry {
     int li;

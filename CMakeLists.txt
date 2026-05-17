@@ -349,11 +349,17 @@ if(NVCC)
             MPI_INC     ${MPI_CXX_INCLUDE_DIRS}
             SRCS ${_T}/test_gpu_mpi_halo.cu ${_GPU_NS}
         )
+        add_nvcc_mpi_gate(TARGET t30 BIN t30_cuda_aware_halo COMMENT "D2 GPU face-pack halo"
+            EXTRA_FLAGS ${_WNO} -DHAVE_MPI=1
+            EXTRA_LIBS  ${MPI_CXX_LIBRARIES} ${_LZ4}
+            MPI_INC     ${MPI_CXX_INCLUDE_DIRS}
+            SRCS ${_T}/test_t30_cuda_aware_halo.cu ${_GPU_NS}
+        )
     else()
-        message(STATUS "MPI not found — t28 (GPU MPI halo) skipped")
+        message(STATUS "MPI not found — t28/t30 (GPU MPI halo) skipped")
     endif()
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28/t29 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28/t29/t30 skipped")
 endif()
 
 # =============================================================================

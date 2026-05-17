@@ -35,6 +35,11 @@ using MpiComm_t = int;
 
 #include <vector>
 
+// ── Halo face constants ───────────────────────────────────────────────────────
+// Number of doubles in one packed face halo (NG planes × NB2² cells × NVAR vars).
+// Used by both CPU mpi_exchange_halos and GPU k_pack_face / k_unpack_face.
+static constexpr int HALO_FACE_DOUBLES = NG * NB2 * NB2 * NVAR;  // = 1440
+
 // ── MPI environment (RAII) ────────────────────────────────────────────────────
 struct MpiEnvironment {
     explicit MpiEnvironment(int& argc, char**& argv);
