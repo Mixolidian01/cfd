@@ -161,6 +161,51 @@ conserved, rel_err = 0.000e+00), D30d (face-only ≤ full-block).
 
 ---
 
+## D4 — GPU-resident GMRES Helmholtz viscous solve  (2026-05-17  dda0d77)
+
+**Gate:** G41 (periodic manufactured solution, rel-err < 1e-8), G42 (Poiseuille WallY
+IMEX convergence to discrete steady state within 1e-6), G43 (GMRES iters ≤ 50).
+
+**Algorithm:** Matrix-free left-preconditioned GMRES(restart=30) solving (I−α∇²)u=rhs
+on the NB³=512-interior-cell grid per leaf per velocity component.
+
+- `gpu_gmres.cu` / `gpu_gmres.cuh` — GMRES(30) implementation.  Device-resident Krylov
+  basis (m+1)×NB³ doubles; host-side Hessenberg H[52×52], Givens rotations.  cuBLAS
+  CUBLAS_POINTER_MODE_HOST for dot/nrm2/axpy/scal.  Key kernels:
+  - `k_put_interior` / `k_get_interior`: NB³ compact ↔ NB23 interior copy.
+  - `k_fill_ghosts_helm`: ghost fill for (I−α∇²) apply.  x,z periodic; WallY y-ghosts
+    = −u_mirror (Dirichlet u=0).  All ghost sources are interior cells — no data races.
+  - `k_helm_stencil`: 7-point FD Laplacian on NB23 ghost-filled array → NB³ compact.
+  - `k_compute_diag_inv`: Jacobi preconditioner diagonal — 1+6α/h² interior; 1+7α/h²
+    at boundary j=0 and j=NB-1 (WallY extra off-diagonal from ghost = −u[0]).
+  - Left-preconditioning: v₀ = M⁻¹r₀/‖M⁻¹r₀‖; Arnoldi w = M⁻¹·A·v_j;
+    beta0 = ‖M⁻¹b‖ for relative residual reference.
+
+- `gpu_imex.cu` — `GpuGraphSolver::advance_imex(tree, cfl, mu)`: SSP-RK3 explicit via
+  `advance()` then per-leaf implicit Helmholtz correction for u, v, w independently.
+  Per-leaf: `k_rho_sum` (shared-mem reduction) → block-averaged ρ → α=dt·µ/ρ →
+  `k_extract_vel` × 3 → `gpu_helmholtz_gmres` × 3 → `k_writeback_vel` (KE updated,
+  IE unchanged).  Kept in a separate TU to avoid cuBLAS dependency in t24–t31.
+
+- `gpu_graph.cuh` / `gpu_graph.cu` — Added `bc_type_` field (stored in `build()`);
+  `advance_imex()` declared; `bc_type_` used to select `GmresBcType`.
+
+**Ghost-cell discretisation note:** The WallY ghost-cell scheme (u_ghost = −u[0])
+introduces a constant O(h²) shift between the discrete Poisson steady state and the
+continuous Poiseuille profile: u_ss[j] = u_exact[j] + F·h²/(8µ).  Derived analytically
+from the 1D discrete system — the shift is uniform across all cells.  G42 compares
+against the discrete steady state (correct reference), not the continuous profile.
+
+**Gate results (all PASS):**
+- G41: manufactured periodic Helmholtz — max rel-err = 2.22e-16 (tol 1e-8), iters = 0
+  (1-eigenmode lucky breakdown, correct solution u = u_exact to machine precision)
+- G42: Poiseuille IMEX 50 steps, WallY — max err vs u_ss = 2.03e-14 (tol 1e-6)
+- G43a: G41 GMRES iters = 0 ≤ 50; G43: G42 max iters = 3 ≤ 50
+
+**No regressions:** t24 (G1–G4 PASS, err = 1.718e-10).
+
+---
+
 ## D3 — TENO5-A GPU kernel; WENO5-Z retained for CPU=GPU comparison  (2026-05-17  13b817f)
 
 **Goal:** Replace WENO5-Z with TENO5-A as the default GPU convective reconstruction while
