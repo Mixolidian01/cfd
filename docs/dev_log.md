@@ -285,3 +285,37 @@ sides).  For 1% tolerance, a multi-block domain with ≥ 32 cells is needed.
 t29 (A1–A4), t31 (A31–A33b), t32 — all PASS.  ba CPU suite PASS.
 
 ---
+
+## D6 — GPU P1 radiation transport (diffusion limit)  (2026-05-18  3f0749c)
+
+**Gate:** t34 (M51/M52/M53) — all PASS.
+
+**Physics:** P1 diffusion approximation to radiation transport. Elliptic solve per step:
+−∇·(D∇G)+κG = κaT⁴ (D=c/(3κ); G=mean radiation intensity; a=rad. constant).
+Energy coupling operator-split after RK3: ΔQ[4] += κ(G−G_eq)·dt where G_eq=c·a·T⁴.
+Sign convention: G>G_eq → matter heats (absorbs); G<G_eq → matter cools (emits).
+
+**Implementation:**
+- `include/physics/p1_radiation.hpp` — `RadiationParams`, `p1_T`, `p1_diffusion`, `p1_emission`
+- `include/cuda/gpu_p1.cuh` — `GpuP1List`: one d_G[NCELL] per leaf; `exec_ghost_g`,
+  `exec_cg` (GPU CG), `exec_couple`, `upload_g/download_g`.
+- `src/cuda/gpu_p1.cu` — `k_fill_g_ghosts` (periodic+Dirichlet x-faces), `k_p1_stencil`
+  (7-pt Helmholtz), `k_p1_rhs` (κaT⁴ + Dirichlet correction), `k_p1_couple`,
+  GPU CG loop (`p1_cg`) with cuBLAS HOST-mode BLAS-1.
+
+**t34 gate results:**
+- M51: CPU tridiagonal solve, max_rel_err = 5.625e-3 < 2% vs G_analytic = exp(−x/λ),
+  λ = 1/√3 ≈ 0.577 (Marshak penetration depth). Discretisation error O(h²) ≈ 0.4%.
+- M52: GPU CG: 8 iterations to rel_res = 6.79e-17 (machine precision); same 0.56% accuracy.
+- M53: Energy coupling exact to rel_err = 9.35e-13.
+
+**Key design insight:** Dirichlet BC correction is absorbed into the CG RHS
+(b += 2D/h²·G_face at x-boundary cells), and all CG stencil applications use
+HOMOGENEOUS Dirichlet (G_face=0). Using inhomogeneous BCs on the search direction p
+caused ghost-value contamination and ~40% solution error. With the corrected approach,
+CG reduces to 8 iterations (condition number ~211, effective fast convergence for the
+exponential solution).
+
+**No regressions:** t24–t34 all PASS.  ba CPU suite PASS (bench_b3 TGV 62 min wall time).
+
+---
