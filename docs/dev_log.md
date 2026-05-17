@@ -250,3 +250,38 @@ unchanged — the SGS flux kernel is identical; only FP reduction order differs.
 t29 (A1–A4), t31 (A31–A33b) — all PASS.  ba CPU suite PASS.
 
 ---
+
+## D5 — GPU reactive flow (Arrhenius + species transport)  (2026-05-17  c723756)
+
+**Gate:** t33 (G51/G52/G53) — all PASS.
+
+**Physics:** Single-step Arrhenius chemistry operator-split after SSP-RK3.
+Source term ω = A·ρ·Y·exp(−T_act/T); species depletion dY/dt = −ω/ρ; heat release
+dE/dt = q_heat·ω.  Subcycled explicit RK4 (n_sub=8 substeps) handles stiff chemistry.
+
+**Implementation:**
+- `include/physics/arrhenius.hpp` — `ArrheniusParams`, `arrhenius_T()`, `arrhenius_omega()`;
+  host+device, single-step, ideal-gas temperature from conserved variables.
+- `include/cuda/gpu_source.cuh` — `GpuArrheniusList`: manages one `d_Y[NCELL]` per leaf;
+  call sequence: `exec_ghost_y` → `exec_advect` → `exec_ghost_y` → `exec_rk4`.
+- `src/cuda/gpu_source.cu` — `k_fill_y_ghosts` (periodic/wall zero-grad), `k_advect_meta<AXIS>`
+  (1st-order upwind species transport), `k_rk4_meta` (subcycled RK4 chemistry).
+
+**t33 gate results:**
+- G51: Y consumed 100% in 100 steps (started at 1.0).
+- G52: Energy balance ΔE = q·ρ·ΔY to rel err 0.000e+00 (exact conservation — RK4 updates E
+  atomically with Y).
+- G53: 1D detonation speed D_measured = 4.697 vs D_CJ = 4.681, rel_err = 3.5e-03 < 3%.
+  Measurement: global Rankine-Hugoniot mass-flux D = Σ|Δ(ρu)| / Σ|Δρ| over all periodic
+  density fronts; cancels forward/backward shock errors (NB=8 single-block, 1 valid step).
+
+**Key physics insight (G53 NB=8 domain):** Periodic IC with 4 product + 4 reactant cells
+launches simultaneous forward and backward detonation fronts; all fuel consumed in 1 step.
+Global R-H sum over all fronts converges to D_CJ by momentum-flux conservation; using a
+single max-contrast pair overestimates D by ~17% (backward shock compresses cells on both
+sides).  For 1% tolerance, a multi-block domain with ≥ 32 cells is needed.
+
+**No regressions:** t24 (G1–G4), t25 (N1–N4), t26 (A1–A4b), t27 (S1–S3), t28 (GM1–GM4),
+t29 (A1–A4), t31 (A31–A33b), t32 — all PASS.  ba CPU suite PASS.
+
+---
