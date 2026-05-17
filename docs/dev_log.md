@@ -58,7 +58,7 @@ t27 (S1–S3), t28 (GM1–GM4).
 
 ---
 
-## D1 — GPU-native AMR  (2026-05-17  pending)
+## D1 — GPU-native AMR  (2026-05-17  0d5fc2c)
 
 **Gate:** All existing tests pass; new `t29_gpu_amr_native` (A1–A4) verifies refine/coarsen
 cycle with only n_leaves floats transferred D2H (sensor values); full Q stays GPU-resident.
