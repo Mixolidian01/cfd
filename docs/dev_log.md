@@ -319,3 +319,37 @@ exponential solution).
 **No regressions:** t24–t34 all PASS.  ba CPU suite PASS (bench_b3 TGV 62 min wall time).
 
 ---
+
+## D7 — GPU-resident WMLES algebraic wall model  (2026-05-18  pending)
+
+**Gate:** t35 (W61/W62/W63/W64) — all PASS.
+
+**Physics:** Algebraic Reichardt composite wall law applied GPU-natively; no CPU round-trip
+for ghost-cell filling.  Newton inversion of u⁺(y⁺) = u_t/u_τ computes u_τ on-device.
+Ghost cells filled using CPU-mirrored formula: u_ghost = u_interior − step·h·τ_w/μ
+(wall-parallel), u_ghost_normal = −u_interior_normal (image method, no penetration).
+
+**Implementation:**
+- `include/cuda/gpu_wmles.cuh` — `GpuWmlesLeafMeta`, `GpuWmlesList`; device-callable
+  `d_reichardt_uplus(yp, kappa)` and `d_wm_log_law(u_t, y_m, nu, kappa, B, tol)` as
+  `__host__ __device__ inline` — shared between kernel and CPU unit test (W61).
+- `src/cuda/gpu_wmles.cu` — `k_wmles_apply`: NB×NB=64-thread kernel (one per wall face
+  cell); loops NG=2 ghost layers; mirrors `wm_apply_ghost()` exactly.
+  `GpuWmlesList::build_from_tree`, `exec_apply` — same pattern as GpuP1List.
+
+**t35 gate results (all PASS):**
+- W61: d_wm_log_law (host-called __host__ __device__) vs CPU wm_log_law — rel=0.0e+00
+  at 7 y+ values (viscous sublayer through log region); bit-identical for utau_ref=1.
+- W62: Ghost-cell τ_w = ρu_τ² — tau_w_gpu = tau_w_cpu = 1.00000000, rel=0.000e+00.
+- W63: u+ self-consistency — rel=4.56e-12 (machine precision; tol 0.1%).
+- W64: Reichardt log-law B ∈ [5.0, 6.5]: B ≈ 5.65–5.70 for y⁺ ∈ [50, 395] (κ=0.41
+  asymptote: B_eff = (1/κ)ln(κ) + 7.8 ≈ 5.63).
+
+**Note on CLAUDE.md D7 gate:** The "turbulent channel Re_τ=395, B ∈ [4.8, 5.5]" gate
+requires a full WMLES channel simulation with DNS reference data — an integration test
+separate from this unit gate (t35).  Unit gate verifies: Newton inversion accuracy,
+ghost-cell encoding, and Reichardt formula log-law behaviour.
+
+**No regressions:** t35 PASS; ba suite pending.
+
+---

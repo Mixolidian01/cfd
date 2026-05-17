@@ -321,6 +321,13 @@ if(NVCC)
              ${_S}/cuda/gpu_p1.cu
              ${_GPU_NS}
     )
+    add_nvcc_gate(TARGET t35 BIN t35_wmles_gpu COMMENT "D7 GPU-resident WMLES algebraic wall model"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t35_wmles_gpu.cu
+             ${_S}/cuda/gpu_wmles.cu
+             ${_S}/models/wall_model.cpp
+             ${_GPU_NS}
+    )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu
@@ -383,7 +390,7 @@ if(NVCC)
         message(STATUS "MPI not found — t28/t30 (GPU MPI halo) skipped")
     endif()
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28/t29/t30/t31/t32/t33 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19-t35 GPU gates skipped")
 endif()
 
 # =============================================================================
