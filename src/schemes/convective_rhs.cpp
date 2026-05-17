@@ -1,23 +1,26 @@
 // =============================================================================
 // convective_rhs.cpp — R9-E3: convective RHS kernel extracted from operators.cpp
 // =============================================================================
-// Contains: weno5_face_t, is_wall_ghost, face_lr_idx, face_to_ijk,
+// Contains: recon_face_t (TENO5-A default, D3), is_wall_ghost, face_to_ijk,
 //           accumulate_face, convective_rhs_impl.
 // kep_flux_t lives in operators.hpp (inline template, shared with operators.cpp).
 // Called from: compute_rhs / compute_rhs_typed (operators.cpp) via forward decl.
+//
+// D3: default reconstruction changed from Weno5Recon to Teno5Recon.
+// Weno5Recon remains available via compute_rhs_typed<HllcEsFlux, Weno5Recon, ...>.
 
 #include "schemes/operators.hpp"
-#include "physics/weno5_recon.hpp"
+#include "physics/teno5_recon.hpp"
 #include "profiling/profiler.hpp"
 
 #include <cmath>
 #include <algorithm>
 
-// P13.1 stage 3 — compile-time axis; R2: delegates to Weno5Recon<DIR> functor.
+// D3: default face reconstruction uses TENO5-A (Weno5Recon available via typed path).
 template<Axis DIR>
-static void weno5_face_t(const Prim* pc, int i, int j, int k,
+static void recon_face_t(const Prim* pc, int i, int j, int k,
                          Prim& qL_out, Prim& qR_out) noexcept {
-    Weno5Recon<DIR>{}(pc, i, j, k, qL_out, qR_out);
+    Teno5Recon<DIR>{}(pc, i, j, k, qL_out, qR_out);
 }
 
 // is_wall_ghost: detect no-slip wall ghost face.
@@ -78,11 +81,11 @@ static void accumulate_face(const Prim* pc, const double* duc,
         const auto Fk = kep_flux_t<DIR>(pL, pR);
         std::array<double,NVAR> Fs;
         if (!is_bnd) {
-            // Interior shocked face: WENO5 + HLLC-ES.
+            // Interior face: TENO5-A (D3 default) + HLLC-ES.
             int xi, yi, zi;
             face_to_ijk<DIR>(n, a, b, xi, yi, zi);
             Prim qL, qR;
-            weno5_face_t<DIR>(pc, xi, yi, zi, qL, qR);
+            recon_face_t<DIR>(pc, xi, yi, zi, qL, qR);
             Fs = hllc_es_flux_t<DIR>(qL, qR);
         } else if (has_nbr_here) {
             // Block boundary with real same-level neighbor: MUSCL + HLLC-ES (P15.2).

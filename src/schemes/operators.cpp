@@ -353,6 +353,12 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
 // Explicit instantiations — one row per supported (Flux × Recon × EOS) combination.
 // Add a new row here when a new scheme is introduced.
 #include "physics/ideal_gas_eos.hpp"
+#include "physics/teno5_recon.hpp"  // D3
+
+template void compute_rhs_typed<HllcEsFlux, Teno5Recon, IdealGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+template void compute_rhs_typed<HllcFlux,   Teno5Recon, IdealGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
 
 template void compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
     const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
@@ -360,6 +366,11 @@ template void compute_rhs_typed<HllcFlux,   Weno5Recon, IdealGasEOS>(
     const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
 
 #include "physics/stiffened_gas_eos.hpp"
+
+template void compute_rhs_typed<HllcEsFlux, Teno5Recon, StiffenedGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+template void compute_rhs_typed<HllcFlux,   Teno5Recon, StiffenedGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
 
 template void compute_rhs_typed<HllcEsFlux, Weno5Recon, StiffenedGasEOS>(
     const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
@@ -654,6 +665,21 @@ void tree_rhs_typed(BlockTree& tree,
     accumulate_cf_fine_fluxes(tree, stage_weight, level_filter);
 }
 
+// D3: Teno5Recon instantiations (default scheme)
+template void tree_rhs_typed<HllcEsFlux, Teno5Recon, IdealGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, IdealGasEOS) noexcept;
+template void tree_rhs_typed<HllcFlux, Teno5Recon, IdealGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, IdealGasEOS) noexcept;
+template void tree_rhs_typed<HllcEsFlux, Teno5Recon, StiffenedGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, StiffenedGasEOS) noexcept;
+template void tree_rhs_typed<HllcFlux, Teno5Recon, StiffenedGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, StiffenedGasEOS) noexcept;
+
+// Weno5Recon retained for comparison
 template void tree_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(
     BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
     const DucrosConfig&, IdealGasEOS) noexcept;

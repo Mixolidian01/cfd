@@ -206,6 +206,7 @@ if(NVCC)
 
     set(_NVCC_BASE
         -std=c++20 -O2 -g --expt-relaxed-constexpr --generate-line-info
+        --fmad=false
         -arch=sm_${_ARCH}
         -I${CMAKE_SOURCE_DIR}/include -I${CMAKE_SOURCE_DIR}/include/cuda
         -Xcompiler=-Wall
@@ -297,6 +298,10 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_t29_gpu_amr_native.cu ${_GPU_NS}
     )
+    add_nvcc_gate(TARGET t31 BIN t31_teno5a_gpu COMMENT "D3 GPU TENO5-A convective kernel"
+        EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
+        SRCS ${_T}/test_t31_teno5a_gpu.cu ${_GPU_NS}
+    )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu
@@ -359,7 +364,7 @@ if(NVCC)
         message(STATUS "MPI not found — t28/t30 (GPU MPI halo) skipped")
     endif()
 else()
-    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28/t29/t30 skipped")
+    message(STATUS "nvcc not found — t5/t8/t19/t20/t21/t22/t23/t24/t25/t26/t27/t28/t29/t30/t31 skipped")
 endif()
 
 # =============================================================================

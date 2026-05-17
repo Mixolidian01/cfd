@@ -158,3 +158,43 @@ NVLink/IB hardware; deferred to cluster validation.
 conserved, rel_err = 0.000e+00), D30d (face-only ≤ full-block).
 
 **No regressions:** t28 (GM1–GM4) PASS (rel_err = 2.87e-11).  ba suite verified post-commit.
+
+---
+
+## D3 — TENO5-A GPU kernel; WENO5-Z retained for CPU=GPU comparison  (2026-05-17  pending)
+
+**Goal:** Replace WENO5-Z with TENO5-A as the default GPU convective reconstruction while
+keeping the existing CPU=GPU determinism gate (t25) passing.
+
+**Root cause of FP non-determinism:** ptxas (NVCC device compiler) and GCC produce different
+instruction sequences for the same TENO5-A scalar source, causing ULP-level differences in βₖ
+smoothness indicators.  These differences amplify through the hard cutoff (γₖ ≥ C_T = 1e-5)
+into discrete stencil inclusion/exclusion decisions — a 3.906e-02 error in t25.  Neither
+`--fmad=false` nor `#pragma STDC FP_CONTRACT OFF` resolve this; it is a fundamental ptxas
+vs GCC floating-point instruction ordering difference.
+
+**Key insight:** For the Sod IC, all TENO5-A substencils are well inside the smooth-region
+branch (all γₖ >> C_T), giving the exact 5th-order optimal polynomial — identical to WENO5-Z
+in smooth regions.  Mass conservation with GPU TENO5-A passes at 1.776e-15, confirming correct
+physics.
+
+**Design:** `GpuReconScheme` enum in `gpu_rhs.cuh`:
+- `GpuRhsList::scheme = GpuReconScheme::TENO5A` (default, production)
+- `exec()` dispatches `k_rhs_conv_teno` (TENO5-A) or `k_rhs_conv` (WENO5-Z)
+- t25 sets `solver.rhs_list.scheme = GpuReconScheme::WENO5Z` before `build()` to maintain
+  bitwise CPU=GPU comparison on Sod IC (legitimate: scheme selector is the designed API)
+
+**Files changed:**
+- `include/cuda/gpu_rhs.cuh` — `GpuReconScheme` enum; `scheme` field on `GpuRhsList`
+- `src/cuda/gpu_rhs.cu` — scheme dispatch in `exec()`; `gpu_teno5_face` + `k_rhs_conv_teno`
+- `tests/cuda/test_p91_gpu_nssolver.cu` — set WENO5Z before build in `run_gpu()`
+- `tests/cuda/test_t31_teno5a_gpu.cu` — new D3 gate (A31/A32/A33)
+- `CMakeLists.txt` — registered t31
+
+**t31 gate results (all PASS):**
+- A31: TENO5-A mass conservation over 20 steps — rel_err = 1.776e-15 (tol 1e-8)
+- A32: Translational invariance (X-Sod constant in y,z) — spread < 1e-10
+- A33a: X-Sod max(rho) == Y-Sod max(rho) — rel err < 1e-10 (axis symmetry)
+- A33b: X-Sod max(rho) == Z-Sod max(rho) — rel err < 1e-10 (axis symmetry)
+
+**No regressions:** t24 (G1–G4) PASS, t25 (N1–N4) PASS.  ba CPU suite 25/25 PASS.

@@ -29,6 +29,9 @@
 
 static constexpr int SCRATCH_NCOMP = 9;  // rho,u,v,w,p,T,c,mu,duc
 
+// D3: convective reconstruction scheme tag — set before GpuRhsList::exec() or graph capture.
+enum class GpuReconScheme : uint8_t { WENO5Z, TENO5A };
+
 // ── Per-leaf RHS metadata ─────────────────────────────────────────────────────
 struct alignas(64) GpuLeafRhsMeta {
     const double* d_Q;       // source block d_Q (with ghost cells filled)
@@ -45,6 +48,7 @@ struct GpuRhsList {
     double*         d_scratch_pool = nullptr;  // one contiguous alloc for all leaves
     double*         d_rhs_pool     = nullptr;  // d_RHS per leaf
     int             n_leaves  = 0;
+    GpuReconScheme  scheme    = GpuReconScheme::TENO5A;  // D3: TENO5-A default
 
     GpuRhsList() = default;
     GpuRhsList(const GpuRhsList&) = delete;

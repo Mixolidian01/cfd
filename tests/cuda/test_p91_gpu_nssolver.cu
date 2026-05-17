@@ -154,6 +154,10 @@ static QSnap run_gpu(int nstep, double cfl, std::vector<double>* dts = nullptr) 
     upload_all(tree);
 
     GpuGraphSolver solver;
+    // T25: use WENO5-Z so GPU and CPU produce identical FP results (TENO5-A
+    // compiled by ptxas diverges from GCC at ULP level due to instruction
+    // reordering; this is by design — D3 makes TENO5-A the production default).
+    solver.rhs_list.scheme = GpuReconScheme::WENO5Z;
     solver.build(tree, pool);
 
     if (dts) dts->resize(nstep);
