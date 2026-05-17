@@ -320,7 +320,7 @@ exponential solution).
 
 ---
 
-## D7 — GPU-resident WMLES algebraic wall model  (2026-05-18  pending)
+## D7 — GPU-resident WMLES algebraic wall model  (2026-05-18  9335d7d)
 
 **Gate:** t35 (W61/W62/W63/W64) — all PASS.
 
