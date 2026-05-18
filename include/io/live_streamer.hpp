@@ -163,6 +163,11 @@ public:
         return cfg_;
     }
 
+    // True when at least one client is connected to /volume-stream.
+    bool has_volume_client() const noexcept {
+        return vol_stream_fd_.load(std::memory_order_acquire) >= 0;
+    }
+
     void set_var (StreamVar v) noexcept;
     void set_axis(uint8_t  a) noexcept;
     void set_pos (double   p) noexcept;
@@ -220,4 +225,5 @@ private:
     void serialize_volume(const FrameBuffer3D&, std::vector<uint8_t>& out);
 
     std::string viewer_html_3d();          // P6.6 — WebGPU ray marcher (needs port)
+    std::string viewer_html_combined();   // Combined 2D+3D single-page viewer
 };

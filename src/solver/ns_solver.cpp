@@ -235,14 +235,16 @@ double NSSolver::advance() {
             gpu_q_stale_ = false;
         }
 
-        // Option A/C: update slice config in the snapshot buffer each step so
-        // the GPU kernels use the current POST /config selection.
+        // Option A/C/B: update snap config each step so kernels use the current
+        // POST /config selection and volume client state.
         if (gpu_snap_ && streamer_) {
             StreamConfig sc = streamer_->get_config();
-            gpu_snap_->var_id   = static_cast<int>(sc.var);
-            gpu_snap_->axis     = static_cast<int>(sc.axis);
-            gpu_snap_->norm_pos = static_cast<float>(sc.pos);
-            gpu_snap_->domain_L = static_cast<float>(tree.domain_L());
+            gpu_snap_->var_id     = static_cast<int>(sc.var);
+            gpu_snap_->axis       = static_cast<int>(sc.axis);
+            gpu_snap_->norm_pos   = static_cast<float>(sc.pos);
+            gpu_snap_->domain_L   = static_cast<float>(tree.domain_L());
+            gpu_snap_->vol_active = streamer_->has_volume_client();
+            gpu_snap_->volume_N   = std::max(4, std::min(128, sc.volume_size));
         }
 
         dt = gpu_solver_->advance(tree, cfg.time.cfl);

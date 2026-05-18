@@ -75,16 +75,23 @@ build_ic(const Config& cfg)
         double ma   = cfg.d("ic_ma",   0.1);
         double v0   = cfg.d("ic_v0",   1.0);
         double rho0 = cfg.d("ic_rho0", 1.0);
+        double L    = cfg.d("domain_L", 1.0);
+        // Rescale so one full TGV period fits in [0, L]^3 regardless of domain_L.
+        // Without this, raw x ∈ [0, L] feeds sin/cos directly and the field is
+        // non-periodic over L (sin(L) ≠ sin(0)), creating artificial ghost-fill
+        // discontinuities at every block boundary (visible as a "hard" checkerboard).
+        const double k = 2.0 * M_PI / L;
         double p0   = rho0 * v0 * v0 / (GAMMA * ma * ma);
         return [=](double x, double y, double z) -> Prim {
+            const double kx = k * x, ky = k * y, kz = k * z;
             Prim q{};
             q.rho = rho0;
-            q.u   =  v0 * std::sin(x) * std::cos(y) * std::cos(z);
-            q.v   = -v0 * std::cos(x) * std::sin(y) * std::cos(z);
+            q.u   =  v0 * std::sin(kx) * std::cos(ky) * std::cos(kz);
+            q.v   = -v0 * std::cos(kx) * std::sin(ky) * std::cos(kz);
             q.w   =  0.0;
             q.p   = p0 + rho0*v0*v0/16.0
-                       * (std::cos(2.0*x) + std::cos(2.0*y))
-                       * (std::cos(2.0*z) + 2.0);
+                       * (std::cos(2.0*kx) + std::cos(2.0*ky))
+                       * (std::cos(2.0*kz) + 2.0);
             q.T   = q.p / (q.rho * R_GAS);
             q.c   = std::sqrt(GAMMA * q.p / q.rho);
             return q;

@@ -28,11 +28,13 @@
 
 // ── Forward declarations for symbols defined in gpu_snapshot.cu ──────────────
 // SnapImpl is the CUDA-private implementation of the opaque GpuSnapshotBuffer::impl_.
+// Must stay in sync with the definition in gpu_snapshot.cu.
 struct SnapImpl {
-    cudaStream_t     stream  = nullptr;
-    SnapLeafMeta*    d_metas = nullptr;
-    float*           d_slice = nullptr;  // device-mapped pinned mirror of h_slice
-    GpuBlockMetrics* d_hmet  = nullptr;  // device-mapped pinned mirror of h_metrics
+    cudaStream_t     stream   = nullptr;
+    SnapLeafMeta*    d_metas  = nullptr;
+    float*           d_slice  = nullptr;  // device-mapped pinned mirror of h_slice
+    GpuBlockMetrics* d_hmet   = nullptr;  // device-mapped pinned mirror of h_metrics
+    float*           d_volume = nullptr;  // device-mapped pinned mirror of h_volume
     int              max_leaves = 0;
 };
 
@@ -40,6 +42,8 @@ struct SnapImpl {
 __global__ void k_extract_slice(const SnapLeafMeta* metas, float* d_out,
                                  int var_id, int axis, float slice_phys);
 __global__ void k_reduce_metrics(const SnapLeafMeta* metas, GpuBlockMetrics* d_out);
+__global__ void k_build_volume(const SnapLeafMeta* metas, float* d_volume,
+                                int n_leaves, int N, int var_id, float domain_L);
 
 // Verify GPU constants match CPU constants (both headers available here)
 static_assert(GPU_NB   == NB,   "GPU_NB mismatch with NB in cell_block.hpp");
@@ -249,6 +253,16 @@ static void _do_launch_snapshot(GpuSnapshotBuffer* snap_buf, int n_leaves,
 
     k_reduce_metrics<<<n_leaves, 64, 0, s>>>(
         impl->d_metas, impl->d_hmet);
+
+    // Option B: 3-D volume — only when a viewer client has connected /volume-stream.
+    if (snap_buf->vol_active && impl->d_volume) {
+        const int N = max(4, min(128, snap_buf->volume_N));
+        CUDA_CHECK(cudaMemsetAsync(impl->d_volume, 0,
+                                   (size_t)N * N * N * sizeof(float), s));
+        k_build_volume<<<n_leaves, 64, 0, s>>>(
+            impl->d_metas, impl->d_volume,
+            n_leaves, N, snap_buf->var_id, snap_buf->domain_L);
+    }
 }
 
 void GpuGraphSolver::set_snapshot_buffer(GpuSnapshotBuffer* buf)

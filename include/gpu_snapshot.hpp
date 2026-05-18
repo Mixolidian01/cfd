@@ -66,6 +66,14 @@ struct GpuSnapshotBuffer {
     int  max_leaves = 0;
     void* impl_    = nullptr; // SnapImpl* — opaque CUDA handles (stream, device ptrs)
 
+    // ── 3-D volume buffer (Option B) ─────────────────────────────────────────
+    // h_volume is pinned host-mapped; the GPU k_build_volume kernel writes to
+    // the device-side mapping; after stream sync the CPU reads floats directly.
+    // Allocation size is always VOL_MAX_N³ = 128³ = 2 M floats = 8 MB.
+    float* h_volume   = nullptr; // [VOL_MAX_N^3] pinned host-mapped
+    int    volume_N   = 32;      // active grid resolution, clamped to [4, 128]
+    bool   vol_active = false;   // launch k_build_volume when true
+
     GpuSnapshotBuffer();
     ~GpuSnapshotBuffer();
     GpuSnapshotBuffer(const GpuSnapshotBuffer&)            = delete;

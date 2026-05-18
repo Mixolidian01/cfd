@@ -296,6 +296,39 @@ void LiveStreamer::gpu_snapshot(const GpuSnapshotBuffer& snap,
         front_fresh_ = true;
     }
     swap_cv_.notify_one();
+
+    // Option B: 3-D volume from GPU-mapped pinned buffer — only when a client is
+    // listening on /volume-stream (i.e., user has switched to 3D mode in browser).
+    if (snap.vol_active && snap.h_volume) {
+        const int N = snap.volume_N;  // matches what k_build_volume used
+        FrameBuffer3D& fb3 = back3d_;
+        fb3.step     = step;
+        fb3.sim_time = t;
+        fb3.nx = fb3.ny = fb3.nz = static_cast<uint16_t>(N);
+        fb3.domain_L = L_f;
+        fb3.var_id   = static_cast<uint8_t>(svar);
+
+        const size_t nvox = (size_t)N * N * N;
+        fb3.data.resize(nvox);
+        std::copy(snap.h_volume, snap.h_volume + nvox, fb3.data.begin());
+
+        float g_vmin3 = std::numeric_limits<float>::max();
+        float g_vmax3 = std::numeric_limits<float>::lowest();
+        for (float v : fb3.data) {
+            if (v < g_vmin3) g_vmin3 = v;
+            if (v > g_vmax3) g_vmax3 = v;
+        }
+        if (g_vmin3 >= g_vmax3) { g_vmin3 = 0.f; g_vmax3 = 1.f; }
+        fb3.g_vmin = g_vmin3;
+        fb3.g_vmax = g_vmax3;
+
+        {
+            std::lock_guard<std::mutex> lk(swap3d_mtx_);
+            std::swap(back3d_, front3d_);
+            front3d_fresh_ = true;
+        }
+        swap3d_cv_.notify_one();
+    }
 }
 
 // =============================================================================
@@ -675,18 +708,15 @@ void LiveStreamer::handle_connection(int cfd) {
 // =============================================================================
 
 void LiveStreamer::handle_get_root(int cfd) {
-    const char* html = viewer_html();
-    const size_t len = std::strlen(html);
-
+    std::string html = viewer_html_combined();
     char hdr[256];
     int hlen = std::snprintf(hdr, sizeof(hdr),
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/html; charset=utf-8\r\n"
         "Content-Length: %zu\r\n"
-        "Connection: close\r\n\r\n", len);
-
+        "Connection: close\r\n\r\n", html.size());
     http_safe_send(cfd, hdr, static_cast<size_t>(hlen));
-    http_safe_send(cfd, html, len);
+    http_safe_send(cfd, html.c_str(), html.size());
 }
 
 void LiveStreamer::handle_get_stream(int cfd) {
@@ -708,15 +738,9 @@ void LiveStreamer::handle_get_stream(int cfd) {
 }
 
 void LiveStreamer::handle_get_volume(int cfd) {
-    std::string html = viewer_html_3d();
-    char hdr[256];
-    int hlen = std::snprintf(hdr, sizeof(hdr),
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html; charset=utf-8\r\n"
-        "Content-Length: %zu\r\n"
-        "Connection: close\r\n\r\n", html.size());
-    http_safe_send(cfd, hdr, static_cast<size_t>(hlen));
-    http_safe_send(cfd, html.c_str(), html.size());
+    // Redirect to the combined viewer which has both 2D and 3D modes.
+    const char* r = "HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\n\r\n";
+    http_safe_send(cfd, r, std::strlen(r));
 }
 
 void LiveStreamer::handle_get_vol_stream(int cfd) {
@@ -873,6 +897,661 @@ void LiveStreamer::handle_post_config(int cfd, const std::string& req_with_body)
         "Content-Length: 0\r\n"
         "Access-Control-Allow-Origin: *\r\n\r\n";
     http_safe_send(cfd, r200, std::strlen(r200));
+}
+
+// =============================================================================
+// Combined 2D+3D single-page viewer with mode-toggle button.
+// Serves at GET / (replaces the old 2D-only viewer_html()).
+// 2D mode: 2D slice canvas + all existing 2D controls + sparklines.
+// 3D mode: WebGPU volume renderer + volume controls + sparklines.
+//   • WebGPU and /volume-stream connection are lazily initialized on first
+//     switch to 3D mode — no overhead when user never clicks the 3D button.
+//   • Both modes share the variable selector; POST /config is sent on change.
+// =============================================================================
+
+std::string LiveStreamer::viewer_html_combined() {
+    int port = cfg_.port;
+    char port_str[16];
+    std::snprintf(port_str, sizeof(port_str), "%d", port);
+    std::string html = std::string(R"HTML(<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CFD Live Viewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d0d0d;color:#bbb;font-family:monospace;font-size:12px;
+     display:flex;flex-direction:column;height:100vh;overflow:hidden}
+#bar{padding:5px 10px;background:#181818;border-bottom:1px solid #2a2a2a;
+     display:flex;gap:10px;align-items:center;flex-shrink:0;flex-wrap:wrap}
+#cw{flex:1;position:relative;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+#c2d{image-rendering:pixelated}
+#spkw{height:140px;flex-shrink:0;background:#111;border-top:1px solid #222}
+#spk{display:block;width:100%;height:100%}
+label{display:flex;align-items:center;gap:4px}
+select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
+     padding:2px 4px;cursor:pointer}
+input[type=number]{background:#222;color:#ccc;border:1px solid #3a3a3a;padding:2px 4px}
+#info{margin-left:auto;color:#555;font-size:11px}
+#err{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+     color:#f66;font-size:15px;text-align:center;pointer-events:none}
+#tf-canvas{border:1px solid #3a3a3a;cursor:crosshair;flex-shrink:0}
+#mode-btn{background:#253;color:#9f9;border:1px solid #4a4;
+     padding:3px 9px;cursor:pointer;font-family:monospace;font-size:11px}
+#mode-btn:hover{background:#364}
+</style>
+</head>
+<body>
+<div id="bar">
+  <!-- Shared: variable selector -->
+  <label>var
+    <select id="sv">
+      <option value="0">&#961; density</option>
+      <option value="1">p pressure</option>
+      <option value="2">T temperature</option>
+      <option value="3">|u| speed</option>
+      <option value="4">&#961;u</option><option value="5">&#961;v</option>
+      <option value="6">&#961;w</option><option value="7">E</option>
+      <option value="8">Mach</option>
+      <option value="9">|&#969;| vorticity</option>
+      <option value="10">Q-criterion</option>
+      <option value="11">schlieren |&#8711;&#961;|</option>
+    </select>
+  </label>
+  <!-- 2D-only controls -->
+  <span id="ctrl2d" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <label>axis
+      <select id="sa">
+        <option value="0">X</option>
+        <option value="1">Y</option>
+        <option value="2" selected>Z</option>
+      </select>
+    </label>
+    <label>pos
+      <input type="range" id="sp" min="0" max="1" step="0.005" value="0.5">
+      <span id="lp">0.500</span>
+    </label>
+    <label>cmap
+      <select id="scm">
+        <option value="0">Viridis</option>
+        <option value="1">Inferno</option>
+        <option value="2">Plasma</option>
+        <option value="3">RdBu</option>
+      </select>
+    </label>
+    <label>lock <input type="checkbox" id="lck">
+      <input type="number" id="vmn" style="width:58px" step="any" placeholder="min">
+      <input type="number" id="vmx" style="width:58px" step="any" placeholder="max">
+    </label>
+    <label>AMR <input type="checkbox" id="amr"></label>
+  </span>
+  <!-- 3D-only controls (hidden initially) -->
+  <span id="ctrl3d" style="display:none;gap:10px;align-items:center;flex-wrap:wrap">
+    <label>steps<input type="range" id="nsteps" min="32" max="256" step="16" value="96">
+      <span id="lns">96</span></label>
+    <label>opacity<input type="range" id="opac" min="1" max="40" step="1" value="12">
+      <span id="lop">12</span></label>
+    <label>cmap3d
+      <select id="cmap3d">
+        <option value="0">Viridis</option>
+        <option value="1">Hot</option>
+        <option value="2">Cool</option>
+        <option value="3">Gray</option>
+      </select>
+    </label>
+    <canvas id="tf-canvas" width="128" height="32" title="Drag to edit transfer function"></canvas>
+  </span>
+  <button id="mode-btn" onclick="toggleMode()">3D view</button>
+  <span id="info">connecting&hellip;</span>
+</div>
+<div id="cw">
+  <canvas id="c2d"></canvas>
+  <canvas id="c3d" style="display:none"></canvas>
+  <div id="err" style="display:none"></div>
+</div>
+<div id="spkw"><canvas id="spk"></canvas></div>
+<script>
+const NB = 8;
+const PORT = )HTML") + port_str + R"HTML(;
+
+// ── Mode toggle ───────────────────────────────────────────────────────────────
+let mode3d = false;
+let gpuInitDone = false;
+
+async function toggleMode() {
+  mode3d = !mode3d;
+  document.getElementById('c2d').style.display    = mode3d ? 'none'  : 'block';
+  document.getElementById('c3d').style.display    = mode3d ? 'block' : 'none';
+  document.getElementById('ctrl2d').style.display = mode3d ? 'none'  : 'flex';
+  document.getElementById('ctrl3d').style.display = mode3d ? 'flex'  : 'none';
+  document.getElementById('mode-btn').textContent = mode3d ? '2D view' : '3D view';
+  document.getElementById('err').style.display    = 'none';
+  if (mode3d && !gpuInitDone) {
+    gpuInitDone = await initWebGPU();
+    if (gpuInitDone) render3d();
+    connectVolStream();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── 2D viewer ────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+const canvas2d = document.getElementById('c2d');
+const ctx2d    = canvas2d.getContext('2d');
+const infoEl   = document.getElementById('info');
+let imgData = null, domainL = 1.0, blocks2d = [];
+
+function resize2d() {
+  const cw = document.getElementById('cw');
+  canvas2d.width  = cw.clientWidth;
+  canvas2d.height = cw.clientHeight;
+  imgData = ctx2d.createImageData(canvas2d.width, canvas2d.height);
+}
+window.addEventListener('resize', () => { if (!mode3d) resize2d(); });
+resize2d();
+
+// P12.9: colormap polynomials
+function colormap(t) {
+  t = Math.max(0, Math.min(1, t));
+  const p = (c0,c1,c2,c3,c4,c5,c6) => c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));
+  const clamp = v => Math.round(Math.max(0, Math.min(1, v)) * 255);
+  const id = +document.getElementById('scm').value;
+  let r,g,b;
+  if (id===1) {
+    r=p(0.0002189,0.1057994,-0.1735988,3.8347872,-5.1726296,3.1604407,-0.7104444);
+    g=p(0.0016013,0.3963866,-3.7247912,18.629548,-30.450994,22.814186,-6.545364);
+    b=p(0.0139900,1.3252710,0.5095668,-8.0153272,12.609583,-9.043721,2.4507063);
+  } else if (id===2) {
+    r=p(0.050461,2.494890,-7.643204,18.631055,-26.286687,18.961904,-5.228102);
+    g=p(0.029828,0.219979,-0.521356,0.771509,0.020803,-0.643006,0.327248);
+    b=p(0.528804,-1.268596,8.204950,-25.798527,38.548489,-28.441951,8.202167);
+  } else if (id===3) {
+    const s = 2*t-1;
+    r = Math.max(0,Math.min(1,0.5+0.5*s+0.35*s*s*s));
+    g = Math.max(0,Math.min(1,0.5-0.5*Math.abs(s)));
+    b = Math.max(0,Math.min(1,0.5-0.5*s+0.35*s*s*s));
+    return [Math.round(r*255), Math.round(g*255), Math.round(b*255)];
+  } else {
+    r=p(0.2777273,0.1050930,-0.3308618,-4.6342305,6.2282699,4.7763850,-5.4354559);
+    g=p(0.0054073,1.4046135,0.2148476,-5.7991010,14.179933,-13.745145,4.6458526);
+    b=p(0.3340998,1.3845902,0.0950952,-19.332441,56.690553,-65.353034,26.312435);
+  }
+  return [clamp(r), clamp(g), clamp(b)];
+}
+
+function lz4_decomp(src,src_off,src_len,dst_size) {
+  const dst=new Uint8Array(dst_size);
+  let si=src_off,se=src_off+src_len,di=0;
+  while(si<se){
+    const tok=src[si++]; let ll=tok>>4;
+    if(ll===15){let x;do{x=src[si++];ll+=x;}while(x===255);}
+    for(let i=0;i<ll;i++) dst[di++]=src[si++];
+    if(si>=se) break;
+    const off=src[si++]|(src[si++]<<8);
+    let ml=(tok&0xf)+4;
+    if((tok&0xf)===15){let x;do{x=src[si++];ml+=x;}while(x===255);}
+    const ms=di-off;
+    for(let i=0;i<ml;i++) dst[di++]=dst[ms+i];
+  }
+  return dst;
+}
+
+function drawCells(nB, vmin, vmax, getVal) {
+  const W=canvas2d.width, H=canvas2d.height;
+  if(!imgData||imgData.width!==W||imgData.height!==H)
+    imgData=ctx2d.createImageData(W,H);
+  const d=imgData.data;
+  for(let i=0;i<d.length;i+=4){d[i]=13;d[i+1]=13;d[i+2]=13;d[i+3]=255;}
+  const range=(vmax>vmin)?(vmax-vmin):1;
+  let ci=0;
+  for(let b=0;b<nB;b++){
+    const {ox2d,oy2d,h}=blocks2d[b];
+    const pw=Math.max(1,Math.round(h/domainL*W));
+    const ph=Math.max(1,Math.round(h/domainL*H));
+    for(let row=0;row<NB;row++)
+    for(let col=0;col<NB;col++){
+      const val=getVal(ci++);
+      const [r,g,bl]=colormap((val-vmin)/range);
+      const cx=Math.round((ox2d+(col+0.5)*h)/domainL*W);
+      const cy=Math.round((1-(oy2d+(row+0.5)*h)/domainL)*H);
+      const px0=cx-Math.floor(pw/2), py0=cy-Math.floor(ph/2);
+      for(let dy=0;dy<ph;dy++){
+        const py=py0+dy; if(py<0||py>=H) continue;
+        for(let dx=0;dx<pw;dx++){
+          const px=px0+dx; if(px<0||px>=W) continue;
+          const i=(py*W+px)*4;
+          d[i]=r;d[i+1]=g;d[i+2]=bl;
+        }
+      }
+    }
+  }
+  ctx2d.putImageData(imgData,0,0);
+}
+
+const AMR_COLORS=['#4af','#fa4','#4fa','#f4a','#af4','#fff'];
+function drawAmrOverlay(nB) {
+  if(!document.getElementById('amr').checked) return;
+  const W=canvas2d.width, H=canvas2d.height;
+  ctx2d.lineWidth=1; ctx2d.save();
+  for(let b=0;b<nB;b++){
+    const {ox2d,oy2d,h,lv}=blocks2d[b];
+    const bs=NB*h;
+    ctx2d.strokeStyle=AMR_COLORS[Math.min(lv,AMR_COLORS.length-1)];
+    ctx2d.strokeRect(ox2d/domainL*W,(1-(oy2d+bs)/domainL)*H,
+                     bs/domainL*W, bs/domainL*H);
+  }
+  ctx2d.restore();
+}
+
+let paused2d = false;
+function parseFrame(bytes) {
+  const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+  let o=0;
+  if(dv.getUint32(o,true)!==0xCFD00001) return; o+=4;
+  const step=dv.getInt32(o,true); o+=4;
+  const t=dv.getFloat64(o,true); o+=8;
+  const nB=dv.getUint8(o++);
+  const axis=dv.getUint8(o++);
+  const varId=dv.getUint8(o++);
+  const compressed=dv.getUint8(o++);
+  const vmin_f=dv.getFloat32(o,true); o+=4;
+  const vmax_f=dv.getFloat32(o,true); o+=4;
+  domainL=dv.getFloat32(o,true); o+=4;
+  const lck=document.getElementById('lck').checked;
+  const vmin=lck?(+document.getElementById('vmn').value||vmin_f):vmin_f;
+  const vmax=lck?(+document.getElementById('vmx').value||vmax_f):vmax_f;
+  if(!lck){
+    document.getElementById('vmn').value=vmin_f.toPrecision(4);
+    document.getElementById('vmx').value=vmax_f.toPrecision(4);
+  }
+  blocks2d=[];
+  for(let b=0;b<nB;b++){
+    const ox2d=dv.getFloat32(o,true); o+=4;
+    const oy2d=dv.getFloat32(o,true); o+=4;
+    const h=dv.getFloat32(o,true); o+=4;
+    const lv=dv.getUint8(o); o+=4;
+    blocks2d.push({ox2d,oy2d,h,lv});
+  }
+  if(compressed){
+    const unc_size=dv.getUint32(o,true); o+=4;
+    const u8=lz4_decomp(bytes,o,bytes.length-o,unc_size);
+    const udv=new DataView(u8.buffer);
+    let di=0;
+    drawCells(nB,vmin,vmax,()=>{const q=udv.getUint16(di,true);di+=2;return vmin_f+(q/65535)*(vmax_f-vmin_f);});
+  } else {
+    drawCells(nB,vmin,vmax,()=>{const v=dv.getFloat32(o,true);o+=4;return v;});
+  }
+  drawAmrOverlay(nB);
+  infoEl.textContent=`step=${step} t=${t.toExponential(3)} [${vmin.toPrecision(3)},${vmax.toPrecision(3)}]${lck?' 🔒':''}`;
+  fetchMetrics();
+}
+
+async function connect2d() {
+  infoEl.textContent='connecting…';
+  try {
+    const resp = await fetch('/stream');
+    infoEl.textContent = '2D streaming';
+    const reader = resp.body.getReader();
+    let buf = new Uint8Array(0);
+    while(true) {
+      const {value,done} = await reader.read();
+      if(done) break;
+      const nb = new Uint8Array(buf.length+value.length);
+      nb.set(buf); nb.set(value,buf.length); buf=nb;
+      while(buf.length>=4) {
+        const flen=new DataView(buf.buffer,buf.byteOffset,4).getUint32(0,true);
+        if(buf.length<4+flen) break;
+        if(!paused2d && !mode3d) parseFrame(buf.subarray(4,4+flen));
+        buf=buf.subarray(4+flen);
+      }
+    }
+  } catch(e) {
+    infoEl.textContent='disconnected — retry in 2s';
+    setTimeout(connect2d, 2000);
+  }
+}
+
+function sendCfg() {
+  const v=+document.getElementById('sv').value;
+  const a=+document.getElementById('sa').value;
+  const p=+document.getElementById('sp').value;
+  document.getElementById('lp').textContent=p.toFixed(3);
+  fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({var:v,axis:a,pos:p})}).catch(()=>{});
+}
+document.getElementById('sv').addEventListener('change', sendCfg);
+document.getElementById('sa').addEventListener('change', sendCfg);
+document.getElementById('sp').addEventListener('input',  sendCfg);
+
+canvas2d.addEventListener('click', e => {
+  const rect=canvas2d.getBoundingClientRect();
+  const x=(e.clientX-rect.left)/rect.width;
+  const y=(e.clientY-rect.top)/rect.height;
+  fetch('/probe',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({x,y})}).then(r=>r.json()).then(d=>{
+    if(!d.ok){infoEl.textContent=d.msg||'no cell';return;}
+    infoEl.textContent=`[L${d.level}] ρ=${d.rho.toPrecision(4)} p=${d.press.toPrecision(4)}`+
+      ` T=${d.temp.toPrecision(4)} |u|=${d.umag.toPrecision(4)}`;
+  }).catch(()=>{});
+});
+
+document.addEventListener('keydown', e => {
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  const sp=document.getElementById('sp');
+  const sv=document.getElementById('sv');
+  const sa=document.getElementById('sa');
+  if(e.key==='j'){sp.value=Math.max(0,+sp.value-+sp.step);sendCfg();e.preventDefault();}
+  else if(e.key==='k'){sp.value=Math.min(1,+sp.value + +sp.step);sendCfg();e.preventDefault();}
+  else if(e.key==='v'){sv.selectedIndex=(sv.selectedIndex+1)%sv.options.length;sendCfg();e.preventDefault();}
+  else if(e.key==='a'){sa.selectedIndex=(sa.selectedIndex+1)%sa.options.length;sendCfg();e.preventDefault();}
+  else if(e.key===' '){paused2d=!paused2d;infoEl.textContent=paused2d?'⏸ paused':'streaming';e.preventDefault();}
+  else if(e.key==='t'){toggleMode();}
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── 3D viewer (WebGPU) ────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+const canvas3d = document.getElementById('c3d');
+const errEl    = document.getElementById('err');
+let device, pipeline, uniformBuf, tfBuf, volTex, volSampler, bindGroup3d, canvasCtx3d;
+let N3d=32, vmin3d=0, vmax3d=1;
+let nsteps=96, opacScale=12, cmapId3d=0;
+let theta=0.6, phi=0.8, radius=2.2, dragStart=null;
+const TF_SIZE=256;
+let tfData=new Float32Array(TF_SIZE*4);
+
+function viridis(t){
+  t=Math.max(0,Math.min(1,t));
+  const f=(c0,c1,c2,c3,c4,c5,c6)=>c0+t*(c1+t*(c2+t*(c3+t*(c4+t*(c5+t*c6)))));
+  return[f(0.2777273,0.1050930,-0.3308618,-4.6342305,6.2282699,4.7763850,-5.4354559),
+         f(0.0054073,1.4046135,0.2148476,-5.7991010,14.179933,-13.745145,4.6458526),
+         f(0.3340998,1.3845902,0.0950952,-19.332441,56.690553,-65.353034,26.312435)].map(v=>Math.max(0,Math.min(1,v)));
+}
+function hot(t){return[Math.min(1,t*3),Math.min(1,Math.max(0,t*3-1)),Math.min(1,Math.max(0,t*3-2))];}
+function cool(t){return[t,1-t,1];}
+function gray(t){return[t,t,t];}
+const CMAPS3D=[viridis,hot,cool,gray];
+
+function rebuildTF() {
+  const cmap=CMAPS3D[cmapId3d];
+  const tfCtx=document.getElementById('tf-canvas').getContext('2d');
+  const imgd=tfCtx.getImageData(0,0,128,32);
+  for(let i=0;i<TF_SIZE;++i){
+    const[r,g,b]=cmap(i/(TF_SIZE-1));
+    const cx=Math.min(127,Math.round(i/TF_SIZE*128));
+    let maxA=0;
+    for(let row=0;row<32;row++){const px=(row*128+cx)*4;if(imgd.data[px]>maxA)maxA=imgd.data[px];}
+    const base_a=4.0*(i/TF_SIZE)*(1.0-i/TF_SIZE);
+    const user_a=maxA>0?maxA/255:base_a;
+    const a=user_a*opacScale/12.0;
+    tfData[i*4]=r;tfData[i*4+1]=g;tfData[i*4+2]=b;tfData[i*4+3]=a;
+  }
+  if(device&&tfBuf) device.queue.writeBuffer(tfBuf,0,tfData);
+}
+
+// TF canvas init + editor
+const tfCv=document.getElementById('tf-canvas');
+const tfCtx2=tfCv.getContext('2d');
+(function initTF(){
+  for(let i=0;i<128;i++){
+    const[r,g,b]=viridis(i/127);
+    tfCtx2.fillStyle=`rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`;
+    tfCtx2.fillRect(i,0,1,32);
+  }
+})();
+let tfDrag=false;
+tfCv.addEventListener('mousedown',e=>{tfDrag=true;drawTFStroke(e);});
+tfCv.addEventListener('mousemove',e=>{if(tfDrag)drawTFStroke(e);});
+tfCv.addEventListener('mouseup',()=>{tfDrag=false;rebuildTF();});
+function drawTFStroke(e){
+  const r=tfCv.getBoundingClientRect();
+  const x=Math.round((e.clientX-r.left)/r.width*128);
+  const y=Math.round((e.clientY-r.top)/r.height*32);
+  tfCtx2.fillStyle='#fff'; tfCtx2.fillRect(x-1,0,3,y);
+  tfCtx2.fillStyle='#000'; tfCtx2.fillRect(x-1,y,3,32-y);
+}
+
+async function initWebGPU() {
+  if(!navigator.gpu){
+    errEl.style.display='block';
+    errEl.textContent='WebGPU not available.\nUse Chrome 113+ or Edge 113+.';
+    return false;
+  }
+  const adapter=await navigator.gpu.requestAdapter();
+  if(!adapter){errEl.style.display='block';errEl.textContent='No WebGPU adapter.';return false;}
+  device=await adapter.requestDevice();
+  canvasCtx3d=canvas3d.getContext('webgpu');
+  const fmt=navigator.gpu.getPreferredCanvasFormat();
+  canvasCtx3d.configure({device,format:fmt,alphaMode:'opaque'});
+  uniformBuf=device.createBuffer({size:96,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+  tfBuf=device.createBuffer({size:TF_SIZE*16,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
+  rebuildTF();
+  volSampler=device.createSampler({magFilter:'linear',minFilter:'linear',mipmapFilter:'linear'});
+  createVolTex(2);
+  const sm=device.createShaderModule({code:`
+struct U{inv_vp:mat4x4<f32>,eye:vec3<f32>,nsteps:u32,vmin:f32,vmax:f32,cw:u32,ch:u32}
+@group(0)@binding(0)var<uniform>u:U;
+@group(0)@binding(1)var vt:texture_3d<f32>;
+@group(0)@binding(2)var vs:sampler;
+@group(0)@binding(3)var<storage,read>tf:array<vec4<f32>>;
+struct VOut{@builtin(position)pos:vec4<f32>,@location(0)uv:vec2<f32>}
+@vertex fn vs_(@builtin(vertex_index)vi:u32)->VOut{
+  var xy=array<vec2<f32>,4>(vec2(-1.,-1.),vec2(1.,-1.),vec2(-1.,1.),vec2(1.,1.));
+  var o:VOut;o.pos=vec4<f32>(xy[vi],0.,1.);o.uv=xy[vi]*vec2<f32>(.5,-.5)+vec2<f32>(.5);return o;
+}
+fn aabb(ro:vec3<f32>,rd:vec3<f32>)->vec2<f32>{
+  let inv=1./rd;let t1=(-ro)*inv;let t2=(vec3<f32>(1.)-ro)*inv;
+  return vec2<f32>(max(max(min(t1.x,t2.x),min(t1.y,t2.y)),min(t1.z,t2.z)),
+                   min(min(max(t1.x,t2.x),max(t1.y,t2.y)),max(t1.z,t2.z)));
+}
+@fragment fn fs_(@location(0)uv:vec2<f32>)->@location(0)vec4<f32>{
+  let ndc=vec4<f32>(uv*vec2<f32>(2.,-2.)+vec2<f32>(-1.,1.),1.,1.);
+  let wld=u.inv_vp*ndc;let rdir=normalize(wld.xyz/wld.w-u.eye);
+  let t=aabb(u.eye,rdir);if(t.x>=t.y){return vec4<f32>(.05,.05,.05,1.);}
+  let t0=max(t.x,0.);let t1=t.y;let dt=(t1-t0)/f32(u.nsteps);
+  var col=vec4<f32>(0.);var tc=t0+.5*dt;
+  for(var i=0u;i<u.nsteps;i++){
+    let pos=u.eye+tc*rdir;
+    let raw=textureSample(vt,vs,pos).r;
+    let nm=clamp((raw-u.vmin)/(u.vmax-u.vmin+.0001),0.,1.);
+    let rgba=tf[u32(nm*255.)];
+    let a=rgba.a*dt*f32(u.nsteps)*.08;
+    col=vec4<f32>(col.rgb+(1.-col.a)*a*rgba.rgb,col.a+(1.-col.a)*a);
+    if(col.a>.99){break;}tc+=dt;
+  }
+  let rgb=mix(vec3<f32>(.05),col.rgb/max(col.a,.001),col.a);
+  return vec4<f32>(pow(clamp(rgb,vec3(0.),vec3(1.)),vec3<f32>(.4545)),1.);
+}`});
+  pipeline=device.createRenderPipeline({
+    layout:'auto',
+    vertex:{module:sm,entryPoint:'vs_'},
+    fragment:{module:sm,entryPoint:'fs_',targets:[{format:fmt}]},
+    primitive:{topology:'triangle-strip'}
+  });
+  rebindGroup3d();
+  return true;
+}
+
+function createVolTex(sz){
+  if(volTex)volTex.destroy();
+  volTex=device.createTexture({size:[sz,sz,sz],format:'r32float',
+    usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST});
+}
+function rebindGroup3d(){
+  if(!device||!pipeline||!volTex)return;
+  bindGroup3d=device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
+    {binding:0,resource:{buffer:uniformBuf}},
+    {binding:1,resource:volTex.createView()},
+    {binding:2,resource:volSampler},
+    {binding:3,resource:{buffer:tfBuf}}
+  ]});
+}
+
+function mat4_persp(fov,asp,n,f){const t=1/Math.tan(fov/2),nf=1/(n-f);return new Float32Array([t/asp,0,0,0,0,t,0,0,0,0,(f+n)*nf,-1,0,0,2*f*n*nf,0]);}
+function mat4_look(eye,ctr,up){const f=norm3(sub3(ctr,eye)),s=norm3(cross3(f,up)),u=cross3(s,f);return new Float32Array([s[0],u[0],-f[0],0,s[1],u[1],-f[1],0,s[2],u[2],-f[2],0,-dot3(s,eye),-dot3(u,eye),dot3(f,eye),1]);}
+function mat4_mul(a,b){const c=new Float32Array(16);for(let i=0;i<4;i++)for(let j=0;j<4;j++){let s=0;for(let k=0;k<4;k++)s+=a[i+k*4]*b[k+j*4];c[i+j*4]=s;}return c;}
+function mat4_inv(m){const s=new Float32Array(6),c=new Float32Array(6),o=new Float32Array(16);s[0]=m[0]*m[5]-m[4]*m[1];s[1]=m[0]*m[9]-m[8]*m[1];s[2]=m[0]*m[13]-m[12]*m[1];s[3]=m[4]*m[9]-m[8]*m[5];s[4]=m[4]*m[13]-m[12]*m[5];s[5]=m[8]*m[13]-m[12]*m[9];c[0]=m[2]*m[7]-m[6]*m[3];c[1]=m[2]*m[11]-m[10]*m[3];c[2]=m[2]*m[15]-m[14]*m[3];c[3]=m[6]*m[11]-m[10]*m[7];c[4]=m[6]*m[15]-m[14]*m[7];c[5]=m[10]*m[15]-m[14]*m[11];const det=1/(s[0]*c[5]-s[1]*c[4]+s[2]*c[3]+s[3]*c[2]-s[4]*c[1]+s[5]*c[0]);o[0]=(m[5]*c[5]-m[9]*c[4]+m[13]*c[3])*det;o[4]=(-m[4]*c[5]+m[8]*c[4]-m[12]*c[3])*det;o[8]=(m[7]*s[5]-m[11]*s[4]+m[15]*s[3])*det;o[12]=(-m[6]*s[5]+m[10]*s[4]-m[14]*s[3])*det;o[1]=(-m[1]*c[5]+m[9]*c[2]-m[13]*c[1])*det;o[5]=(m[0]*c[5]-m[8]*c[2]+m[12]*c[1])*det;o[9]=(-m[3]*s[5]+m[11]*s[2]-m[15]*s[1])*det;o[13]=(m[2]*s[5]-m[10]*s[2]+m[14]*s[1])*det;o[2]=(m[1]*c[4]-m[5]*c[2]+m[13]*c[0])*det;o[6]=(-m[0]*c[4]+m[4]*c[2]-m[12]*c[0])*det;o[10]=(m[3]*s[4]-m[7]*s[2]+m[15]*s[0])*det;o[14]=(-m[2]*s[4]+m[6]*s[2]-m[14]*s[0])*det;o[3]=(-m[1]*c[3]+m[5]*c[1]-m[9]*c[0])*det;o[7]=(m[0]*c[3]-m[4]*c[1]+m[8]*c[0])*det;o[11]=(-m[3]*s[3]+m[7]*s[1]-m[11]*s[0])*det;o[15]=(m[2]*s[3]-m[6]*s[1]+m[10]*s[0])*det;return o;}
+function sub3(a,b){return[a[0]-b[0],a[1]-b[1],a[2]-b[2]];}
+function dot3(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
+function cross3(a,b){return[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];}
+function norm3(a){const d=Math.sqrt(dot3(a,a));return[a[0]/d,a[1]/d,a[2]/d];}
+function eye3(){return[.5+radius*Math.sin(theta)*Math.cos(phi),.5+radius*Math.cos(theta),.5+radius*Math.sin(theta)*Math.sin(phi)];}
+
+function updateUniforms3d(){
+  if(!device||!uniformBuf)return;
+  const W=canvas3d.width,H=canvas3d.height;
+  const eye=eye3();
+  const vp=mat4_mul(mat4_persp(.9,W/H,.01,10.),mat4_look(eye,[.5,.5,.5],[0,1,0]));
+  const inv=mat4_inv(vp);
+  const data=new Float32Array(24);
+  data.set(inv,0);data[16]=eye[0];data[17]=eye[1];data[18]=eye[2];
+  new Uint32Array(data.buffer)[19]=nsteps;
+  data[20]=vmin3d;data[21]=vmax3d;
+  new Uint32Array(data.buffer)[22]=W;new Uint32Array(data.buffer)[23]=H;
+  device.queue.writeBuffer(uniformBuf,0,data);
+}
+
+function render3d(){
+  if(!device||!pipeline||!bindGroup3d){requestAnimationFrame(render3d);return;}
+  const cw=canvas3d.parentElement.clientWidth,ch=canvas3d.parentElement.clientHeight;
+  if(canvas3d.width!==cw||canvas3d.height!==ch){canvas3d.width=cw;canvas3d.height=ch;}
+  updateUniforms3d();
+  const enc=device.createCommandEncoder();
+  const pass=enc.beginRenderPass({colorAttachments:[{
+    view:canvasCtx3d.getCurrentTexture().createView(),
+    loadOp:'clear',clearValue:{r:.05,g:.05,b:.05,a:1},storeOp:'store'
+  }]});
+  pass.setPipeline(pipeline);pass.setBindGroup(0,bindGroup3d);pass.draw(4,1,0,0);pass.end();
+  device.queue.submit([enc.finish()]);
+  if(mode3d) requestAnimationFrame(render3d);
+}
+
+function ingestVolume(bytes){
+  const dv=new DataView(bytes.buffer,bytes.byteOffset);
+  let o=0;
+  if(dv.getUint32(o,true)!==0xCFD00003)return; o+=4;
+  const step=dv.getInt32(o,true); o+=4;
+  const t=dv.getFloat64(o,true); o+=8;
+  const nx=dv.getUint16(o,true); o+=2;
+  o+=2; o+=2; o+=2; // ny, nz, pad
+  vmin3d=dv.getFloat32(o,true); o+=4;
+  vmax3d=dv.getFloat32(o,true); o+=4;
+  o+=4; // domain_L
+  o+=1; // var_id
+  const compressed=dv.getUint8(o++); o+=2; // pad
+  if(!device)return;
+  let vol32;
+  if(compressed){
+    const unc_size=dv.getUint32(o,true); o+=4;
+    const u8=lz4_decomp(bytes,o,bytes.length-o,unc_size);
+    const udv=new DataView(u8.buffer);
+    vol32=new Float32Array(nx*nx*nx);
+    for(let i=0;i<vol32.length;i++)vol32[i]=vmin3d+(udv.getUint16(i*2,true)/65535)*(vmax3d-vmin3d);
+  } else {
+    vol32=new Float32Array(bytes.buffer,bytes.byteOffset+o,nx*nx*nx);
+  }
+  if(N3d!==nx){N3d=nx;createVolTex(N3d);rebindGroup3d();}
+  device.queue.writeTexture({texture:volTex},vol32,{bytesPerRow:N3d*4,rowsPerImage:N3d},{width:N3d,height:N3d,depthOrArrayLayers:N3d});
+  infoEl.textContent=`step=${step} t=${t.toExponential(3)} N=${N3d} [${vmin3d.toPrecision(3)},${vmax3d.toPrecision(3)}]`;
+  fetchMetrics();
+}
+
+async function connectVolStream(){
+  try{
+    const resp=await fetch('/volume-stream');
+    const reader=resp.body.getReader();
+    let buf=new Uint8Array(0);
+    while(true){
+      const{value,done}=await reader.read();
+      if(done)break;
+      const nb=new Uint8Array(buf.length+value.length);
+      nb.set(buf);nb.set(value,buf.length);buf=nb;
+      while(buf.length>=4){
+        const flen=new DataView(buf.buffer,buf.byteOffset,4).getUint32(0,true);
+        if(buf.length<4+flen)break;
+        ingestVolume(buf.subarray(4,4+flen));
+        buf=buf.subarray(4+flen);
+      }
+    }
+  }catch(e){
+    setTimeout(connectVolStream,3000);
+  }
+}
+
+// Arcball camera
+canvas3d.addEventListener('mousedown',e=>{dragStart=[e.clientX,e.clientY];});
+canvas3d.addEventListener('mousemove',e=>{
+  if(!dragStart)return;
+  phi+=(e.clientX-dragStart[0])*.005;
+  theta=Math.max(.05,Math.min(Math.PI-.05,theta+(e.clientY-dragStart[1])*.005));
+  dragStart=[e.clientX,e.clientY];
+});
+canvas3d.addEventListener('mouseup',()=>{dragStart=null;});
+canvas3d.addEventListener('mouseleave',()=>{dragStart=null;});
+canvas3d.addEventListener('wheel',e=>{radius=Math.max(.6,Math.min(5.,radius+e.deltaY*.002));e.preventDefault();},{passive:false});
+
+document.getElementById('nsteps').addEventListener('input',e=>{nsteps=+e.target.value;document.getElementById('lns').textContent=nsteps;});
+document.getElementById('opac').addEventListener('input',e=>{opacScale=+e.target.value;document.getElementById('lop').textContent=opacScale;rebuildTF();});
+document.getElementById('cmap3d').addEventListener('change',e=>{cmapId3d=+e.target.value;rebuildTF();});
+
+// ── Shared: sparklines ────────────────────────────────────────────────────────
+const spkCanvas=document.getElementById('spk');
+const sctx=spkCanvas.getContext('2d');
+const SPK_MAX=2000;
+const spkHist={cfl:[],ke:[],mass:[],leaves:[],mass_err:[],mom_err:[],energy_err:[]};
+let spkFetching=false;
+
+function resizeSpk(){const el=document.getElementById('spkw');spkCanvas.width=el.clientWidth;spkCanvas.height=el.clientHeight;}
+window.addEventListener('resize',resizeSpk);
+
+function drawSparkRow(series,x0r,y0r,rH,W,log){
+  const nS=series.length,sw=W/nS;
+  series.forEach((s,idx)=>{
+    const x0=x0r+idx*sw;
+    if(idx>0){sctx.strokeStyle='#2a2a2a';sctx.lineWidth=1;sctx.beginPath();sctx.moveTo(x0,y0r);sctx.lineTo(x0,y0r+rH);sctx.stroke();}
+    if(s.data.length<2)return;
+    const vals=log?s.data.map(v=>Math.log10(Math.max(v,1e-20))):s.data;
+    let mn=Infinity,mx=-Infinity;for(const v of vals){if(v<mn)mn=v;if(v>mx)mx=v;}
+    const rng=(mx>mn)?(mx-mn):1,n=vals.length;
+    sctx.strokeStyle=s.color;sctx.lineWidth=1;sctx.beginPath();
+    for(let i=0;i<n;i++){const px=x0+1+(i/(n-1))*(sw-2),py=y0r+rH-14-((vals[i]-mn)/rng)*(rH-18);i===0?sctx.moveTo(px,py):sctx.lineTo(px,py);}
+    sctx.stroke();sctx.fillStyle=s.color;sctx.font='10px monospace';
+    const cur=s.data[s.data.length-1];
+    sctx.fillText((log?s.label+': '+cur.toExponential(1):s.label+': '+cur.toPrecision(3)),x0+3,y0r+rH-3);
+  });
+}
+function drawSparklines(){
+  const W=spkCanvas.width,H=spkCanvas.height;
+  sctx.fillStyle='#111';sctx.fillRect(0,0,W,H);
+  const rowH=Math.floor(H/2);
+  drawSparkRow([{data:spkHist.cfl,label:'CFL',color:'#fa0'},{data:spkHist.ke,label:'KE',color:'#4af'},{data:spkHist.mass,label:'mass',color:'#4fa'},{data:spkHist.leaves,label:'lvs',color:'#f4a'}],0,0,rowH,W,false);
+  sctx.strokeStyle='#333';sctx.lineWidth=1;sctx.beginPath();sctx.moveTo(0,rowH);sctx.lineTo(W,rowH);sctx.stroke();
+  drawSparkRow([{data:spkHist.mass_err,label:'Δm/m₀',color:'#f77'},{data:spkHist.mom_err,label:'Δp/p₀',color:'#fa7'},{data:spkHist.energy_err,label:'ΔE/E₀',color:'#ff7'}],0,rowH,H-rowH,W,true);
+}
+function fetchMetrics(){
+  if(spkFetching)return;spkFetching=true;
+  fetch('/metrics').then(r=>r.json()).then(m=>{
+    const trim=arr=>{if(arr.length>=SPK_MAX)arr.shift();};
+    trim(spkHist.cfl);spkHist.cfl.push(m.cfl);
+    trim(spkHist.ke);spkHist.ke.push(m.ke);
+    trim(spkHist.mass);spkHist.mass.push(m.mass);
+    trim(spkHist.leaves);spkHist.leaves.push(m.n_leaves);
+    trim(spkHist.mass_err);spkHist.mass_err.push(m.mass_error);
+    trim(spkHist.mom_err);spkHist.mom_err.push(m.momentum_error);
+    trim(spkHist.energy_err);spkHist.energy_err.push(m.energy_error);
+    drawSparklines();spkFetching=false;
+  }).catch(()=>{spkFetching=false;});
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+resizeSpk();
+connect2d();
+</script>
+</body>
+</html>
+)HTML";
+    return html;
 }
 
 // =============================================================================
