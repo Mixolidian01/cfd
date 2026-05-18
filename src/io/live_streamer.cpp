@@ -934,8 +934,6 @@ select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
      padding:2px 4px;cursor:pointer}
 input[type=number]{background:#222;color:#ccc;border:1px solid #3a3a3a;padding:2px 4px}
 #info{margin-left:auto;color:#555;font-size:11px}
-#err{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-     color:#f66;font-size:15px;text-align:center;pointer-events:none}
 #tf-canvas{border:1px solid #3a3a3a;cursor:crosshair;flex-shrink:0}
 #mode-btn{background:#253;color:#9f9;border:1px solid #4a4;
      padding:3px 9px;cursor:pointer;font-family:monospace;font-size:11px}
@@ -1007,7 +1005,6 @@ input[type=number]{background:#222;color:#ccc;border:1px solid #3a3a3a;padding:2
 <div id="cw">
   <canvas id="c2d"></canvas>
   <canvas id="c3d" style="display:none"></canvas>
-  <div id="err" style="display:none"></div>
 </div>
 <div id="spkw"><canvas id="spk"></canvas></div>
 <script>
@@ -1018,20 +1015,18 @@ const PORT = )HTML") + port_str + R"HTML(;
 let mode3d = false;
 let gpuInitDone = false;
 
-async function toggleMode() {
+function toggleMode() {
   mode3d = !mode3d;
   document.getElementById('c2d').style.display    = mode3d ? 'none'  : 'block';
   document.getElementById('c3d').style.display    = mode3d ? 'block' : 'none';
   document.getElementById('ctrl2d').style.display = mode3d ? 'none'  : 'flex';
   document.getElementById('ctrl3d').style.display = mode3d ? 'flex'  : 'none';
   document.getElementById('mode-btn').textContent = mode3d ? '2D view' : '3D view';
-  document.getElementById('err').style.display    = 'none';
   if (mode3d) {
     if (!gpuInitDone) {
-      gpuInitDone = await initWebGPU();
+      gpuInitDone = initWebGL();
       if (gpuInitDone) connectVolStream();
     }
-    // Always restart the render loop when entering 3D mode (it stops when leaving)
     if (gpuInitDone) render3d();
   }
 }
@@ -1252,16 +1247,16 @@ document.addEventListener('keydown', e => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── 3D viewer (WebGPU) ────────────────────────────────────────────────────────
+// ── 3D viewer (WebGL2 ray-marcher) ────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 const canvas3d = document.getElementById('c3d');
-const errEl    = document.getElementById('err');
-let device, pipeline, uniformBuf, tfBuf, volTex, volSampler, bindGroup3d, canvasCtx3d, fmt3d;
+let gl = null, volProg = null, quadVBuf = null;
+let u_inv_vp, u_eye, u_nsteps, u_vmin, u_vmax, u_vol, u_tf;
+let volTexGL = null, tfTexGL = null;
 let N3d=32, vmin3d=0, vmax3d=1;
 let nsteps=96, opacScale=12, cmapId3d=0;
 let theta=0.6, phi=0.8, radius=2.2, dragStart=null;
 const TF_SIZE=256;
-let tfData=new Float32Array(TF_SIZE*4);
 
 function viridis(t){
   t=Math.max(0,Math.min(1,t));
@@ -1275,147 +1270,133 @@ function cool(t){return[t,1-t,1];}
 function gray(t){return[t,t,t];}
 const CMAPS3D=[viridis,hot,cool,gray];
 
-// Simple linear-ramp TF: low values transparent, high values opaque.
-// Opacity slider (opacScale) uniformly scales the ramp peak.
-function rebuildTF() {
-  const cmap = CMAPS3D[cmapId3d];
-  for (let i = 0; i < TF_SIZE; ++i) {
-    const [r, g, b] = cmap(i / (TF_SIZE - 1));
-    const a = (i / (TF_SIZE - 1)) * (opacScale / 12.0);
-    tfData[i*4]=r; tfData[i*4+1]=g; tfData[i*4+2]=b; tfData[i*4+3]=a;
+function rebuildTF(){
+  const cmap=CMAPS3D[cmapId3d];
+  const px=new Uint8Array(TF_SIZE*4);
+  for(let i=0;i<TF_SIZE;++i){
+    const[r,g,b]=cmap(i/(TF_SIZE-1));
+    px[i*4]  =Math.round(r*255);
+    px[i*4+1]=Math.round(g*255);
+    px[i*4+2]=Math.round(b*255);
+    px[i*4+3]=Math.round((i/(TF_SIZE-1))*(opacScale/12.0)*255);
   }
-  if (device && tfBuf) device.queue.writeBuffer(tfBuf, 0, tfData);
+  if(gl&&tfTexGL){
+    gl.bindTexture(gl.TEXTURE_2D,tfTexGL);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,TF_SIZE,1,0,gl.RGBA,gl.UNSIGNED_BYTE,px);
+  }
 }
 
-async function initWebGPU() {
-  try {
-  if(!navigator.gpu){
-    errEl.style.display='block';
-    errEl.textContent='WebGPU not available. Use Chrome 113+ or Edge 113+ with hardware acceleration enabled.';
-    return false;
-  }
-  const adapter=await navigator.gpu.requestAdapter();
-  if(!adapter){
-    errEl.style.display='block';
-    errEl.textContent='No WebGPU adapter found. Enable hardware acceleration in browser settings.';
-    return false;
-  }
-  device=await adapter.requestDevice();
-  device.lost.then(info=>{
-    errEl.style.display='block';
-    errEl.textContent='WebGPU device lost: '+info.message;
-  });
-  canvasCtx3d=canvas3d.getContext('webgpu');
-  fmt3d=navigator.gpu.getPreferredCanvasFormat();
-  canvasCtx3d.configure({device,format:fmt3d,alphaMode:'opaque'});
-  uniformBuf=device.createBuffer({size:96,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
-  tfBuf=device.createBuffer({size:TF_SIZE*16,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
-  rebuildTF();
-  volSampler=device.createSampler({magFilter:'linear',minFilter:'linear',mipmapFilter:'linear'});
-  createVolTex(2);
-  const shaderCode3d = `
-struct Uniforms {
-  inv_vp : mat4x4<f32>,
-  eye    : vec3<f32>,
-  nsteps : u32,
-  vmin   : f32,
-  vmax   : f32,
-  cw     : u32,
-  ch     : u32,
+const VS3D=`#version 300 es
+in vec2 a_pos;
+out vec2 v_uv;
+void main(){
+  gl_Position=vec4(a_pos,0.0,1.0);
+  v_uv=a_pos*vec2(0.5,-0.5)+0.5;
+}`;
+const FS3D=`#version 300 es
+precision highp float;
+precision highp sampler3D;
+uniform sampler3D u_vol;
+uniform sampler2D u_tf;
+uniform mat4 u_inv_vp;
+uniform vec3 u_eye;
+uniform int  u_nsteps;
+uniform float u_vmin,u_vmax;
+in vec2 v_uv;
+out vec4 fragColor;
+vec2 ray_aabb(vec3 ro,vec3 rd){
+  vec3 inv=1.0/rd;
+  vec3 t1=-ro*inv;
+  vec3 t2=(vec3(1.0)-ro)*inv;
+  return vec2(max(max(min(t1.x,t2.x),min(t1.y,t2.y)),min(t1.z,t2.z)),
+              min(min(max(t1.x,t2.x),max(t1.y,t2.y)),max(t1.z,t2.z)));
 }
-@group(0) @binding(0) var<uniform>         u      : Uniforms;
-@group(0) @binding(1) var                  volTex : texture_3d<f32>;
-@group(0) @binding(2) var                  volSmp : sampler;
-@group(0) @binding(3) var<storage,read>    tf     : array<vec4<f32>>;
-
-struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
-
-@vertex fn vs(@builtin(vertex_index) vi: u32) -> VOut {
-  var xy = array<vec2<f32>,4>(
-    vec2(-1.0,-1.0), vec2(1.0,-1.0), vec2(-1.0,1.0), vec2(1.0,1.0));
-  var o: VOut;
-  o.pos = vec4<f32>(xy[vi], 0.0, 1.0);
-  o.uv  = xy[vi] * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-  return o;
-}
-
-fn ray_aabb(ro: vec3<f32>, rd: vec3<f32>) -> vec2<f32> {
-  let inv = 1.0 / rd;
-  let t1 = (-ro) * inv;
-  let t2 = (vec3<f32>(1.0) - ro) * inv;
-  return vec2<f32>(
-    max(max(min(t1.x,t2.x), min(t1.y,t2.y)), min(t1.z,t2.z)),
-    min(min(max(t1.x,t2.x), max(t1.y,t2.y)), max(t1.z,t2.z)));
-}
-
-@fragment fn fs(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-  let ndc  = vec4<f32>(uv * vec2<f32>(2.0,-2.0) + vec2<f32>(-1.0,1.0), 1.0, 1.0);
-  let wld  = u.inv_vp * ndc;
-  let rdir = normalize(wld.xyz / wld.w - u.eye);
-
-  let t = ray_aabb(u.eye, rdir);
-  if (t.x >= t.y) { return vec4<f32>(0.05,0.05,0.05,1.0); }
-
-  let t0 = max(t.x, 0.0);
-  let t1 = t.y;
-  let dt = (t1 - t0) / f32(u.nsteps);
-
-  var col = vec4<f32>(0.0);
-  var tc  = t0 + 0.5 * dt;
-
-  for (var i = 0u; i < u.nsteps; i++) {
-    let pos  = u.eye + tc * rdir;
-    let raw  = textureSample(volTex, volSmp, pos).r;
-    let nm   = clamp((raw - u.vmin) / (u.vmax - u.vmin + 0.0001), 0.0, 1.0);
-    let rgba = tf[u32(nm * 255.0)];
-    let a    = rgba.a * dt * f32(u.nsteps) * 0.08;
-    col = vec4<f32>(col.rgb + (1.0 - col.a) * a * rgba.rgb,
-                    col.a   + (1.0 - col.a) * a);
-    if (col.a > 0.99) { break; }
-    tc += dt;
+void main(){
+  vec2 ndc2=v_uv*vec2(2.0,-2.0)+vec2(-1.0,1.0);
+  vec4 wld=u_inv_vp*vec4(ndc2,1.0,1.0);
+  vec3 rdir=normalize(wld.xyz/wld.w-u_eye);
+  vec2 t=ray_aabb(u_eye,rdir);
+  if(t.x>=t.y){fragColor=vec4(0.05,0.05,0.1,1.0);return;}
+  float t0=max(t.x,0.0);
+  float dt=(t.y-t0)/float(u_nsteps);
+  vec4 col=vec4(0.0);
+  float tc=t0+0.5*dt;
+  for(int i=0;i<256;i++){
+    if(i>=u_nsteps)break;
+    vec3 pos=u_eye+tc*rdir;
+    float raw=texture(u_vol,pos).r;
+    float nm=clamp((raw-u_vmin)/max(u_vmax-u_vmin,0.0001),0.0,1.0);
+    vec4 rgba=texture(u_tf,vec2(nm,0.5));
+    float a=rgba.a*dt*float(u_nsteps)*0.08;
+    col.rgb+=(1.0-col.a)*a*rgba.rgb;
+    col.a+=(1.0-col.a)*a;
+    if(col.a>0.99)break;
+    tc+=dt;
   }
+  vec3 bg=vec3(0.05,0.05,0.1);
+  vec3 rgb=mix(bg,col.rgb/max(col.a,0.001),col.a);
+  fragColor=vec4(pow(clamp(rgb,vec3(0.0),vec3(1.0)),vec3(0.4545)),1.0);
+}`;
 
-  let bg  = vec3<f32>(0.05);
-  let rgb = mix(bg, col.rgb / max(col.a, 0.001), col.a);
-  return vec4<f32>(pow(clamp(rgb, vec3(0.0), vec3(1.0)), vec3<f32>(0.4545)), 1.0);
+function makeGLShader(g,type,src){
+  const sh=g.createShader(type);
+  g.shaderSource(sh,src); g.compileShader(sh);
+  if(!g.getShaderParameter(sh,g.COMPILE_STATUS))
+    throw new Error(g.getShaderInfoLog(sh));
+  return sh;
 }
-`;
-  device.pushErrorScope('validation');
-  const sm = device.createShaderModule({ code: shaderCode3d });
-  pipeline = device.createRenderPipeline({
-    layout: 'auto',
-    vertex:   { module: sm, entryPoint: 'vs' },
-    fragment: { module: sm, entryPoint: 'fs', targets: [{ format: fmt3d }] },
-    primitive: { topology: 'triangle-strip' }
-  });
-  const valErr = await device.popErrorScope();
-  if (valErr) {
-    errEl.style.display='block';
-    errEl.textContent='WebGPU shader error: '+valErr.message;
-    return false;
-  }
-  rebindGroup3d();
-  return true;
-  } catch(e) {
-    errEl.style.display='block';
-    errEl.textContent='WebGPU init failed: '+(e.message||String(e));
+
+function initWebGL(){
+  gl=canvas3d.getContext('webgl2');
+  if(!gl){infoEl.textContent='3D: WebGL2 not available (need Chrome/Firefox/Edge/Safari 15+)';return false;}
+  try{
+    const vs=makeGLShader(gl,gl.VERTEX_SHADER,VS3D);
+    const fs=makeGLShader(gl,gl.FRAGMENT_SHADER,FS3D);
+    volProg=gl.createProgram();
+    gl.attachShader(volProg,vs); gl.attachShader(volProg,fs);
+    gl.bindAttribLocation(volProg,0,'a_pos');
+    gl.linkProgram(volProg);
+    if(!gl.getProgramParameter(volProg,gl.LINK_STATUS))
+      throw new Error(gl.getProgramInfoLog(volProg));
+    u_inv_vp=gl.getUniformLocation(volProg,'u_inv_vp');
+    u_eye   =gl.getUniformLocation(volProg,'u_eye');
+    u_nsteps=gl.getUniformLocation(volProg,'u_nsteps');
+    u_vmin  =gl.getUniformLocation(volProg,'u_vmin');
+    u_vmax  =gl.getUniformLocation(volProg,'u_vmax');
+    u_vol   =gl.getUniformLocation(volProg,'u_vol');
+    u_tf    =gl.getUniformLocation(volProg,'u_tf');
+    quadVBuf=gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER,quadVBuf);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+    // Placeholder 2×2×2 volume
+    createVolTexGL(2,new Float32Array(8));
+    // TF texture
+    tfTexGL=gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D,tfTexGL);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+    rebuildTF();
+    infoEl.textContent='3D: ready – waiting for volume data…';
+    return true;
+  }catch(e){
+    infoEl.textContent='3D init error: '+e.message;
     return false;
   }
 }
 
-function createVolTex(sz){
-  if(volTex)volTex.destroy();
-  volTex=device.createTexture({size:[sz,sz,sz],format:'r32float',
-    usage:GPUTextureUsage.TEXTURE_BINDING|GPUTextureUsage.COPY_DST});
-}
-function rebindGroup3d(){
-  if(!device||!pipeline||!volTex)return;
-  bindGroup3d=device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
-    {binding:0,resource:{buffer:uniformBuf}},
-    {binding:1,resource:volTex.createView()},
-    {binding:2,resource:volSampler},
-    {binding:3,resource:{buffer:tfBuf}}
-  ]});
+function createVolTexGL(sz,data){
+  if(volTexGL)gl.deleteTexture(volTexGL);
+  volTexGL=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_3D,volTexGL);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
+  gl.texImage3D(gl.TEXTURE_3D,0,gl.R32F,sz,sz,sz,0,gl.RED,gl.FLOAT,data);
+  N3d=sz;
 }
 
 function mat4_persp(fov,asp,n,f){const t=1/Math.tan(fov/2),nf=1/(n-f);return new Float32Array([t/asp,0,0,0,0,t,0,0,0,0,(f+n)*nf,-1,0,0,2*f*n*nf,0]);}
@@ -1428,44 +1409,30 @@ function cross3(a,b){return[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[
 function norm3(a){const d=Math.sqrt(dot3(a,a));return[a[0]/d,a[1]/d,a[2]/d];}
 function eye3(){return[.5+radius*Math.sin(theta)*Math.cos(phi),.5+radius*Math.cos(theta),.5+radius*Math.sin(theta)*Math.sin(phi)];}
 
-function updateUniforms3d(){
-  if(!device||!uniformBuf)return;
-  const W=canvas3d.width,H=canvas3d.height;
-  const eye=eye3();
-  const vp=mat4_mul(mat4_persp(.9,W/H,.01,10.),mat4_look(eye,[.5,.5,.5],[0,1,0]));
-  const inv=mat4_inv(vp);
-  const data=new Float32Array(24);
-  data.set(inv,0);data[16]=eye[0];data[17]=eye[1];data[18]=eye[2];
-  new Uint32Array(data.buffer)[19]=nsteps;
-  data[20]=vmin3d;data[21]=vmax3d;
-  new Uint32Array(data.buffer)[22]=W;new Uint32Array(data.buffer)[23]=H;
-  device.queue.writeBuffer(uniformBuf,0,data);
-}
-
 function render3d(){
-  if(!mode3d){return;}  // loop stopped — will be restarted by toggleMode() on next 3D entry
-  if(!device||!pipeline||!bindGroup3d){requestAnimationFrame(render3d);return;}
-  const cw=canvas3d.parentElement.clientWidth, ch=canvas3d.parentElement.clientHeight;
-  if(cw<=0||ch<=0){requestAnimationFrame(render3d);return;}  // layout not ready yet
-  if(canvas3d.width!==cw||canvas3d.height!==ch){
-    canvas3d.width=cw; canvas3d.height=ch;
-    // Reconfigure swap chain after canvas resize
-    canvasCtx3d.configure({device,format:fmt3d,alphaMode:'opaque'});
-  }
-  try{
-    updateUniforms3d();
-    const enc=device.createCommandEncoder();
-    const pass=enc.beginRenderPass({colorAttachments:[{
-      view:canvasCtx3d.getCurrentTexture().createView(),
-      loadOp:'clear',clearValue:{r:.05,g:.05,b:.05,a:1},storeOp:'store'
-    }]});
-    pass.setPipeline(pipeline);pass.setBindGroup(0,bindGroup3d);pass.draw(4,1,0,0);pass.end();
-    device.queue.submit([enc.finish()]);
-  }catch(e){
-    errEl.style.display='block';
-    errEl.textContent='WebGPU render error: '+(e.message||String(e));
-    return;
-  }
+  if(!mode3d)return;
+  if(!gl||!volProg||!volTexGL||!tfTexGL){requestAnimationFrame(render3d);return;}
+  const cw=canvas3d.parentElement.clientWidth,ch=canvas3d.parentElement.clientHeight;
+  if(cw<=0||ch<=0){requestAnimationFrame(render3d);return;}
+  if(canvas3d.width!==cw||canvas3d.height!==ch){canvas3d.width=cw;canvas3d.height=ch;}
+  gl.viewport(0,0,cw,ch);
+  gl.clearColor(0.05,0.05,0.1,1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  const eye=eye3();
+  const vp=mat4_mul(mat4_persp(.9,cw/ch,.01,10.),mat4_look(eye,[.5,.5,.5],[0,1,0]));
+  const inv=mat4_inv(vp);
+  gl.useProgram(volProg);
+  gl.uniformMatrix4fv(u_inv_vp,false,inv);
+  gl.uniform3f(u_eye,eye[0],eye[1],eye[2]);
+  gl.uniform1i(u_nsteps,nsteps);
+  gl.uniform1f(u_vmin,vmin3d);
+  gl.uniform1f(u_vmax,vmax3d);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D,volTexGL); gl.uniform1i(u_vol,0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D,tfTexGL);  gl.uniform1i(u_tf,1);
+  gl.bindBuffer(gl.ARRAY_BUFFER,quadVBuf);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
   requestAnimationFrame(render3d);
 }
 
@@ -1482,7 +1449,7 @@ function ingestVolume(bytes){
   o+=4; // domain_L
   o+=1; // var_id
   const compressed=dv.getUint8(o++); o+=2; // pad
-  if(!device)return;
+  if(!gl)return;
   let vol32;
   if(compressed){
     const unc_size=dv.getUint32(o,true); o+=4;
@@ -1491,11 +1458,11 @@ function ingestVolume(bytes){
     vol32=new Float32Array(nx*nx*nx);
     for(let i=0;i<vol32.length;i++)vol32[i]=vmin3d+(udv.getUint16(i*2,true)/65535)*(vmax3d-vmin3d);
   } else {
-    vol32=new Float32Array(bytes.buffer,bytes.byteOffset+o,nx*nx*nx);
+    vol32=new Float32Array(bytes.buffer.slice(bytes.byteOffset+o,bytes.byteOffset+o+nx*nx*nx*4));
   }
-  if(N3d!==nx){N3d=nx;createVolTex(N3d);rebindGroup3d();}
-  device.queue.writeTexture({texture:volTex},vol32,{bytesPerRow:N3d*4,rowsPerImage:N3d},{width:N3d,height:N3d,depthOrArrayLayers:N3d});
-  infoEl.textContent=`step=${step} t=${t.toExponential(3)} N=${N3d} [${vmin3d.toPrecision(3)},${vmax3d.toPrecision(3)}]`;
+  createVolTexGL(nx,vol32);
+  rebuildTF();
+  infoEl.textContent=`3D step=${step} t=${t.toExponential(3)} N=${nx} [${vmin3d.toPrecision(3)},${vmax3d.toPrecision(3)}]`;
   fetchMetrics();
 }
 
@@ -1517,6 +1484,7 @@ async function connectVolStream(){
       }
     }
   }catch(e){
+    infoEl.textContent='3D stream error – retrying in 3s…';
     setTimeout(connectVolStream,3000);
   }
 }
