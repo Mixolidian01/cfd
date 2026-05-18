@@ -19,7 +19,7 @@ body{background:#0d0d0d;color:#bbb;font-family:monospace;font-size:12px;
 #cw{flex:1;position:relative;overflow:hidden}
 canvas{display:block;width:100%;height:100%;image-rendering:pixelated}
 #cw{flex:1;overflow:hidden}
-#spkw{height:88px;flex-shrink:0;background:#111;border-top:1px solid #222}
+#spkw{height:140px;flex-shrink:0;background:#111;border-top:1px solid #222}
 #spk{display:block;width:100%;height:100%}
 label{display:flex;align-items:center;gap:5px}
 select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
@@ -85,7 +85,7 @@ let imgData=null, domainL=1.0, blocks=[];
 const spkCanvas=document.getElementById('spk');
 const sctx=spkCanvas.getContext('2d');
 const SPK_MAX=2000;
-const spkHist={cfl:[],ke:[],mass:[],leaves:[]};
+const spkHist={cfl:[],ke:[],mass:[],leaves:[],mass_err:[],mom_err:[],energy_err:[]};
 let spkFetching=false;
 
 function resize(){
@@ -198,24 +198,15 @@ function drawAmrOverlay(nB){
   ctx.restore();
 }
 
-// P12.7 — draw 4 sparklines (CFL, KE, mass, leaves) in the panel.
-function drawSparklines(){
-  const W=spkCanvas.width,H=spkCanvas.height;
-  sctx.fillStyle='#111';sctx.fillRect(0,0,W,H);
-  const series=[
-    {data:spkHist.cfl,   label:'CFL',    color:'#fa0'},
-    {data:spkHist.ke,    label:'KE',     color:'#4af'},
-    {data:spkHist.mass,  label:'mass',   color:'#4fa'},
-    {data:spkHist.leaves,label:'leaves', color:'#f4a'}
-  ];
+// P12.7 — sparkline panel: row 1 linear (CFL/KE/mass/leaves), row 2 log10 errors.
+function drawSparkRow(series,x0row,y0row,rowH,W,logScale){
   const nS=series.length,sw=W/nS;
   series.forEach((s,idx)=>{
-    const x0=idx*sw;
-    // divider
+    const x0=x0row+idx*sw;
     if(idx>0){sctx.strokeStyle='#2a2a2a';sctx.lineWidth=1;
-      sctx.beginPath();sctx.moveTo(x0,0);sctx.lineTo(x0,H);sctx.stroke();}
+      sctx.beginPath();sctx.moveTo(x0,y0row);sctx.lineTo(x0,y0row+rowH);sctx.stroke();}
     if(s.data.length<2) return;
-    const vals=s.data;
+    const vals=logScale?s.data.map(v=>Math.log10(Math.max(v,1e-20))):s.data;
     let mn=Infinity,mx=-Infinity;
     for(const v of vals){if(v<mn)mn=v;if(v>mx)mx=v;}
     const rng=(mx>mn)?(mx-mn):1;
@@ -224,28 +215,47 @@ function drawSparklines(){
     sctx.beginPath();
     for(let i=0;i<n;i++){
       const px=x0+1+(i/(n-1))*(sw-2);
-      const py=H-14-((vals[i]-mn)/rng)*(H-18);
+      const py=y0row+rowH-14-((vals[i]-mn)/rng)*(rowH-18);
       i===0?sctx.moveTo(px,py):sctx.lineTo(px,py);
     }
     sctx.stroke();
     sctx.fillStyle=s.color;sctx.font='10px monospace';
-    const cur=vals[vals.length-1];
-    sctx.fillText(s.label+': '+cur.toPrecision(3),x0+3,H-3);
+    const cur=s.data[s.data.length-1];
+    const lbl=logScale?s.label+': '+cur.toExponential(1):s.label+': '+cur.toPrecision(3);
+    sctx.fillText(lbl,x0+3,y0row+rowH-3);
   });
+}
+function drawSparklines(){
+  const W=spkCanvas.width,H=spkCanvas.height;
+  sctx.fillStyle='#111';sctx.fillRect(0,0,W,H);
+  const rowH=Math.floor(H/2);
+  drawSparkRow([
+    {data:spkHist.cfl,   label:'CFL',  color:'#fa0'},
+    {data:spkHist.ke,    label:'KE',   color:'#4af'},
+    {data:spkHist.mass,  label:'mass', color:'#4fa'},
+    {data:spkHist.leaves,label:'lvs',  color:'#f4a'}
+  ],0,0,rowH,W,false);
+  sctx.strokeStyle='#333';sctx.lineWidth=1;
+  sctx.beginPath();sctx.moveTo(0,rowH);sctx.lineTo(W,rowH);sctx.stroke();
+  drawSparkRow([
+    {data:spkHist.mass_err,   label:'Δm/m₀',color:'#f77'},
+    {data:spkHist.mom_err,    label:'Δp/p₀',color:'#fa7'},
+    {data:spkHist.energy_err, label:'ΔE/E₀',color:'#ff7'}
+  ],0,rowH,H-rowH,W,true);
 }
 
 function fetchMetrics(){
   if(spkFetching) return;
   spkFetching=true;
   fetch('/metrics').then(r=>r.json()).then(m=>{
-    if(spkHist.cfl.length>=SPK_MAX)   spkHist.cfl.shift();
-    if(spkHist.ke.length>=SPK_MAX)    spkHist.ke.shift();
-    if(spkHist.mass.length>=SPK_MAX)  spkHist.mass.shift();
-    if(spkHist.leaves.length>=SPK_MAX)spkHist.leaves.shift();
-    spkHist.cfl.push(m.cfl);
-    spkHist.ke.push(m.ke);
-    spkHist.mass.push(m.mass);
-    spkHist.leaves.push(m.n_leaves);
+    const trim=arr=>{if(arr.length>=SPK_MAX)arr.shift();};
+    trim(spkHist.cfl);        spkHist.cfl.push(m.cfl);
+    trim(spkHist.ke);         spkHist.ke.push(m.ke);
+    trim(spkHist.mass);       spkHist.mass.push(m.mass);
+    trim(spkHist.leaves);     spkHist.leaves.push(m.n_leaves);
+    trim(spkHist.mass_err);   spkHist.mass_err.push(m.mass_error);
+    trim(spkHist.mom_err);    spkHist.mom_err.push(m.momentum_error);
+    trim(spkHist.energy_err); spkHist.energy_err.push(m.energy_error);
     drawSparklines();
     spkFetching=false;
   }).catch(()=>{spkFetching=false;});

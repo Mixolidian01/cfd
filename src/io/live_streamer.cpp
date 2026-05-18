@@ -61,6 +61,14 @@ void LiveStreamer::build_volume(const BlockTree& tree, int step, double t,
     float g_vmin = std::numeric_limits<float>::max();
     float g_vmax = std::numeric_limits<float>::lowest();
 
+    auto vel_at = [](const CellBlock& blk, int comp, int i, int j, int k) -> double {
+        switch (comp) {
+            case 0: return blk.rhou(i,j,k) / blk.rho(i,j,k);
+            case 1: return blk.rhov(i,j,k) / blk.rho(i,j,k);
+            default: return blk.rhow(i,j,k) / blk.rho(i,j,k);
+        }
+    };
+
     auto cell_val = [&](const CellBlock& blk, int i, int j, int k) -> float {
         switch (svar) {
             case StreamVar::RHO:   return static_cast<float>(blk.rho (i,j,k));
@@ -76,6 +84,46 @@ void LiveStreamer::build_volume(const BlockTree& tree, int step, double t,
             case StreamVar::TEMP:  return static_cast<float>(q.T);
             case StreamVar::UMAG:  return static_cast<float>(
                                        std::sqrt(q.u*q.u + q.v*q.v + q.w*q.w));
+            case StreamVar::MACH: {
+                const double c = std::sqrt(GAMMA * q.p / q.rho);
+                return static_cast<float>(std::sqrt(q.u*q.u+q.v*q.v+q.w*q.w) / c);
+            }
+            case StreamVar::VORT: {
+                const double ih2 = 1.0 / (2.0 * blk.h);
+                const double wx = (vel_at(blk,2,i,j+1,k)-vel_at(blk,2,i,j-1,k))*ih2
+                                - (vel_at(blk,1,i,j,k+1)-vel_at(blk,1,i,j,k-1))*ih2;
+                const double wy = (vel_at(blk,0,i,j,k+1)-vel_at(blk,0,i,j,k-1))*ih2
+                                - (vel_at(blk,2,i+1,j,k)-vel_at(blk,2,i-1,j,k))*ih2;
+                const double wz = (vel_at(blk,1,i+1,j,k)-vel_at(blk,1,i-1,j,k))*ih2
+                                - (vel_at(blk,0,i,j+1,k)-vel_at(blk,0,i,j-1,k))*ih2;
+                return static_cast<float>(std::sqrt(wx*wx+wy*wy+wz*wz));
+            }
+            case StreamVar::QCRIT: {
+                const double ih2 = 1.0 / (2.0 * blk.h);
+                const double A[3][3] = {
+                    {(vel_at(blk,0,i+1,j,k)-vel_at(blk,0,i-1,j,k))*ih2,
+                     (vel_at(blk,0,i,j+1,k)-vel_at(blk,0,i,j-1,k))*ih2,
+                     (vel_at(blk,0,i,j,k+1)-vel_at(blk,0,i,j,k-1))*ih2},
+                    {(vel_at(blk,1,i+1,j,k)-vel_at(blk,1,i-1,j,k))*ih2,
+                     (vel_at(blk,1,i,j+1,k)-vel_at(blk,1,i,j-1,k))*ih2,
+                     (vel_at(blk,1,i,j,k+1)-vel_at(blk,1,i,j,k-1))*ih2},
+                    {(vel_at(blk,2,i+1,j,k)-vel_at(blk,2,i-1,j,k))*ih2,
+                     (vel_at(blk,2,i,j+1,k)-vel_at(blk,2,i,j-1,k))*ih2,
+                     (vel_at(blk,2,i,j,k+1)-vel_at(blk,2,i,j,k-1))*ih2}
+                };
+                double Q = 0.0;
+                for (int c = 0; c < 3; ++c)
+                    for (int d = 0; d < 3; ++d)
+                        Q -= 0.5 * A[c][d] * A[d][c];
+                return static_cast<float>(Q);
+            }
+            case StreamVar::SCHLIEREN: {
+                const double ih2 = 1.0 / (2.0 * blk.h);
+                const double drx = (blk.rho(i+1,j,k)-blk.rho(i-1,j,k))*ih2;
+                const double dry = (blk.rho(i,j+1,k)-blk.rho(i,j-1,k))*ih2;
+                const double drz = (blk.rho(i,j,k+1)-blk.rho(i,j,k-1))*ih2;
+                return static_cast<float>(std::sqrt(drx*drx+dry*dry+drz*drz));
+            }
             default: return 0.f;
         }
     };
@@ -778,6 +826,8 @@ select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
 #info{margin-left:auto;color:#555;font-size:11px}
 #err{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
      color:#f66;font-size:16px;text-align:center;pointer-events:none}
+#spkw{height:140px;flex-shrink:0;background:#111;border-top:1px solid #222}
+#spk{display:block;width:100%;height:100%}
 </style>
 </head>
 <body>
@@ -790,6 +840,10 @@ select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
       <option value="3">|u| speed</option>
       <option value="4">&#961;u</option><option value="5">&#961;v</option>
       <option value="6">&#961;w</option><option value="7">E</option>
+      <option value="8">Mach</option>
+      <option value="9">|&#969;| vorticity</option>
+      <option value="10">Q-criterion</option>
+      <option value="11">schlieren |&#8711;&#961;|</option>
     </select>
   </label>
   <label>steps<input type="range" id="nsteps" min="32" max="256" step="16" value="96">
@@ -811,6 +865,7 @@ select,input[type=range]{background:#222;color:#ccc;border:1px solid #3a3a3a;
   <canvas id="c"></canvas>
   <div id="err" style="display:none"></div>
 </div>
+<div id="spkw"><canvas id="spk"></canvas></div>
 
 <script>
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -825,6 +880,89 @@ let nsteps = 96, opacScale = 12, cmapId = 0;
 // Arcball camera (spherical coords, volume centre = 0.5³)
 let theta = 0.6, phi = 0.8, radius = 2.2;
 let dragStart = null;
+
+// ── Sparklines ─────────────────────────────────────────────────────────────
+const spkCanvas = document.getElementById('spk');
+const sctx = spkCanvas.getContext('2d');
+const SPK_MAX = 2000;
+const spkHist = {cfl:[],ke:[],mass:[],leaves:[],mass_err:[],mom_err:[],energy_err:[]};
+let spkFetching = false;
+
+function resizeSpk() {
+  const el = document.getElementById('spkw');
+  spkCanvas.width  = el.clientWidth;
+  spkCanvas.height = el.clientHeight;
+}
+window.addEventListener('resize', resizeSpk);
+
+function drawSparkRow(series, x0row, y0row, rowH, W, logScale) {
+  const nS = series.length, sw = W / nS;
+  series.forEach((s, idx) => {
+    const x0 = x0row + idx * sw;
+    if (idx > 0) {
+      sctx.strokeStyle = '#2a2a2a'; sctx.lineWidth = 1;
+      sctx.beginPath(); sctx.moveTo(x0, y0row); sctx.lineTo(x0, y0row + rowH); sctx.stroke();
+    }
+    if (s.data.length < 2) return;
+    const vals = logScale
+      ? s.data.map(v => Math.log10(Math.max(v, 1e-20)))
+      : s.data;
+    let mn = Infinity, mx = -Infinity;
+    for (const v of vals) { if (v < mn) mn = v; if (v > mx) mx = v; }
+    const rng = mx > mn ? mx - mn : 1;
+    const n = vals.length;
+    sctx.strokeStyle = s.color; sctx.lineWidth = 1;
+    sctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const px = x0 + 1 + (i / (n - 1)) * (sw - 2);
+      const py = y0row + rowH - 14 - ((vals[i] - mn) / rng) * (rowH - 18);
+      i === 0 ? sctx.moveTo(px, py) : sctx.lineTo(px, py);
+    }
+    sctx.stroke();
+    sctx.fillStyle = s.color; sctx.font = '10px monospace';
+    const cur = s.data[s.data.length - 1];
+    const label = logScale ? `${s.label}: ${cur.toExponential(1)}` : `${s.label}: ${cur.toPrecision(3)}`;
+    sctx.fillText(label, x0 + 3, y0row + rowH - 3);
+  });
+}
+
+function drawSparklines() {
+  const W = spkCanvas.width, H = spkCanvas.height;
+  sctx.fillStyle = '#111'; sctx.fillRect(0, 0, W, H);
+  const rowH = Math.floor(H / 2);
+
+  drawSparkRow([
+    {data: spkHist.cfl,    label: 'CFL',    color: '#fa0'},
+    {data: spkHist.ke,     label: 'KE',     color: '#4af'},
+    {data: spkHist.mass,   label: 'mass',   color: '#4fa'},
+    {data: spkHist.leaves, label: 'leaves', color: '#f4a'}
+  ], 0, 0, rowH, W, false);
+
+  sctx.strokeStyle = '#333'; sctx.lineWidth = 1;
+  sctx.beginPath(); sctx.moveTo(0, rowH); sctx.lineTo(W, rowH); sctx.stroke();
+
+  drawSparkRow([
+    {data: spkHist.mass_err,   label: 'Δm/m₀',   color: '#f77'},
+    {data: spkHist.mom_err,    label: 'Δp/p₀',   color: '#fa7'},
+    {data: spkHist.energy_err, label: 'ΔE/E₀',   color: '#ff7'}
+  ], 0, rowH, H - rowH, W, true);
+}
+
+function fetchMetrics() {
+  if (spkFetching) return; spkFetching = true;
+  fetch('/metrics').then(r => r.json()).then(m => {
+    const trim = arr => { if (arr.length >= SPK_MAX) arr.shift(); };
+    trim(spkHist.cfl);        spkHist.cfl.push(m.cfl);
+    trim(spkHist.ke);         spkHist.ke.push(m.ke);
+    trim(spkHist.mass);       spkHist.mass.push(m.mass);
+    trim(spkHist.leaves);     spkHist.leaves.push(m.n_leaves);
+    trim(spkHist.mass_err);   spkHist.mass_err.push(m.mass_error);
+    trim(spkHist.mom_err);    spkHist.mom_err.push(m.momentum_error);
+    trim(spkHist.energy_err); spkHist.energy_err.push(m.energy_error);
+    drawSparklines();
+    spkFetching = false;
+  }).catch(() => { spkFetching = false; });
+}
 
 // Transfer function: 256 control points, each [r,g,b,a] in [0,1]
 const TF_SIZE = 256;
@@ -1197,6 +1335,7 @@ function ingestVolume(bytes) {
 
   document.getElementById('info').textContent =
     `step=${step} t=${t.toExponential(3)} N=${N} [${vmin.toPrecision(3)}, ${vmax.toPrecision(3)}]`;
+  fetchMetrics();
 }
 
 // ── Stream connection ──────────────────────────────────────────────────────
@@ -1275,6 +1414,7 @@ canvas.addEventListener('touchmove', e => {
 }, { passive:false });
 
 // ── Boot ──────────────────────────────────────────────────────────────────
+resizeSpk();
 initWebGPU().then(ok => { if(ok) { render(); connectStream(); } });
 </script>
 </body>
