@@ -1,0 +1,125 @@
+{
+    // =========================================================================
+    // CFD solver configuration template — all keys are optional; defaults shown
+    // Usage:  ./simulate template.json   (or rename/copy as needed)
+    // Parser supports C++ // comments anywhere in the file
+    // =========================================================================
+
+    // ── Domain ────────────────────────────────────────────────────────────────
+    "domain_L"           : 1.0,     // Physical side length of the cubic domain [m].
+                                    // Taylor-Green Vortex requires 2π ≈ 6.283185307.
+
+    // ── Time integration ──────────────────────────────────────────────────────
+    "cfl"                : 0.8,     // CFL number for the SSP-RK3 time step (0 < cfl ≤ 1).
+                                    // Use 0.4–0.5 for turbulence; 0.8 for smooth flows.
+    "t_end"              : 1.0,     // Stop time [s] (simulation ends at min(t_end, max_steps)).
+    "max_steps"          : 1000000, // Hard cap on step count — acts as a safety limit.
+    "use_imex"           : false,   // Enable IMEX-ARK (implicit convection, explicit diffusion).
+                                    // Requires GPU-resident GMRES (D4 gate). Leave false
+                                    // for fully explicit SSP-RK3.
+
+    // ── Mesh / AMR ────────────────────────────────────────────────────────────
+    "refine_levels"      : 0,       // Uniform refinement passes applied after IC initialisation.
+                                    // Each pass doubles the resolution in every direction:
+                                    //   0 → base grid (NB³ = 8³ = 512 cells)
+                                    //   1 → 16³,  2 → 32³,  3 → 64³,  4 → 128³ (DNS-grade),
+                                    //   5 → 256³  (use with care — memory scales as 8^n).
+    "max_level"          : 2,       // Maximum AMR refinement level above the base grid.
+                                    // Set to 0 to disable dynamic AMR (uniform grid only).
+    "regrid_interval"    : 0,       // Re-evaluate refinement criteria every N steps.
+                                    // 0 = regrid at every step (highest accuracy, higher cost).
+    "use_lts"            : false,   // Enable local time stepping (finer blocks take smaller dt).
+    "lts_ratio"          : 2,       // dt ratio between consecutive AMR levels (must be 2).
+
+    // ── Boundary conditions ───────────────────────────────────────────────────
+    "bc"                 : "Periodic",
+    // One of:
+    //   "Periodic" — periodic in all three directions (TGV, turbulence channel)
+    //   "Wall"     — no-slip isothermal walls on all faces
+    //   "Open"     — zeroth-order extrapolation outflow (Sod, blast waves)
+
+    // ── Subgrid-scale model ───────────────────────────────────────────────────
+    "sgs"                : "none",
+    // One of:
+    //   "none"          — no explicit SGS; relies on ILES numerical dissipation
+    //   "Smagorinsky"   — static Smagorinsky with constant cs and turbulent Prandtl Prt
+    //   "Dynamic"       — dynamic Smagorinsky (Germano identity); more accurate, ~20% slower
+    "sgs_cs"             : 0.16,    // Smagorinsky constant cs (used only when sgs="Smagorinsky").
+                                    // Typical range 0.10–0.18; 0.16 is the standard Lilly value.
+    "sgs_prt"            : 0.9,     // Turbulent Prandtl number Prt (both Smagorinsky variants).
+                                    // Controls SGS heat flux; 0.7–1.0 is physically reasonable.
+
+    // ── Diagnostics & output ──────────────────────────────────────────────────
+    "diag_interval"      : 10,      // Print step/time/CFL/KE/mass to stdout every N steps.
+    "verbose"            : true,    // Enable extended per-step diagnostic output.
+
+    // ── Initial condition ─────────────────────────────────────────────────────
+    "ic"                 : "uniform",
+    // Supported IC names — choose one and supply the matching ic_* keys below:
+    //
+    //   "uniform"           — homogeneous state (ic_rho, ic_p, ic_u, ic_v, ic_w)
+    //   "sod"               — 1D Riemann shock tube (ic_rho_l/r, ic_p_l/r, ic_x0)
+    //   "taylor_green"      — 3D Taylor-Green Vortex (ic_ma, ic_v0, ic_rho0); domain_L = 2π
+    //   "kelvin_helmholtz"  — 2D shear-layer instability (ic_du, ic_eps, ic_delta, ic_p0)
+    //   "isentropic_vortex" — 2D isentropic vortex advection (ic_mach, ic_rc);
+    //                         exact solution exists → use for convergence-rate tests
+
+    // IC: uniform ──────────────────────────────────────────────────────────────
+    "ic_rho"             : 1.0,     // Density [kg/m³]
+    "ic_p"               : 1.0,     // Pressure [Pa]
+    "ic_u"               : 0.0,     // X-velocity [m/s]
+    "ic_v"               : 0.0,     // Y-velocity [m/s]
+    "ic_w"               : 0.0,     // Z-velocity [m/s]
+
+    // IC: sod (1D Riemann problem) ─────────────────────────────────────────────
+    "ic_rho_l"           : 1.0,     // Left-state density
+    "ic_p_l"             : 1.0,     // Left-state pressure
+    "ic_rho_r"           : 0.125,   // Right-state density
+    "ic_p_r"             : 0.1,     // Right-state pressure
+    "ic_x0"              : 0.5,     // Discontinuity position as a fraction of domain_L
+
+    // IC: taylor_green (3D TGV) ────────────────────────────────────────────────
+    "ic_ma"              : 0.1,     // Convective Mach number. Low Ma (≤ 0.1) → near-incompressible.
+    "ic_v0"              : 1.0,     // Velocity amplitude [m/s]
+    "ic_rho0"            : 1.0,     // Background density [kg/m³]
+
+    // IC: kelvin_helmholtz (2D shear layer) ────────────────────────────────────
+    "ic_du"              : 1.0,     // Velocity jump across the interface [m/s]
+    "ic_eps"             : 0.01,    // Perturbation amplitude (fraction of ic_du)
+    "ic_delta"           : 0.025,   // Shear-layer thickness [m] (as fraction of domain_L)
+    "ic_p0"              : 2.5,     // Background pressure [Pa]
+
+    // IC: isentropic_vortex (2D convergence test) ──────────────────────────────
+    "ic_mach"            : 0.3,     // Peak Mach number of the vortex
+    "ic_rc"              : 0.1,     // Vortex core radius [m]
+
+    // ── Checkpointing ─────────────────────────────────────────────────────────
+    "checkpoint_load"    : "",      // Path to a .bin restart file written by a previous run.
+                                    // Leave empty to start from the IC above.
+    "checkpoint_save"    : "",      // Path to write checkpoint files (e.g. "run.bin").
+                                    // Leave empty to disable checkpointing.
+    "checkpoint_interval": 0,       // Write a checkpoint every N steps.
+                                    // 0 = write only at the end of the run.
+
+    // ── Live browser viewer ───────────────────────────────────────────────────
+    "stream_port"        : 0,       // TCP port for the in-situ HTTP viewer.
+                                    // 0 = disabled.  Typical value: 8080.
+                                    // Open http://localhost:<port> in any browser once running.
+    "stream_var"         : "rho",
+    // Variable shown in the 2D slice on startup (can be changed live in the browser):
+    //   "rho"   — density             "press" — pressure
+    //   "temp"  — temperature         "umag"  — velocity magnitude |u|
+    //   "rhou"  — x-momentum          "rhov"  — y-momentum
+    //   "rhow"  — z-momentum          "etot"  — total energy
+    // Additional variables available via the browser dropdown (not settable here yet):
+    //   Mach number, vorticity magnitude, Q-criterion, schlieren |∇ρ|
+    "stream_axis"        : 2,       // Slice axis for the 2D view: 0=X-plane 1=Y-plane 2=Z-plane
+    "stream_pos"         : 0.5,     // Slice position as a fraction of domain_L [0, 1].
+                                    // 0.5 = mid-plane.
+    "stream_stride"      : 1,       // Stream a frame every N solver steps.
+                                    // Increase to reduce network/CPU overhead on fast runs.
+    "volume_size"        : 32       // Resolution of the N³ uniform grid used by the 3D viewer.
+                                    // Coarser AMR data is upsampled; finer overwrites coarser.
+                                    // 32 (32768 voxels) is fast; 64 or 128 for higher fidelity.
+                                    // Max is 128 (GPU pinned buffer limit).
+}
