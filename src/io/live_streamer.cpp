@@ -1000,7 +1000,9 @@ input[type=number]{background:#222;color:#ccc;border:1px solid #3a3a3a;padding:2
         <option value="3">Gray</option>
       </select>
     </label>
-    <canvas id="tf-canvas" width="128" height="32" title="Drag to edit transfer function"></canvas>
+    <label style="display:flex;align-items:center;gap:4px">TF
+      <canvas id="tf-canvas" width="128" height="32" title="Drag to edit transfer function opacity"></canvas>
+    </label>
   </span>
   <button id="mode-btn" onclick="toggleMode()">3D view</button>
   <span id="info">connecting&hellip;</span>
@@ -1329,45 +1331,79 @@ async function initWebGPU() {
   rebuildTF();
   volSampler=device.createSampler({magFilter:'linear',minFilter:'linear',mipmapFilter:'linear'});
   createVolTex(2);
-  const sm=device.createShaderModule({code:`
-struct U{inv_vp:mat4x4<f32>,eye:vec3<f32>,nsteps:u32,vmin:f32,vmax:f32,cw:u32,ch:u32}
-@group(0)@binding(0)var<uniform>u:U;
-@group(0)@binding(1)var vt:texture_3d<f32>;
-@group(0)@binding(2)var vs:sampler;
-@group(0)@binding(3)var<storage,read>tf:array<vec4<f32>>;
-struct VOut{@builtin(position)pos:vec4<f32>,@location(0)uv:vec2<f32>}
-@vertex fn vs_(@builtin(vertex_index)vi:u32)->VOut{
-  var xy=array<vec2<f32>,4>(vec2(-1.,-1.),vec2(1.,-1.),vec2(-1.,1.),vec2(1.,1.));
-  var o:VOut;o.pos=vec4<f32>(xy[vi],0.,1.);o.uv=xy[vi]*vec2<f32>(.5,-.5)+vec2<f32>(.5);return o;
+  const shaderCode3d = `
+struct Uniforms {
+  inv_vp : mat4x4<f32>,
+  eye    : vec3<f32>,
+  nsteps : u32,
+  vmin   : f32,
+  vmax   : f32,
+  cw     : u32,
+  ch     : u32,
 }
-fn aabb(ro:vec3<f32>,rd:vec3<f32>)->vec2<f32>{
-  let inv=1./rd;let t1=(-ro)*inv;let t2=(vec3<f32>(1.)-ro)*inv;
-  return vec2<f32>(max(max(min(t1.x,t2.x),min(t1.y,t2.y)),min(t1.z,t2.z)),
-                   min(min(max(t1.x,t2.x),max(t1.y,t2.y)),max(t1.z,t2.z)));
+@group(0) @binding(0) var<uniform>         u      : Uniforms;
+@group(0) @binding(1) var                  volTex : texture_3d<f32>;
+@group(0) @binding(2) var                  volSmp : sampler;
+@group(0) @binding(3) var<storage,read>    tf     : array<vec4<f32>>;
+
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
+
+@vertex fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+  var xy = array<vec2<f32>,4>(
+    vec2(-1.0,-1.0), vec2(1.0,-1.0), vec2(-1.0,1.0), vec2(1.0,1.0));
+  var o: VOut;
+  o.pos = vec4<f32>(xy[vi], 0.0, 1.0);
+  o.uv  = xy[vi] * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+  return o;
 }
-@fragment fn fs_(@location(0)uv:vec2<f32>)->@location(0)vec4<f32>{
-  let ndc=vec4<f32>(uv*vec2<f32>(2.,-2.)+vec2<f32>(-1.,1.),1.,1.);
-  let wld=u.inv_vp*ndc;let rdir=normalize(wld.xyz/wld.w-u.eye);
-  let t=aabb(u.eye,rdir);if(t.x>=t.y){return vec4<f32>(.05,.05,.05,1.);}
-  let t0=max(t.x,0.);let t1=t.y;let dt=(t1-t0)/f32(u.nsteps);
-  var col=vec4<f32>(0.);var tc=t0+.5*dt;
-  for(var i=0u;i<u.nsteps;i++){
-    let pos=u.eye+tc*rdir;
-    let raw=textureSample(vt,vs,pos).r;
-    let nm=clamp((raw-u.vmin)/(u.vmax-u.vmin+.0001),0.,1.);
-    let rgba=tf[u32(nm*255.)];
-    let a=rgba.a*dt*f32(u.nsteps)*.08;
-    col=vec4<f32>(col.rgb+(1.-col.a)*a*rgba.rgb,col.a+(1.-col.a)*a);
-    if(col.a>.99){break;}tc+=dt;
+
+fn ray_aabb(ro: vec3<f32>, rd: vec3<f32>) -> vec2<f32> {
+  let inv = 1.0 / rd;
+  let t1 = (-ro) * inv;
+  let t2 = (vec3<f32>(1.0) - ro) * inv;
+  return vec2<f32>(
+    max(max(min(t1.x,t2.x), min(t1.y,t2.y)), min(t1.z,t2.z)),
+    min(min(max(t1.x,t2.x), max(t1.y,t2.y)), max(t1.z,t2.z)));
+}
+
+@fragment fn fs(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+  let ndc  = vec4<f32>(uv * vec2<f32>(2.0,-2.0) + vec2<f32>(-1.0,1.0), 1.0, 1.0);
+  let wld  = u.inv_vp * ndc;
+  let rdir = normalize(wld.xyz / wld.w - u.eye);
+
+  let t = ray_aabb(u.eye, rdir);
+  if (t.x >= t.y) { return vec4<f32>(0.05,0.05,0.05,1.0); }
+
+  let t0 = max(t.x, 0.0);
+  let t1 = t.y;
+  let dt = (t1 - t0) / f32(u.nsteps);
+
+  var col = vec4<f32>(0.0);
+  var tc  = t0 + 0.5 * dt;
+
+  for (var i = 0u; i < u.nsteps; i++) {
+    let pos  = u.eye + tc * rdir;
+    let raw  = textureSample(volTex, volSmp, pos).r;
+    let nm   = clamp((raw - u.vmin) / (u.vmax - u.vmin + 0.0001), 0.0, 1.0);
+    let rgba = tf[u32(nm * 255.0)];
+    let a    = rgba.a * dt * f32(u.nsteps) * 0.08;
+    col = vec4<f32>(col.rgb + (1.0 - col.a) * a * rgba.rgb,
+                    col.a   + (1.0 - col.a) * a);
+    if (col.a > 0.99) { break; }
+    tc += dt;
   }
-  let rgb=mix(vec3<f32>(.05),col.rgb/max(col.a,.001),col.a);
-  return vec4<f32>(pow(clamp(rgb,vec3(0.),vec3(1.)),vec3<f32>(.4545)),1.);
-}`});
-  pipeline=device.createRenderPipeline({
-    layout:'auto',
-    vertex:{module:sm,entryPoint:'vs_'},
-    fragment:{module:sm,entryPoint:'fs_',targets:[{format:fmt}]},
-    primitive:{topology:'triangle-strip'}
+
+  let bg  = vec3<f32>(0.05);
+  let rgb = mix(bg, col.rgb / max(col.a, 0.001), col.a);
+  return vec4<f32>(pow(clamp(rgb, vec3(0.0), vec3(1.0)), vec3<f32>(0.4545)), 1.0);
+}
+`;
+  const sm = device.createShaderModule({ code: shaderCode3d });
+  pipeline = device.createRenderPipeline({
+    layout: 'auto',
+    vertex:   { module: sm, entryPoint: 'vs' },
+    fragment: { module: sm, entryPoint: 'fs', targets: [{ format: fmt }] },
+    primitive: { topology: 'triangle-strip' }
   });
   rebindGroup3d();
   return true;
