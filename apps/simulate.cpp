@@ -62,6 +62,7 @@
 //   isentropic_vortex — 2D analytical vortex (ic_mach, ic_rc)  quiet convergence test
 
 #include "solver/ns_solver.hpp"
+#include "mpi/mpi_comm.hpp"
 #include "io/live_streamer.hpp"
 #include "io/checkpoint.hpp"
 #include "models/sgs.hpp"
@@ -180,14 +181,22 @@ struct Config {
 
 int main(int argc, char* argv[])
 {
+    // RAII: calls MPI_Init (or is a no-op stub when compiled without MPI).
+    MpiEnvironment mpi_env(argc, argv);
+    const int mpi_rank = mpi_env.rank();
+    const int mpi_size = mpi_env.size();
+
     const char* config_path = (argc >= 2) ? argv[1] : "sim.json";
-    printf("simulate: loading config from '%s'\n", config_path);
+    if (mpi_rank == 0)
+        printf("simulate: loading config from '%s'\n", config_path);
 
     Config cfg = Config::from_file(config_path);
 
-    printf("simulate: configuration:\n");
-    cfg.print_all();
-    printf("\n");
+    if (mpi_rank == 0) {
+        printf("simulate: configuration:\n");
+        cfg.print_all();
+        printf("\n");
+    }
 
     // ── Solver config ──────────────────────────────────────────────────────────
     NSSolver solver;
@@ -235,8 +244,10 @@ int main(int argc, char* argv[])
     // ── Build IC and initialise ────────────────────────────────────────────────
     auto ic = build_ic(cfg);
 
-    printf("simulate: initialising solver (domain_L=%.4g, ic=%s, bc=%s)\n",
-           domain_L, cfg.str("ic", "uniform").c_str(), cfg.str("bc", "Periodic").c_str());
+    if (mpi_rank == 0)
+        printf("simulate: initialising solver (domain_L=%.4g, ic=%s, bc=%s, ranks=%d)\n",
+               domain_L, cfg.str("ic", "uniform").c_str(),
+               cfg.str("bc", "Periodic").c_str(), mpi_size);
 
     if (!ckpt_load.empty()) {
         // Restart from checkpoint; IC is used only to set tree topology.
@@ -258,6 +269,20 @@ int main(int argc, char* argv[])
             fill_leaves(solver, ic);
             solver.alloc_scratch();
         }
+    }
+
+    // ── MPI domain decomposition (optional) ───────────────────────────────────
+    MpiPartition mpi_part;
+    if (mpi_size > 1) {
+        mpi_part.comm = mpi_env.comm();
+        mpi_partition(solver.tree, &mpi_part);
+        // Free remote blocks; each rank keeps only its owned leaves in memory.
+        mpi_alloc_local_blocks(solver.tree, mpi_part,
+                               domain_L / NB);  // h0 = L/NB for root block
+        solver.set_mpi(&mpi_part);
+        if (mpi_rank == 0)
+            printf("simulate: MPI partition  ranks=%d  local_leaves=%d\n",
+                   mpi_size, (int)mpi_part.local_leaves.size());
     }
 
     // ── Live streamer (optional) ───────────────────────────────────────────────
@@ -290,8 +315,10 @@ int main(int argc, char* argv[])
     }
 
     // ── Time integration ───────────────────────────────────────────────────────
-    printf("simulate: running  t_end=%.4g  max_steps=%d  cfl=%.3g  sgs=%s\n",
-           sc.time.t_end, sc.time.max_steps, sc.time.cfl, sc.physics.sgs ? sc.physics.sgs->name() : "none");
+    if (mpi_rank == 0)
+        printf("simulate: running  t_end=%.4g  max_steps=%d  cfl=%.3g  sgs=%s\n",
+               sc.time.t_end, sc.time.max_steps, sc.time.cfl,
+               sc.physics.sgs ? sc.physics.sgs->name() : "none");
 
     if (ckpt_intvl > 0 && !ckpt_save.empty()) {
         // Manual step loop with periodic checkpoint saves
@@ -316,13 +343,15 @@ int main(int argc, char* argv[])
     }
 
     // ── Final diagnostics ──────────────────────────────────────────────────────
-    auto diag = solver.compute_diag();
-    printf("\nsimulate: final state\n");
-    printf("  step            = %d\n",    diag.step);
-    printf("  t               = %.6e\n",  diag.t);
-    printf("  mass            = %.6e\n",  diag.mass);
-    printf("  kinetic energy  = %.6e\n",  diag.kinetic_energy);
-    printf("  total energy    = %.6e\n",  diag.total_energy);
-    printf("simulate: done.\n");
+    if (mpi_rank == 0) {
+        auto diag = solver.compute_diag();
+        printf("\nsimulate: final state\n");
+        printf("  step            = %d\n",    diag.step);
+        printf("  t               = %.6e\n",  diag.t);
+        printf("  mass            = %.6e\n",  diag.mass);
+        printf("  kinetic energy  = %.6e\n",  diag.kinetic_energy);
+        printf("  total energy    = %.6e\n",  diag.total_energy);
+        printf("simulate: done.\n");
+    }
     return 0;
 }

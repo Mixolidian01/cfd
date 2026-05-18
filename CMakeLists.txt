@@ -364,6 +364,22 @@ if(NVCC)
         COMMENT "CPU vs GPU TGV benchmark (run ./build/bench_tgv)"
     )
 
+    # GPU-native simulation runner (mirror of apps/simulate but with GpuGraphSolver)
+    set(_APP ${CMAKE_SOURCE_DIR}/apps)
+    set(_SIM_GPU_BIN ${CMAKE_BINARY_DIR}/simulate_gpu)
+    add_custom_command(
+        OUTPUT  ${_SIM_GPU_BIN}
+        COMMAND ${NVCC} ${_NVCC_BASE} ${_WNO} ${_GPU_NS}
+                ${_APP}/simulate_gpu.cu
+                -o ${_SIM_GPU_BIN} -lm ${_LZ4}
+        DEPENDS ${_APP}/simulate_gpu.cu ${_GPU_NS}
+        COMMENT "nvcc: compiling simulate_gpu (GPU-native runner)"
+        VERBATIM
+    )
+    add_custom_target(simulate_gpu DEPENDS ${_SIM_GPU_BIN}
+        COMMENT "GPU simulation runner (run ./build/simulate_gpu config.json)"
+    )
+
     # add_nvcc_mpi_gate: like add_nvcc_gate but runs binary via "mpirun -n 2"
     function(add_nvcc_mpi_gate)
         cmake_parse_arguments(A "" "TARGET;BIN;COMMENT" "EXTRA_FLAGS;EXTRA_LIBS;MPI_INC;SRCS" ${ARGN})
