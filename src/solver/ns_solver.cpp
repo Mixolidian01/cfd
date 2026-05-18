@@ -225,41 +225,38 @@ double NSSolver::advance() {
     // P11.8 / P14.4: GPU path — flat and AMR trees.
     // P14.4 adds GPU Berger-Colella correction (GpuCfList) so the GPU path now
     // handles AMR trees directly via _advance_amr() in GpuGraphSolver.
+    // NOTE: do NOT early-return here; fall through so the streamer/diagnostics
+    // block below runs for both CPU and GPU paths.
+    double dt;
     if (gpu_solver_) {
         if (gpu_q_stale_) {
             gpu_solver_->upload_q();
             gpu_q_stale_ = false;
         }
-        const double dt = gpu_solver_->advance(tree, cfg.time.cfl);
-        gpu_solver_->download_q(tree);
-        last_dt_ = dt;
-        t    += dt;
-        step += 1;
-        return dt;
-    }
+        dt = gpu_solver_->advance(tree, cfg.time.cfl);
+        gpu_solver_->download_q(tree);  // CPU Q is fresh; streamer reads from it below
+    } else {
+        // P10-A2: CPU flat-tree SSP-RK3 via CpuRk3Integrator.
+        dt = integrator_->step(tree, cfg.time.cfl);
 
-    // P10-A2: CPU flat-tree SSP-RK3 via CpuRk3Integrator.
-    const double dt = integrator_->step(tree, cfg.time.cfl);
+        // S07/S08/S03-fix: refresh ghost cells before SGS operator-split.
+        if (cfg.physics.sgs) {
+            std::visit(overloaded{
+                [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
+                [&](const OpenBC&)          { tree.fill_ghosts_open(); },
+                [&](const WallBC&)          { tree.fill_ghosts_wall(); },
+                [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
+            }, cfg.bc.variant);
+            for (int li : tree.leaf_indices())
+                cfg.physics.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
+        }
+    }
 
     last_dt_ = dt;
     t    += dt;
     step += 1;
 
-    // S07/S08/S03-fix: refresh ghost cells before SGS operator-split.
-    // After copy_stage_to_tree() the interior holds Q^{n+1} but ghosts
-    // still carry Q^{(2)} from Stage 3's fill_ghosts call inside tree_rhs().
-    if (cfg.physics.sgs) {
-        std::visit(overloaded{
-            [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
-            [&](const OpenBC&)          { tree.fill_ghosts_open(); },
-            [&](const WallBC&)          { tree.fill_ghosts_wall(); },
-            [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-        }, cfg.bc.variant);
-        for (int li : tree.leaf_indices())
-            cfg.physics.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
-    }
-
-    // P12.1/P12.3/P12.4: compute per-step diagnostics.
+    // P12.1/P12.3/P12.4: compute per-step diagnostics (both CPU and GPU paths).
     if (cfg.io.verbose_json || streamer_) {
         MetricsSnapshot ms;
         ms.step = step;
