@@ -350,6 +350,32 @@ requires a full WMLES channel simulation with DNS reference data — an integrat
 separate from this unit gate (t35).  Unit gate verifies: Newton inversion accuracy,
 ghost-cell encoding, and Reichardt formula log-law behaviour.
 
-**No regressions:** t35 PASS; ba suite pending.
+**No regressions:** t35 PASS; ba suite 32/32 PASS (3340 s total including bench_b3 TGV).
+
+---
+
+## fix(R9-D) — Ducros sensor config propagation to GPU path  (2026-05-18  551c4fe)
+
+**Problem:** `k_prim_duc` in `gpu_rhs.cu` hardcoded `(phi_p - 0.1)*10.0` for the
+pressure-sensor branch of the Ducros sensor, ignoring `cfg.numerics.ducros_p_threshold`
+and `cfg.numerics.ducros_blend_width`. The CPU path (`fill_ducros_cache` in
+`rhs_sensors.cpp`) was config-driven. At default config (threshold=0.1, width=0.1)
+the GPU and CPU paths were numerically identical, but any user change to the config
+silently had no effect on GPU runs.
+
+**Fix:**
+- `GpuLeafRhsMeta`: replaced `int8_t _pad[4]` with `double duc_p_thr` and
+  `double duc_blend_inv`. Raw size: 52 bytes, `sizeof` still 64. `static_assert` unchanged.
+- `GpuRhsList`: added `duc_p_thr_` / `duc_blend_inv_` (defaults 0.1 / 10.0); stored into
+  each leaf's meta during `build()`.
+- `GpuGraphSolver`: added `duc_p_thr_` / `duc_blend_inv_` member variables and
+  `set_ducros(p_thr, blend_inv)` override (mirrors `set_gpu_sgs` pattern); `build()`
+  propagates them to `rhs_list` before `rhs_list.build()`.
+- `IGpuSolver`: added default-no-op `set_ducros()` virtual.
+- `NSSolver`: calls `set_ducros(cfg.numerics.ducros_p_threshold, 1/blend_width)`
+  before `build()`. R9-D comment removed.
+- `k_prim_duc` line 387: `(phi_p-0.1)*10.0` → `(phi_p-m.duc_p_thr)*m.duc_blend_inv`.
+
+**Verification:** t25–t28 + t35 all PASS after the change. ba suite 32/32 PASS.
 
 ---
