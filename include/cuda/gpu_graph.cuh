@@ -77,8 +77,8 @@ struct GpuGraphSolver : IGpuSolver {
     // and snap_buf_->h_metrics when advance() returns.
     GpuSnapshotBuffer* snap_buf_ = nullptr;
 
-    // BC type last passed to build() — used by advance_imex() for Helmholtz ghost fill.
-    int bc_type_ = 0;
+    // BC types last passed to build() — indexed by FaceDir; used by advance_imex().
+    std::array<int,6> bc_types_ = {0,0,0,0,0,0};
 
     // Per-leaf RK3 metadata and Qn pool
     GpuRk3LeafMeta* d_rk3_metas = nullptr;
@@ -121,8 +121,12 @@ struct GpuGraphSolver : IGpuSolver {
     void _upload_snap_metas(const BlockTree& tree);
 
     // Rebuild all component lists from the tree; invalidates any captured graphs.
-    // bc_type: 0=periodic, 1=wall, 2=open.
+    // bc_type: 0=periodic, 1=wall, 2=open (all faces same).
     void build(const BlockTree& tree, const GpuPool& pool, int bc_type = 0) override;
+
+    // Per-face variant: bc_types[d] gives BC for face d.
+    void build_faces(const BlockTree& tree, const GpuPool& pool,
+                     const std::array<int,6>& bc_types) override;
 
     // Run one SSP-RK3 step.  Returns the CFL-limited dt.
     // PRECONDITION: build() must be called before the first advance() and

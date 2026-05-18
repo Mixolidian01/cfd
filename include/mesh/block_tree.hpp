@@ -22,6 +22,7 @@
 //   A05  : alloc_node_group(n) — contiguous group allocation for refine()
 
 #include "mesh/cell_block.hpp"
+#include "mesh/bc_types.hpp"
 #include <vector>
 #include <array>
 #include <memory>
@@ -29,6 +30,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <optional>
 
 // Forward-declare to avoid circular include (mpi_comm.hpp includes block_tree.hpp)
 struct MpiPartition;
@@ -37,12 +39,19 @@ struct MpiPartition;
 uint32_t morton_encode(uint32_t x, uint32_t y, uint32_t z) noexcept;
 void     morton_decode(uint32_t code, uint32_t& x, uint32_t& y, uint32_t& z) noexcept;
 
+// Forward declaration so FaceBCArray can be used in BCRuntimeConfig.
+using FaceBCArray = std::array<BCVariant, 6>;  // defined after FaceDir, but BCVariant is already visible
+
 // ── BC runtime configuration (R9-A2: replaces file-scope statics) ──────────────────
 struct BCRuntimeConfig {
     double wall_T       = 0.0;   // > 0 → isothermal wall; 0 → adiabatic
     double open_bc_p    = 0.0;   // > 0 → subsonic outflow pressure; 0 → transmissive
     double wall_ca_cos  = 0.0;   // cos(θ_w) for ACDI contact angle
     double wall_ca_ceps = 0.0;   // acdi_ceps at wall (0 → disabled)
+
+    // When set, GhostFiller::fill_all() dispatches per-face instead of using a
+    // single BCVariant for all six domain faces.  wall_T and open_bc_p are shared.
+    std::optional<FaceBCArray> face_bc;
 };
 
 // ── Face direction enum ─────────────────────────────────────────────────────────────
@@ -154,6 +163,12 @@ struct BlockTree {
     void fill_ghosts_wall    (bool cf_zero_grad = false);
     void fill_ghosts_open    (bool cf_zero_grad = false); // zero-gradient transmissive
 
+    // Per-face ghost fill: each of the 6 domain faces can independently be
+    // Periodic, Wall, Open, or ContactAngleBC.  Interior / C/F faces are handled
+    // identically to the uniform variants; only domain-boundary faces differ.
+    // wall_T and open_bc_p come from bc_cfg (shared across faces).
+    void fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad = false);
+
     // ── Flux register management (P1.4) ───────────────────────────────────────
     void zero_flux_registers();
     void accumulate_fine_flux(int fine_leaf, FaceDir d,
@@ -165,12 +180,16 @@ struct BlockTree {
 
     double domain_L() const noexcept { return domain_L_; }
 
-    // P4.1-fix: periodic BC flag — set by NSSolver::init() before any refine/balance.
-    // When true, rebuild_neighbours() wraps domain-boundary faces so that periodic
-    // C/F interfaces get correct neighbour links (needed for accumulate_cf_fine_fluxes
-    // and undo_cf_face_flux to handle the periodic boundary flux registers).
-    bool periodic_bc_ = false;
-    void set_periodic(bool p) noexcept { periodic_bc_ = p; }
+    // P4.1-fix: periodic BC flags — set by NSSolver::init() before any refine/balance.
+    // When an axis is true, rebuild_neighbours() wraps domain-boundary faces on that
+    // axis so that periodic C/F interfaces get correct neighbour links.
+    bool periodic_axis_[3] = {false, false, false};
+    void set_periodic(bool p) noexcept {
+        periodic_axis_[0] = p; periodic_axis_[1] = p; periodic_axis_[2] = p;
+    }
+    void set_periodic_axes(bool x, bool y, bool z) noexcept {
+        periodic_axis_[0] = x; periodic_axis_[1] = y; periodic_axis_[2] = z;
+    }
 
     // P7.1: optional MPI partition.  When set, fill_ghosts_* skips remote faces
     // (they are already filled by mpi_exchange_halos() before the ghost fill).

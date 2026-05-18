@@ -55,6 +55,12 @@ struct IGpuSolver : TimeIntegrator {
     // P11.8: re-upload CPU Q → GPU after CPU fallback steps (AMR path).
     virtual void   upload_q()                                                 const = 0;
     virtual void   build(const BlockTree& tree, const GpuPool& pool, int bc_type) = 0;
+    // Per-face variant: bc_types[d] gives the BC integer for face d (0=periodic,
+    // 1=wall, 2=open).  Default calls build() with bc_types[0] for compatibility.
+    virtual void   build_faces(const BlockTree& tree, const GpuPool& pool,
+                                const std::array<int,6>& bc_types) {
+        build(tree, pool, bc_types[0]);
+    }
     // P-SGS-GPU: enable Smagorinsky SGS for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_gpu_sgs(double /*Cs*/, double /*Pr_t*/) {}
@@ -121,6 +127,12 @@ struct SolverConfig {
         // 0.0 (default) → adiabatic wall (∂T/∂n = 0).
         // > 0 → isothermal: ghost E enforces T_ghost = 2*wall_T − T_interior.
         double wall_T = 0.0;
+
+        // Per-face BC override.  When set, each domain face (XMINUS..ZPLUS) uses
+        // the corresponding BCVariant independently.  variant is ignored for ghost
+        // fill; periodic_axis_ in BlockTree is derived from faces, not variant.
+        // wall_T and open_bc_p are shared (not per-face).
+        std::optional<FaceBCArray> faces;
     } bc;
 
     // ── 4. AMR + local time stepping ──────────────────────────────────────

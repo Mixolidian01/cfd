@@ -26,4 +26,8 @@ struct GhostFiller {
     // cf_zero_grad=true  (LTS):     coarse C/F ghosts use zero-gradient
     //                               extrapolation so viscous flux at C/F is zero.
     static void fill_all(BlockTree& tree, const BCVariant& bc, bool cf_zero_grad = false);
+
+    // Per-face overload: each domain face can independently be Periodic/Wall/Open.
+    // Also called by the BCVariant overload when tree.bc_cfg.face_bc is set.
+    static void fill_all(BlockTree& tree, const FaceBCArray& bcs, bool cf_zero_grad = false);
 };

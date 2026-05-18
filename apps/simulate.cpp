@@ -213,12 +213,30 @@ int main(int argc, char* argv[])
     sc.amr.lts_ratio       = cfg.i("lts_ratio",       2);
     sc.physics.use_imex        = cfg.b("use_imex",        false);
 
-    // Boundary conditions
+    // Boundary conditions — per-face keys take precedence over global "bc"
     {
-        std::string bc_str = cfg.str("bc", "Periodic");
-        if      (bc_str == "Wall")     sc.bc.variant = WallBC{};
-        else if (bc_str == "Open")     sc.bc.variant = OpenBC{};
-        else                           sc.bc.variant = PeriodicBC{};
+        auto parse_bc_str = [](const std::string& s) -> BCVariant {
+            if (s == "Wall")  return WallBC{};
+            if (s == "Open")  return OpenBC{};
+            return PeriodicBC{};
+        };
+        static const char* face_keys[6] = {
+            "bc_xlo", "bc_xhi", "bc_ylo", "bc_yhi", "bc_zlo", "bc_zhi"
+        };
+        bool any_face = false;
+        for (int d = 0; d < 6; ++d)
+            if (cfg.has(face_keys[d])) { any_face = true; break; }
+        if (any_face) {
+            const std::string dflt = cfg.str("bc", "Periodic");
+            FaceBCArray faces;
+            for (int d = 0; d < 6; ++d)
+                faces[d] = parse_bc_str(cfg.str(face_keys[d], dflt.c_str()));
+            sc.bc.faces   = faces;
+            sc.bc.variant = faces[0];  // fallback for legacy paths
+        } else {
+            std::string bc_str = cfg.str("bc", "Periodic");
+            sc.bc.variant = parse_bc_str(bc_str);
+        }
     }
 
     // SGS model

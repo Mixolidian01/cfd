@@ -148,11 +148,29 @@ int main(int argc, char* argv[])
     sc.amr.lts_ratio        = cfg.i("lts_ratio",       2);
     sc.physics.use_imex     = cfg.b("use_imex",        false);
 
+    // Boundary conditions — per-face keys take precedence over global "bc"
     {
-        std::string bc_str = cfg.str("bc", "Periodic");
-        if      (bc_str == "Wall") sc.bc.variant = WallBC{};
-        else if (bc_str == "Open") sc.bc.variant = OpenBC{};
-        else                       sc.bc.variant = PeriodicBC{};
+        auto parse_bc_str = [](const std::string& s) -> BCVariant {
+            if (s == "Wall")  return WallBC{};
+            if (s == "Open")  return OpenBC{};
+            return PeriodicBC{};
+        };
+        static const char* face_keys[6] = {
+            "bc_xlo", "bc_xhi", "bc_ylo", "bc_yhi", "bc_zlo", "bc_zhi"
+        };
+        bool any_face = false;
+        for (int d = 0; d < 6; ++d)
+            if (cfg.has(face_keys[d])) { any_face = true; break; }
+        if (any_face) {
+            const std::string dflt = cfg.str("bc", "Periodic");
+            FaceBCArray faces;
+            for (int d = 0; d < 6; ++d)
+                faces[d] = parse_bc_str(cfg.str(face_keys[d], dflt.c_str()));
+            sc.bc.faces   = faces;
+            sc.bc.variant = faces[0];
+        } else {
+            sc.bc.variant = parse_bc_str(cfg.str("bc", "Periodic"));
+        }
     }
 
     double sgs_cs  = cfg.d("sgs_cs",  0.16);
@@ -216,7 +234,16 @@ int main(int argc, char* argv[])
     }
     graph_solver.set_ducros(sc.numerics.ducros_p_threshold,
                             1.0 / sc.numerics.ducros_blend_width);
-    graph_solver.build(solver.tree, pool, bc_to_int(sc.bc.variant));
+    auto gpu_build = [&]() {
+        if (sc.bc.faces) {
+            std::array<int,6> bt{};
+            for (int d = 0; d < 6; ++d) bt[d] = bc_to_int((*sc.bc.faces)[d]);
+            graph_solver.build_faces(solver.tree, pool, bt);
+        } else {
+            graph_solver.build(solver.tree, pool, bc_to_int(sc.bc.variant));
+        }
+    };
+    gpu_build();
 
     solver.set_gpu_pool(&pool);
     solver.set_gpu_solver(&graph_solver);
@@ -259,7 +286,7 @@ int main(int argc, char* argv[])
         snap_buf->domain_L = static_cast<float>(domain_L);
         solver.set_gpu_snapshot(snap_buf.get());
         // Re-build with snapshot buffer set so _upload_snap_metas() runs.
-        graph_solver.build(solver.tree, pool, bc_to_int(sc.bc.variant));
+        gpu_build();
 
         printf("simulate_gpu: live feed enabled on http://localhost:%d  (var=%s axis=%d)  [GPU snap]\n",
                stream_port, sv.c_str(), (int)scfg.axis);

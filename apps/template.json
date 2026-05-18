@@ -33,10 +33,25 @@
 
     // ── Boundary conditions ───────────────────────────────────────────────────
     "bc"                 : "Periodic",
+    // Global BC applied to all six faces unless overridden by per-face keys below.
     // One of:
     //   "Periodic" — periodic in all three directions (TGV, turbulence channel)
     //   "Wall"     — no-slip isothermal walls on all faces
     //   "Open"     — zeroth-order extrapolation outflow (Sod, blast waves)
+
+    // Per-face BC overrides (optional).  Any combination of Periodic/Wall/Open.
+    // If any per-face key is present, "bc" is used as the default for omitted faces.
+    // Face naming convention: lo = minus side, hi = plus side.
+    //   "bc_xlo"   : "Periodic",   // X− face (XMINUS, i=0)
+    //   "bc_xhi"   : "Periodic",   // X+ face (XPLUS,  i=N)
+    //   "bc_ylo"   : "Wall",        // Y− face (YMINUS, j=0) — e.g. channel floor
+    //   "bc_yhi"   : "Wall",        // Y+ face (YPLUS,  j=N) — e.g. channel ceiling
+    //   "bc_zlo"   : "Periodic",   // Z− face (ZMINUS, k=0)
+    //   "bc_zhi"   : "Periodic",   // Z+ face (ZPLUS,  k=N)
+    // Example — turbulent channel (X/Z periodic, Y walls):
+    //   "bc_xlo":"Periodic","bc_xhi":"Periodic",
+    //   "bc_ylo":"Wall",    "bc_yhi":"Wall",
+    //   "bc_zlo":"Periodic","bc_zhi":"Periodic"
 
     // ── Subgrid-scale model ───────────────────────────────────────────────────
     "sgs"                : "none",

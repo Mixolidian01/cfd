@@ -494,7 +494,7 @@ void BlockTree::rebuild_neighbours() {
             // accumulate_cf_fine_fluxes and undo_cf_face_flux both skip ni<0,
             // and the flux register correction is never applied at periodic C/F
             // faces, breaking mass conservation in AMR+periodic configurations.
-            if (nb_code == UINT32_MAX && periodic_bc_ && lev > 0) {
+            if (nb_code == UINT32_MAX && periodic_axis_[axis] && lev > 0) {
                 uint32_t mx, my, mz;
                 morton_decode(a.morton, mx, my, mz);
                 uint32_t max_coord = (1u << lev) - 1u;
@@ -1304,6 +1304,274 @@ void BlockTree::fill_ghosts_open(bool cf_zero_grad) {
             if (xp||ym||zp) copy_flat_o(cell_idx(NB2-NG+glx, gly,        NB2-NG+glz), cell_idx(NB2-NG+glx, gly,        ihi()-glz));
             if (xm||yp||zp) copy_flat_o(cell_idx(glx,        NB2-NG+gly, NB2-NG+glz), cell_idx(glx,        NB2-NG+gly, ihi()-glz));
             if (xp||yp||zp) copy_flat_o(cell_idx(NB2-NG+glx, NB2-NG+gly, NB2-NG+glz), cell_idx(NB2-NG+glx, NB2-NG+gly, ihi()-glz));
+        }
+    }
+}
+
+// ── fill_ghosts_per_face ─────────────────────────────────────────────────────
+// Per-face ghost fill: each of the six domain faces independently uses one of
+// Periodic / Wall / Open / ContactAngleBC.  Interior and C/F faces are handled
+// identically to the uniform variants; only domain-boundary faces differ.
+// wall_T and open_bc_p are read from bc_cfg (shared across all faces).
+void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) {
+    const auto& leaves = leaf_indices();
+
+    bool any_periodic = false;
+    for (int d = 0; d < NFACES; ++d)
+        if (bc_is_periodic(bcs[d])) { any_periodic = true; break; }
+
+    std::unordered_map<uint64_t, int> lm_map;
+    if (any_periodic) {
+        lm_map.reserve(leaves.size() * 2);
+        for (int li : leaves) {
+            const auto& nd_tmp = nodes[li];
+            lm_map[((uint64_t)nd_tmp.level << 32) | nd_tmp.morton] = li;
+        }
+    }
+
+    struct PeriodicSrc { const CellBlock* blk; int level_rel; };
+    auto periodic_src = [&](const BlockNode& nd, int d) -> PeriodicSrc {
+        static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
+        static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
+        int axis  = face_axis[d];
+        int delta = face_delta[d];
+        int lev   = nd.level;
+        if (lev == 0) return {nullptr, 0};
+        uint32_t mx, my, mz;
+        morton_decode(nd.morton, mx, my, mz);
+        uint32_t max_coord = (1u << lev) - 1u;
+        if      (axis == 0) mx = (delta > 0) ? 0 : max_coord;
+        else if (axis == 1) my = (delta > 0) ? 0 : max_coord;
+        else                mz = (delta > 0) ? 0 : max_coord;
+        uint64_t key = ((uint64_t)lev << 32) | morton_encode(mx, my, mz);
+        auto it = lm_map.find(key);
+        if (it != lm_map.end() && nodes[it->second].has_block())
+            return {nodes[it->second].block.get(), 0};
+        if (lev > 1) {
+            uint32_t pc = morton_encode(mx, my, mz) >> 3;
+            uint64_t pk = ((uint64_t)(lev-1) << 32) | pc;
+            auto it2 = lm_map.find(pk);
+            if (it2 != lm_map.end() && nodes[it2->second].has_block())
+                return {nodes[it2->second].block.get(), -1};
+        }
+        return {nullptr, 0};
+    };
+
+    struct FaceSpec { int axis, side; };
+    static const FaceSpec specs[NFACES] = {
+        {0,0},{0,1},{1,0},{1,1},{2,0},{2,1},
+    };
+
+    for (int li : leaves) {
+        auto& nd  = nodes[li];
+        if (!nd.has_block()) continue;
+        auto& blk = *nd.block;
+
+        const double wall_T    = bc_cfg.wall_T;
+        const double ca_cos    = bc_cfg.wall_ca_cos;
+        const double ca_ceps   = bc_cfg.wall_ca_ceps;
+        const double open_bc_p = bc_cfg.open_bc_p;
+
+        auto wall_E = [wall_T](const CellBlock& b, int mi, int mj, int mk) noexcept {
+            if (wall_T <= 0.0) return b.E(mi, mj, mk);
+            const Prim p = b.prim(mi, mj, mk);
+            const double KE = 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
+            return p.rho * (R_GAS/(GAMMA-1.0)) * (2.0*wall_T - p.T) + KE;
+        };
+        auto phi_wall_ghost = [ca_cos, ca_ceps](double phi_ref, int dist) noexcept -> double {
+            if (ca_ceps <= 0.0) return phi_ref;
+            const double g_prime = 0.5 * phi_ref * (1.0 - phi_ref) * (1.0 - 2.0 * phi_ref);
+            const double phi_g = phi_ref - dist * ca_cos / ca_ceps * g_prime;
+            return (phi_g < 0.0) ? 0.0 : (phi_g > 1.0) ? 1.0 : phi_g;
+        };
+        auto write_ghost = [&](int gi, int gj, int gk, const Prim& g) noexcept {
+            blk.rho (gi,gj,gk) = g.rho;
+            blk.rhou(gi,gj,gk) = g.rho * g.u;
+            blk.rhov(gi,gj,gk) = g.rho * g.v;
+            blk.rhow(gi,gj,gk) = g.rho * g.w;
+            blk.E   (gi,gj,gk) = g.p/(GAMMA-1.0) + 0.5*g.rho*(g.u*g.u+g.v*g.v+g.w*g.w);
+        };
+        auto copy_cell_f = [&](int gi, int gj, int gk, int si, int sj, int sk,
+                                const CellBlock& src) noexcept {
+            const int dst_flat = cell_idx(gi,gj,gk);
+            const int src_flat = cell_idx(si,sj,sk);
+            for (int v = 0; v < NVAR; ++v)
+                blk.Q[v][dst_flat] = src.Q[v][src_flat];
+            blk.phi_data_[dst_flat] = src.phi_data_[src_flat];
+        };
+
+        bool bnd[NFACES];
+        for (int d = 0; d < NFACES; ++d) bnd[d] = (nd.neighbours[d] < 0);
+
+        for (int d = 0; d < NFACES; ++d) {
+            const int ni   = nd.neighbours[d];
+            const int axis = specs[d].axis;
+            const int side = specs[d].side;
+
+            if (ni >= 0 && mpi_is_remote(mpi_, ni)) continue;
+
+            if (ni >= 0 && nodes[ni].has_block()) {
+                if (nodes[ni].level < nd.level) {
+                    fill_cf_ghosts(blk, *nodes[ni].block,
+                                   child_octant_of(nodes, li), axis, side);
+                    continue;
+                }
+                if (nodes[ni].level > nd.level) {
+                    if (cf_zero_grad) fill_coarse_ghost_zero_grad(blk, d);
+                    else              fill_coarse_ghost_from_fine(blk, nodes, ni, d);
+                    continue;
+                }
+                // same-level: direct copy
+                const CellBlock& src = *nodes[ni].block;
+                for (int gl = 0; gl < NG; ++gl) {
+                    const int g_idx   = (side==0) ? (NG-1-gl)  : (NB2-NG+gl);
+                    const int src_idx = (side==0) ? (ihi()-gl) : (ilo()+gl);
+                    if (axis == 0) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int j=ilo();j<=ihi();++j) copy_cell_f(g_idx,j,k, src_idx,j,k, src);
+                    } else if (axis == 1) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int i=ilo();i<=ihi();++i) copy_cell_f(i,g_idx,k, i,src_idx,k, src);
+                    } else {
+                        for (int j=ilo();j<=ihi();++j)
+                        for (int i=ilo();i<=ihi();++i) copy_cell_f(i,j,g_idx, i,j,src_idx, src);
+                    }
+                }
+                continue;
+            }
+
+            // Domain boundary: dispatch on face BC type
+            if (bc_is_periodic(bcs[d])) {
+                PeriodicSrc psrc = periodic_src(nd, d);
+                if (psrc.blk && psrc.level_rel < 0) {
+                    fill_cf_ghosts(blk, *psrc.blk, child_octant_of(nodes, li), axis, side);
+                    continue;
+                }
+                const CellBlock& src = psrc.blk ? *psrc.blk : blk;
+                for (int gl = 0; gl < NG; ++gl) {
+                    const int g_idx   = (side==0) ? (NG-1-gl)  : (NB2-NG+gl);
+                    const int src_idx = (side==0) ? (ihi()-gl) : (ilo()+gl);
+                    if (axis == 0) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int j=ilo();j<=ihi();++j) copy_cell_f(g_idx,j,k, src_idx,j,k, src);
+                    } else if (axis == 1) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int i=ilo();i<=ihi();++i) copy_cell_f(i,g_idx,k, i,src_idx,k, src);
+                    } else {
+                        for (int j=ilo();j<=ihi();++j)
+                        for (int i=ilo();i<=ihi();++i) copy_cell_f(i,j,g_idx, i,j,src_idx, src);
+                    }
+                }
+            } else if (std::holds_alternative<WallBC>(bcs[d]) ||
+                       std::holds_alternative<ContactAngleBC>(bcs[d])) {
+                for (int gl = 0; gl < NG; ++gl) {
+                    const int ghost = (side==0) ? (NG-1-gl)   : (NB2-NG+gl);
+                    const int mirr  = (side==0) ? (ilo()+gl)  : (ihi()-gl);
+                    const int ref   = (side==0) ? ilo()       : ihi();
+                    const int dist  = (side==0) ? (ilo()-ghost) : (ghost-ihi());
+                    if (axis == 0) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int j=ilo();j<=ihi();++j) {
+                            blk.rho (ghost,j,k) =  blk.rho (mirr,j,k);
+                            blk.rhou(ghost,j,k) = -blk.rhou(mirr,j,k);
+                            blk.rhov(ghost,j,k) = -blk.rhov(mirr,j,k);
+                            blk.rhow(ghost,j,k) = -blk.rhow(mirr,j,k);
+                            blk.E   (ghost,j,k) =  wall_E(blk,mirr,j,k);
+                            blk.phi (ghost,j,k) =  phi_wall_ghost(blk.phi(ref,j,k), dist);
+                        }
+                    } else if (axis == 1) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int i=ilo();i<=ihi();++i) {
+                            blk.rho (i,ghost,k) =  blk.rho (i,mirr,k);
+                            blk.rhou(i,ghost,k) = -blk.rhou(i,mirr,k);
+                            blk.rhov(i,ghost,k) = -blk.rhov(i,mirr,k);
+                            blk.rhow(i,ghost,k) = -blk.rhow(i,mirr,k);
+                            blk.E   (i,ghost,k) =  wall_E(blk,i,mirr,k);
+                            blk.phi (i,ghost,k) =  phi_wall_ghost(blk.phi(i,ref,k), dist);
+                        }
+                    } else {
+                        for (int j=ilo();j<=ihi();++j)
+                        for (int i=ilo();i<=ihi();++i) {
+                            blk.rho (i,j,ghost) =  blk.rho (i,j,mirr);
+                            blk.rhou(i,j,ghost) = -blk.rhou(i,j,mirr);
+                            blk.rhov(i,j,ghost) = -blk.rhov(i,j,mirr);
+                            blk.rhow(i,j,ghost) = -blk.rhow(i,j,mirr);
+                            blk.E   (i,j,ghost) =  wall_E(blk,i,j,mirr);
+                            blk.phi (i,j,ghost) =  phi_wall_ghost(blk.phi(i,j,ref), dist);
+                        }
+                    }
+                }
+            } else {
+                // OpenBC: characteristic ghost
+                const double outward = (side == 0) ? -1.0 : +1.0;
+                for (int gl = 0; gl < NG; ++gl) {
+                    const int ghost = (side==0) ? (NG-1-gl) : (NB2-NG+gl);
+                    const int int_r = (side==0) ? ilo()     : ihi();
+                    if (axis == 0) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int j=ilo();j<=ihi();++j) {
+                            write_ghost(ghost,j,k, open_char_ghost(blk.prim(int_r,j,k), 0, outward, open_bc_p));
+                            blk.phi(ghost,j,k) = blk.phi(int_r,j,k);
+                        }
+                    } else if (axis == 1) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int i=ilo();i<=ihi();++i) {
+                            write_ghost(i,ghost,k, open_char_ghost(blk.prim(i,int_r,k), 1, outward, open_bc_p));
+                            blk.phi(i,ghost,k) = blk.phi(i,int_r,k);
+                        }
+                    } else {
+                        for (int j=ilo();j<=ihi();++j)
+                        for (int i=ilo();i<=ihi();++i) {
+                            write_ghost(i,j,ghost, open_char_ghost(blk.prim(i,j,int_r), 2, outward, open_bc_p));
+                            blk.phi(i,j,ghost) = blk.phi(i,j,int_r);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Edge/corner ghosts — copy_flat from already-filled face ghosts
+        auto copy_flat = [&](int d, int s) noexcept {
+            for (int v=0;v<NVAR;++v) blk.Q[v][d] = blk.Q[v][s];
+            blk.phi_data_[d] = blk.phi_data_[s];
+        };
+        const bool xm=bnd[XMINUS], xp=bnd[XPLUS], ym=bnd[YMINUS];
+        const bool yp=bnd[YPLUS],  zm=bnd[ZMINUS], zp=bnd[ZPLUS];
+        for (int k=ilo();k<=ihi();++k)
+        for (int glx=0; glx<NG; ++glx)
+        for (int gly=0; gly<NG; ++gly) {
+            if (xm||ym) copy_flat(cell_idx(glx,        gly,        k), cell_idx(glx,        ilo()+gly, k));
+            if (xp||ym) copy_flat(cell_idx(NB2-NG+glx, gly,        k), cell_idx(NB2-NG+glx, ilo()+gly, k));
+            if (xm||yp) copy_flat(cell_idx(glx,        NB2-NG+gly, k), cell_idx(glx,        ihi()-gly, k));
+            if (xp||yp) copy_flat(cell_idx(NB2-NG+glx, NB2-NG+gly, k), cell_idx(NB2-NG+glx, ihi()-gly, k));
+        }
+        for (int j=ilo();j<=ihi();++j)
+        for (int glx=0; glx<NG; ++glx)
+        for (int glz=0; glz<NG; ++glz) {
+            if (xm||zm) copy_flat(cell_idx(glx,        j, glz       ), cell_idx(glx,        j, ilo()+glz));
+            if (xp||zm) copy_flat(cell_idx(NB2-NG+glx, j, glz       ), cell_idx(NB2-NG+glx, j, ilo()+glz));
+            if (xm||zp) copy_flat(cell_idx(glx,        j, NB2-NG+glz), cell_idx(glx,        j, ihi()-glz));
+            if (xp||zp) copy_flat(cell_idx(NB2-NG+glx, j, NB2-NG+glz), cell_idx(NB2-NG+glx, j, ihi()-glz));
+        }
+        for (int i=ilo();i<=ihi();++i)
+        for (int gly=0; gly<NG; ++gly)
+        for (int glz=0; glz<NG; ++glz) {
+            if (ym||zm) copy_flat(cell_idx(i, gly,        glz       ), cell_idx(i, gly,        ilo()+glz));
+            if (yp||zm) copy_flat(cell_idx(i, NB2-NG+gly, glz       ), cell_idx(i, NB2-NG+gly, ilo()+glz));
+            if (ym||zp) copy_flat(cell_idx(i, gly,        NB2-NG+glz), cell_idx(i, gly,        ihi()-glz));
+            if (yp||zp) copy_flat(cell_idx(i, NB2-NG+gly, NB2-NG+glz), cell_idx(i, NB2-NG+gly, ihi()-glz));
+        }
+        for (int glx=0; glx<NG; ++glx)
+        for (int gly=0; gly<NG; ++gly)
+        for (int glz=0; glz<NG; ++glz) {
+            if (xm||ym||zm) copy_flat(cell_idx(glx,        gly,        glz       ), cell_idx(glx,        gly,        ilo()+glz));
+            if (xp||ym||zm) copy_flat(cell_idx(NB2-NG+glx, gly,        glz       ), cell_idx(NB2-NG+glx, gly,        ilo()+glz));
+            if (xm||yp||zm) copy_flat(cell_idx(glx,        NB2-NG+gly, glz       ), cell_idx(glx,        NB2-NG+gly, ilo()+glz));
+            if (xp||yp||zm) copy_flat(cell_idx(NB2-NG+glx, NB2-NG+gly, glz       ), cell_idx(NB2-NG+glx, NB2-NG+gly, ilo()+glz));
+            if (xm||ym||zp) copy_flat(cell_idx(glx,        gly,        NB2-NG+glz), cell_idx(glx,        gly,        ihi()-glz));
+            if (xp||ym||zp) copy_flat(cell_idx(NB2-NG+glx, gly,        NB2-NG+glz), cell_idx(NB2-NG+glx, gly,        ihi()-glz));
+            if (xm||yp||zp) copy_flat(cell_idx(glx,        NB2-NG+gly, NB2-NG+glz), cell_idx(glx,        NB2-NG+gly, ihi()-glz));
+            if (xp||yp||zp) copy_flat(cell_idx(NB2-NG+glx, NB2-NG+gly, NB2-NG+glz), cell_idx(NB2-NG+glx, NB2-NG+gly, ihi()-glz));
         }
     }
 }

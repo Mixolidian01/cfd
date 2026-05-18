@@ -189,9 +189,10 @@ __global__ void k_fill_faces(const GpuLeafGhostMeta* metas) {
         } else if (d_src == nullptr) {
             // Domain boundary
             if (a < NG || a >= NG + NB || b < NG || b >= NG + NB) continue;
-            if      (m.bc_type == 1) fill_wall(d_dst, axis, side, gl, a, b, dst_flat);
-            else if (m.bc_type == 2) fill_zero_grad(d_dst, axis, side, a, b, dst_flat);
-            else                     fill_copy(d_dst, d_dst, axis, side, gl, a, b, dst_flat);
+            const int bc = m.bc_type[face];
+            if      (bc == 1) fill_wall(d_dst, axis, side, gl, a, b, dst_flat);
+            else if (bc == 2) fill_zero_grad(d_dst, axis, side, a, b, dst_flat);
+            else              fill_copy(d_dst, d_dst, axis, side, gl, a, b, dst_flat);
         }
     }
 }
@@ -269,9 +270,9 @@ void GpuGhostFillList::build(const BlockTree& tree, const GpuPool& pool, int bc_
         const BlockNode& nd = tree.nodes[li];
         GpuLeafGhostMeta& m = h[ii];
 
-        m.d_Q     = pool.d_Q(nd.block.get());
-        m.bc_type = static_cast<int8_t>(bc_type);
-        m.cf_oct  = 0;
+        m.d_Q    = pool.d_Q(nd.block.get());
+        for (int d = 0; d < NFACES; ++d) m.bc_type[d] = static_cast<int8_t>(bc_type);
+        m.cf_oct = 0;
         if (nd.parent >= 0) {
             int fc   = tree.nodes[nd.parent].first_child;
             m.cf_oct = static_cast<int8_t>(li - fc);
@@ -287,6 +288,46 @@ void GpuGhostFillList::build(const BlockTree& tree, const GpuPool& pool, int bc_
                     static_cast<int8_t>(tree.nodes[ni].level - nd.level);
             } else {
                 m.d_nb[d]    = nullptr;
+                m.level_rel[d] = 0;
+            }
+        }
+    }
+
+    n_leaves = n;
+    gpu_upload_meta(d_metas, h);
+}
+
+void GpuGhostFillList::build(const BlockTree& tree, const GpuPool& pool,
+                              const std::array<int,6>& bc_types,
+                              const MpiPartition* mpi_part) {
+    std::vector<int> local;
+    for (int idx : tree.leaf_indices())
+        if (tree.nodes[idx].has_block()) local.push_back(idx);
+    const int n = static_cast<int>(local.size());
+
+    std::vector<GpuLeafGhostMeta> h(n);
+    for (int ii = 0; ii < n; ++ii) {
+        const int li = local[ii];
+        const BlockNode& nd = tree.nodes[li];
+        GpuLeafGhostMeta& m = h[ii];
+
+        m.d_Q    = pool.d_Q(nd.block.get());
+        for (int d = 0; d < NFACES; ++d) m.bc_type[d] = static_cast<int8_t>(bc_types[d]);
+        m.cf_oct = 0;
+        if (nd.parent >= 0) {
+            int fc   = tree.nodes[nd.parent].first_child;
+            m.cf_oct = static_cast<int8_t>(li - fc);
+        }
+
+        for (int d = 0; d < NFACES; ++d) {
+            const int ni = nd.neighbours[d];
+            m.is_mpi_face[d] = mpi_is_remote(mpi_part, ni) ? 1 : 0;
+            if (ni >= 0 && tree.nodes[ni].has_block() &&
+                pool.has_device(tree.nodes[ni].block.get())) {
+                m.d_nb[d]      = pool.d_Q(tree.nodes[ni].block.get());
+                m.level_rel[d] = static_cast<int8_t>(tree.nodes[ni].level - nd.level);
+            } else {
+                m.d_nb[d]      = nullptr;
                 m.level_rel[d] = 0;
             }
         }

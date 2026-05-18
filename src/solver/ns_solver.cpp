@@ -21,6 +21,7 @@
 //                  Protocol: regrid(Q^n) → zero_regs → RK3 → apply_correction.
 #include "models/sgs.hpp"
 #include "mesh/amr_operators.hpp"
+#include "mesh/ghost_filler.hpp"
 #include "solver/ns_solver.hpp"
 #include "solver/cpu_rk3.hpp"
 #include "solver/lts_integrator.hpp"
@@ -41,6 +42,19 @@ overloaded(Ts...) -> overloaded<Ts...>;
 // =============================================================================
 // Helpers
 // =============================================================================
+
+// Build [6] bc_type array from either per-face or uniform BC config.
+static std::array<int,6> make_bc_types(const SolverConfig::BcConfig& bc) {
+    std::array<int,6> r{};
+    if (bc.faces) {
+        for (int d = 0; d < 6; ++d) r[d] = bc_to_int((*bc.faces)[d]);
+    } else {
+        int t = bc_to_int(bc.variant);
+        r.fill(t);
+    }
+    return r;
+}
+
 static double block_mass(const CellBlock& b)         { return b.total_mass(); }
 static double block_momentum_x(const CellBlock& b)   { return b.total_momentum_x(); }
 static double block_total_energy(const CellBlock& b) { return b.total_energy(); }
@@ -106,10 +120,16 @@ void NSSolver::init(double domain_L,
                     const std::function<Prim(double,double,double)>& ic,
                     const std::function<double(double,double,double)>* phi_ic) {
     cfg.validate();
-    // P4.1-fix: set periodic flag BEFORE tree.init() so that every subsequent
-    // rebuild_neighbours() call (triggered by refine/balance) wraps domain-boundary
-    // C/F faces into the periodic neighbour table.
-    tree.set_periodic(bc_is_periodic(cfg.bc.variant));
+    // P4.1-fix: set periodic flags BEFORE tree.init() so that every subsequent
+    // rebuild_neighbours() call wraps domain-boundary C/F faces appropriately.
+    if (cfg.bc.faces) {
+        const FaceBCArray& f = *cfg.bc.faces;
+        tree.set_periodic_axes(bc_is_periodic(f[XMINUS]) || bc_is_periodic(f[XPLUS]),
+                               bc_is_periodic(f[YMINUS]) || bc_is_periodic(f[YPLUS]),
+                               bc_is_periodic(f[ZMINUS]) || bc_is_periodic(f[ZPLUS]));
+    } else {
+        tree.set_periodic(bc_is_periodic(cfg.bc.variant));
+    }
     tree.init(domain_L);
     t = 0.0; step = 0;
     history.clear();
@@ -189,6 +209,7 @@ void NSSolver::save_Qn() { copy_tree_to_stage(Qn_); }
 double NSSolver::advance() {
     // Populate BCRuntimeConfig before any ghost-fill (including in advance_imex/lts regrid).
     tree.bc_cfg.wall_T = cfg.bc.wall_T;
+    tree.bc_cfg.face_bc = cfg.bc.faces;   // nullopt when uniform BC
     if (auto* ob = std::get_if<OpenBC>(&cfg.bc.variant))
         tree.bc_cfg.open_bc_p = ob->far_field_pressure;
     else
@@ -218,9 +239,12 @@ double NSSolver::advance() {
     // D1: prefer GPU-native regrid (sensor on GPU, D2D prolong/restrict, no large D2H).
     if (cfg.amr.regrid_interval > 0 && step > 0 &&
         step % cfg.amr.regrid_interval == 0) {
-        if (!gpu_solver_ || !gpu_solver_->gpu_regrid(
-                tree, *gpu_pool_, bc_to_int(cfg.bc.variant), cfg.amr.max_level))
+        const bool gpu_regrid_done = gpu_solver_ && gpu_solver_->gpu_regrid(
+                tree, *gpu_pool_, make_bc_types(cfg.bc)[0], cfg.amr.max_level);
+        if (!gpu_regrid_done)
             regrid();
+        else if (cfg.bc.faces)
+            gpu_solver_->build_faces(tree, *gpu_pool_, make_bc_types(cfg.bc));
     }
 
     // P11.8 / P14.4: GPU path — flat and AMR trees.
@@ -261,12 +285,7 @@ double NSSolver::advance() {
 
         // S07/S08/S03-fix: refresh ghost cells before SGS operator-split.
         if (cfg.physics.sgs) {
-            std::visit(overloaded{
-                [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
-                [&](const OpenBC&)          { tree.fill_ghosts_open(); },
-                [&](const WallBC&)          { tree.fill_ghosts_wall(); },
-                [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-            }, cfg.bc.variant);
+            GhostFiller::fill_all(tree, cfg.bc.variant);
             for (int li : tree.leaf_indices())
                 cfg.physics.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
         }
@@ -489,12 +508,7 @@ void NSSolver::regrid() {
     // spuriously coarsen them immediately in the same regrid cycle.
     if (topology_changed) {
         tree.rebuild_neighbours();
-        std::visit(overloaded{
-            [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
-            [&](const OpenBC&)          { tree.fill_ghosts_open(); },
-            [&](const WallBC&)          { tree.fill_ghosts_wall(); },
-            [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-        }, cfg.bc.variant);
+        GhostFiller::fill_all(tree, cfg.bc.variant);
     }
 
     // ── Pass 2: coarsening ────────────────────────────────────────────────
@@ -535,12 +549,7 @@ void NSSolver::regrid() {
 
     tree.balance();
     tree.rebuild_neighbours();
-    std::visit(overloaded{
-        [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
-        [&](const OpenBC&)          { tree.fill_ghosts_open(); },
-        [&](const WallBC&)          { tree.fill_ghosts_wall(); },
-        [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-    }, cfg.bc.variant);
+    GhostFiller::fill_all(tree, cfg.bc.variant);
 
     scratch_leaf_count_ = -1;
     alloc_scratch();
@@ -554,6 +563,6 @@ void NSSolver::regrid() {
         }
         gpu_solver_->set_ducros(cfg.numerics.ducros_p_threshold,
                                 1.0 / cfg.numerics.ducros_blend_width);
-        gpu_solver_->build(tree, *gpu_pool_, bc_to_int(cfg.bc.variant));
+        gpu_solver_->build_faces(tree, *gpu_pool_, make_bc_types(cfg.bc));
     }
 }

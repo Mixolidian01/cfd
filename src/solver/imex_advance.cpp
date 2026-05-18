@@ -22,6 +22,7 @@
 // geometrically for any α/h² (M-matrix property).
 #include "models/sgs.hpp"
 #include "mesh/amr_operators.hpp"
+#include "mesh/ghost_filler.hpp"
 #include "solver/ns_solver.hpp"
 #include "schemes/operators.hpp"
 #include "linalg/linalg.hpp"
@@ -129,12 +130,7 @@ double NSSolver::advance_imex() {
 
     // ── Step 2: implicit viscous Helmholtz correction per block ──────────
     // Refresh ghosts so per-block velocity stencils see Q^{n+1} values.
-    std::visit(overloaded{
-        [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
-        [&](const OpenBC&)          { tree.fill_ghosts_open(); },
-        [&](const WallBC&)          { tree.fill_ghosts_wall(); },
-        [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-    }, cfg.bc.variant);
+    GhostFiller::fill_all(tree, cfg.bc.variant);
 
     // Per-call NB³ scratch (thread_local avoids repeated heap allocation).
     static thread_local std::vector<double> uf(NB*NB*NB);
@@ -211,12 +207,7 @@ double NSSolver::advance_imex() {
 
     // SGS operator split (same as advance()).
     if (cfg.physics.sgs) {
-        std::visit(overloaded{
-            [&](const PeriodicBC&)      { tree.fill_ghosts_periodic(); },
-            [&](const OpenBC&)          { tree.fill_ghosts_open(); },
-            [&](const WallBC&)          { tree.fill_ghosts_wall(); },
-            [&](const ContactAngleBC&)  { tree.fill_ghosts_wall(); },
-        }, cfg.bc.variant);
+        GhostFiller::fill_all(tree, cfg.bc.variant);
         for (int li : tree.leaf_indices())
             cfg.physics.sgs->apply(*tree.nodes[li].block, tree.nodes[li].block->h, dt);
     }

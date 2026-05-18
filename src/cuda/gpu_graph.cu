@@ -151,7 +151,7 @@ void GpuGraphSolver::_destroy_graphs() {
 }
 
 void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_type) {
-    bc_type_ = bc_type;
+    bc_types_.fill(bc_type);
     _destroy_graphs();
 
     ghost_list.build(tree, pool, bc_type, mpi_part_);
@@ -263,6 +263,15 @@ static void _do_launch_snapshot(GpuSnapshotBuffer* snap_buf, int n_leaves,
             impl->d_metas, impl->d_volume,
             n_leaves, N, snap_buf->var_id, snap_buf->domain_L);
     }
+}
+
+void GpuGraphSolver::build_faces(const BlockTree& tree, const GpuPool& pool,
+                                   const std::array<int,6>& bc_types) {
+    // Delegate all setup to build() (RK3 metas, Qn pool, rhs/cfl/cf lists, etc.),
+    // then override ghost_list with the per-face BC types.
+    build(tree, pool, bc_types[0]);
+    ghost_list.build(tree, pool, bc_types, mpi_part_);
+    bc_types_ = bc_types;
 }
 
 void GpuGraphSolver::set_snapshot_buffer(GpuSnapshotBuffer* buf)
