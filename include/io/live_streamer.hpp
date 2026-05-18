@@ -30,6 +30,7 @@
 //   Accept thread:  run_accept() — accepts TCP connections, spawns per-conn threads
 
 #include "mesh/block_tree.hpp"
+#include "gpu_snapshot.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -146,8 +147,21 @@ public:
     // Called by NSSolver::advance() after apply_flux_correction(). Never blocks.
     void snapshot(const BlockTree& tree, int step, double t);
 
+    // Option A: GPU-native snapshot — reads 2D slice values from the pinned
+    // GpuSnapshotBuffer::h_slice instead of iterating CPU CellBlock Q data.
+    // tree is used only for block descriptor metadata (origin, level, h).
+    // Call this instead of snapshot() when a GpuSnapshotBuffer is active.
+    void gpu_snapshot(const GpuSnapshotBuffer& snap, const BlockTree& tree,
+                      int step, double t);
+
     // P12.1: push latest solver diagnostics (called from NSSolver::advance()).
     void push_metrics(const MetricsSnapshot& m);
+
+    // Return a snapshot of the current streaming config (thread-safe).
+    StreamConfig get_config() const noexcept {
+        std::lock_guard<std::mutex> lk(cfg_mtx_);
+        return cfg_;
+    }
 
     void set_var (StreamVar v) noexcept;
     void set_axis(uint8_t  a) noexcept;

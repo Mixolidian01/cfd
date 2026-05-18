@@ -37,6 +37,7 @@
 #include "gpu_mpi_halo.cuh"
 #include "gpu_pool.hpp"
 #include "gpu_amr.cuh"
+#include "gpu_snapshot.hpp"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -69,6 +70,12 @@ struct GpuGraphSolver : IGpuSolver {
 
     // MPI partition — set via set_mpi() before build().
     MpiPartition* mpi_part_ = nullptr;
+
+    // Option A/C: GPU snapshot buffer — set via IGpuSolver::set_snapshot_buffer()
+    // before or after build(). When non-null, advance() launches slice + metric
+    // kernels on stream before the final sync; results are in snap_buf_->h_slice
+    // and snap_buf_->h_metrics when advance() returns.
+    GpuSnapshotBuffer* snap_buf_ = nullptr;
 
     // BC type last passed to build() — used by advance_imex() for Helmholtz ghost fill.
     int bc_type_ = 0;
@@ -106,6 +113,12 @@ struct GpuGraphSolver : IGpuSolver {
 
     // P-MPI-GPU: wire MPI partition for subsequent build() calls.
     void set_mpi(MpiPartition* p) override { mpi_part_ = p; }
+
+    // Option A/C: wire GPU snapshot buffer.
+    // Uploads metadata to device immediately if build() was already called.
+    void set_snapshot_buffer(GpuSnapshotBuffer* buf) override;
+    // Re-upload snap metadata after regrid (called from build()).
+    void _upload_snap_metas(const BlockTree& tree);
 
     // Rebuild all component lists from the tree; invalidates any captured graphs.
     // bc_type: 0=periodic, 1=wall, 2=open.

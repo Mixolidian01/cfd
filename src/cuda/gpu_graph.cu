@@ -21,9 +21,25 @@
 #include "cuda/gpu_meta_buffer.cuh"
 #include "cuda/gpu_amr.cuh"
 #include "gpu_pool.hpp"
+#include "gpu_snapshot.hpp"
 #include "mpi/mpi_comm.hpp"
 #include "mesh/block_tree.hpp"
 #include <vector>
+
+// ── Forward declarations for symbols defined in gpu_snapshot.cu ──────────────
+// SnapImpl is the CUDA-private implementation of the opaque GpuSnapshotBuffer::impl_.
+struct SnapImpl {
+    cudaStream_t     stream  = nullptr;
+    SnapLeafMeta*    d_metas = nullptr;
+    float*           d_slice = nullptr;  // device-mapped pinned mirror of h_slice
+    GpuBlockMetrics* d_hmet  = nullptr;  // device-mapped pinned mirror of h_metrics
+    int              max_leaves = 0;
+};
+
+// Kernels declared here; compiled and linked from gpu_snapshot.cu.
+__global__ void k_extract_slice(const SnapLeafMeta* metas, float* d_out,
+                                 int var_id, int axis, float slice_phys);
+__global__ void k_reduce_metrics(const SnapLeafMeta* metas, GpuBlockMetrics* d_out);
 
 // Verify GPU constants match CPU constants (both headers available here)
 static_assert(GPU_NB   == NB,   "GPU_NB mismatch with NB in cell_block.hpp");
@@ -169,6 +185,78 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
         download_pairs.emplace_back(nd.block.get(), dptr);
     }
     gpu_upload_meta(d_rk3_metas, h_metas);
+
+    // Option A/C: upload snapshot leaf metadata whenever topology changes.
+    if (snap_buf_) _upload_snap_metas(tree);
+}
+
+// ── Option A/C: snapshot metadata upload ────────────────────────────────────
+// Assembles SnapLeafMeta from download_pairs + tree, uploads to device,
+// and mirrors to snap_buf_->h_metas for CPU use in LiveStreamer::gpu_snapshot().
+void GpuGraphSolver::_upload_snap_metas(const BlockTree& tree)
+{
+    if (!snap_buf_ || n_leaves == 0) return;
+    if (n_leaves > snap_buf_->max_leaves) {
+        snap_buf_->alloc(n_leaves);  // grow buffer if needed
+    }
+
+    auto* impl = static_cast<SnapImpl*>(snap_buf_->impl_);
+    if (!impl) return;
+
+    std::vector<SnapLeafMeta> host_metas(n_leaves);
+    const auto& leaves = tree.leaf_indices();
+    int li = 0;
+    for (int leaf_idx : leaves) {
+        if (li >= n_leaves) break;
+        const BlockNode& nd = tree.nodes[leaf_idx];
+        if (!nd.has_block()) continue;
+        SnapLeafMeta& m = host_metas[li];
+        m.d_Q   = download_pairs[li].second;
+        m.ox    = static_cast<float>(nd.ox);
+        m.oy    = static_cast<float>(nd.oy);
+        m.oz    = static_cast<float>(nd.oz);
+        m.h     = static_cast<float>(nd.block->h);
+        m.level = nd.level;
+        m._pad  = 0;
+        // Copy to CPU mirror
+        snap_buf_->h_metas[li] = m;
+        ++li;
+    }
+    snap_buf_->n_leaves = li;
+
+    CUDA_CHECK(cudaMemcpyAsync(impl->d_metas, host_metas.data(),
+                               (size_t)li * sizeof(SnapLeafMeta),
+                               cudaMemcpyHostToDevice, stream));
+}
+
+// ── Option A/C: launch snapshot kernels on main stream ───────────────────────
+// Called just before cudaStreamSynchronize in advance() / _advance_amr().
+// k_extract_slice and k_reduce_metrics both write to host-mapped pinned memory
+// (impl->d_slice / impl->d_hmet), so results are visible in h_slice / h_metrics
+// after the stream sync that follows this call.
+static void _do_launch_snapshot(GpuSnapshotBuffer* snap_buf, int n_leaves,
+                                 cudaStream_t s)
+{
+    if (!snap_buf || n_leaves == 0) return;
+    auto* impl = static_cast<SnapImpl*>(snap_buf->impl_);
+    if (!impl || !impl->d_metas) return;
+
+    const float slice_phys = snap_buf->norm_pos * snap_buf->domain_L;
+
+    k_extract_slice<<<n_leaves, GPU_NB * GPU_NB, 0, s>>>(
+        impl->d_metas, impl->d_slice,
+        snap_buf->var_id, snap_buf->axis, slice_phys);
+
+    k_reduce_metrics<<<n_leaves, 64, 0, s>>>(
+        impl->d_metas, impl->d_hmet);
+}
+
+void GpuGraphSolver::set_snapshot_buffer(GpuSnapshotBuffer* buf)
+{
+    snap_buf_ = buf;
+    // Metadata upload happens in build() when snap_buf_ is non-null.
+    // Contract: call set_snapshot_buffer() before build() (or call build()
+    // again after) to ensure device metadata is current.
 }
 
 // One full SSP-RK3 step executed explicitly (not via graphs).
@@ -316,6 +404,9 @@ double GpuGraphSolver::_advance_amr(double cfl) {
         sgs_list.exec(cfl_list.d_dt, stream);
     }
 
+    // Option A/C: GPU slice + metric kernels (before final sync so they're covered).
+    _do_launch_snapshot(snap_buf_, n_leaves, stream);
+
     CUDA_CHECK(cudaStreamSynchronize(stream));
     return dt;
 }
@@ -352,6 +443,8 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
             ghost_list.exec(stream);
             sgs_list.exec(cfl_list.d_dt, stream);
         }
+        // Option A/C: GPU slice + metric kernels (before sync so they're covered).
+        _do_launch_snapshot(snap_buf_, n_leaves, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
         // Capture graphs only for single-rank runs (MPI cannot be captured).
         if (!mpi_halo_.active()) _capture_graphs();
@@ -368,6 +461,8 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
             ghost_list.exec(stream);
             sgs_list.exec(cfl_list.d_dt, stream);
         }
+        // Option A/C: GPU slice + metric kernels (before sync so they're covered).
+        _do_launch_snapshot(snap_buf_, n_leaves, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
     }
 

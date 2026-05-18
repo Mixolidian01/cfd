@@ -224,8 +224,9 @@ int main(int argc, char* argv[])
     printf("simulate_gpu: GPU solver active  leaves=%d\n",
            (int)solver.tree.leaf_indices().size());
 
-    // ── Live streamer (optional) ───────────────────────────────────────────────
-    std::unique_ptr<LiveStreamer> streamer;
+    // ── Live streamer + GPU snapshot buffer (optional) ────────────────────────
+    std::unique_ptr<LiveStreamer>        streamer;
+    std::unique_ptr<GpuSnapshotBuffer>  snap_buf;
     int stream_port = cfg.i("stream_port", 0);
     if (stream_port > 0) {
         StreamConfig scfg;
@@ -247,7 +248,20 @@ int main(int argc, char* argv[])
 
         streamer = std::make_unique<LiveStreamer>(scfg);
         solver.set_streamer(streamer.get());
-        printf("simulate_gpu: live feed enabled on http://localhost:%d  (var=%s axis=%d)\n",
+
+        // Option A/C: allocate GPU snapshot buffer — zero-copy slice + GPU metrics.
+        const int n_leaves_max = static_cast<int>(solver.tree.leaf_indices().size());
+        snap_buf = std::make_unique<GpuSnapshotBuffer>();
+        snap_buf->alloc(std::max(n_leaves_max, 64));  // reserve some headroom for AMR
+        snap_buf->var_id   = static_cast<int>(scfg.var);
+        snap_buf->axis     = static_cast<int>(scfg.axis);
+        snap_buf->norm_pos = static_cast<float>(scfg.pos);
+        snap_buf->domain_L = static_cast<float>(domain_L);
+        solver.set_gpu_snapshot(snap_buf.get());
+        // Re-build with snapshot buffer set so _upload_snap_metas() runs.
+        graph_solver.build(solver.tree, pool, bc_to_int(sc.bc.variant));
+
+        printf("simulate_gpu: live feed enabled on http://localhost:%d  (var=%s axis=%d)  [GPU snap]\n",
                stream_port, sv.c_str(), (int)scfg.axis);
     }
 

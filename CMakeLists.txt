@@ -193,6 +193,7 @@ if(NVCC)
         ${_S}/cuda/gpu_rhs.cu      ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
         ${_S}/cuda/gpu_cf.cu       ${_S}/cuda/gpu_sgs.cu
         ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
+        ${_S}/cuda/gpu_snapshot.cu
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
@@ -273,6 +274,7 @@ if(NVCC)
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
              ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
+             ${_S}/cuda/gpu_snapshot.cu
              ${_GPU_POOL}
              ${_GPU_OPS}
     )
@@ -282,6 +284,7 @@ if(NVCC)
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
              ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
+             ${_S}/cuda/gpu_snapshot.cu
              ${_GPU_POOL}
              ${_GPU_OPS}
              ${_S}/models/sgs.cpp
@@ -327,6 +330,10 @@ if(NVCC)
              ${_S}/cuda/gpu_wmles.cu
              ${_S}/models/wall_model.cpp
              ${_GPU_NS}
+    )
+    add_nvcc_gate(TARGET t36 BIN t36_gpu_snapshot COMMENT "Option A/C GPU snapshot (slice + metric reduction)"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t36_gpu_snapshot.cu ${_GPU_NS}
     )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS

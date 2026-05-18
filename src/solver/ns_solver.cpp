@@ -26,6 +26,7 @@
 #include "solver/lts_integrator.hpp"
 #include "schemes/operators.hpp"
 #include "linalg/linalg.hpp"
+#include "gpu_snapshot.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -233,8 +234,25 @@ double NSSolver::advance() {
             gpu_solver_->upload_q();
             gpu_q_stale_ = false;
         }
+
+        // Option A/C: update slice config in the snapshot buffer each step so
+        // the GPU kernels use the current POST /config selection.
+        if (gpu_snap_ && streamer_) {
+            StreamConfig sc = streamer_->get_config();
+            gpu_snap_->var_id   = static_cast<int>(sc.var);
+            gpu_snap_->axis     = static_cast<int>(sc.axis);
+            gpu_snap_->norm_pos = static_cast<float>(sc.pos);
+            gpu_snap_->domain_L = static_cast<float>(tree.domain_L());
+        }
+
         dt = gpu_solver_->advance(tree, cfg.time.cfl);
-        gpu_solver_->download_q(tree);  // CPU Q is fresh; streamer reads from it below
+        // advance() now includes slice + metric kernels and the final stream sync.
+        // CPU Q is only needed at diag_interval; skip the expensive full download
+        // on steps where gpu_snap_ provides the streamer data.
+        if (!gpu_snap_ || (cfg.io.diag_interval > 0 &&
+                           (step + 1) % cfg.io.diag_interval == 0)) {
+            gpu_solver_->download_q(tree);
+        }
     } else {
         // P10-A2: CPU flat-tree SSP-RK3 via CpuRk3Integrator.
         dt = integrator_->step(tree, cfg.time.cfl);
@@ -264,29 +282,56 @@ double NSSolver::advance() {
         ms.dt   = dt;
         const auto& lvs = tree.leaf_indices();
         ms.n_leaves = static_cast<int>(lvs.size());
-        ms.rho_min = 1e300;
-        ms.rho_max = 0.0;
         ms.gpu_active = (gpu_solver_ != nullptr);
+
         double px = 0.0, py = 0.0, pz = 0.0, etot = 0.0;
-        for (int li : lvs) {
-            auto& blk = *tree.nodes[li].block;
-            const double h3 = blk.h * blk.h * blk.h;
-            const int lv = tree.nodes[li].level;
-            if (lv < 8) ms.leaves_per_level[lv]++;
-            ms.mass += blk.total_mass();
-            for (int k = NG; k < NG+NB; ++k)
-            for (int j = NG; j < NG+NB; ++j)
-            for (int i = NG; i < NG+NB; ++i) {
-                Prim q = blk.prim(i,j,k);
-                ms.ke += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w) * h3;
-                if (q.rho < ms.rho_min) ms.rho_min = q.rho;
-                if (q.rho > ms.rho_max) ms.rho_max = q.rho;
-                px   += blk.rhou(i,j,k) * h3;
-                py   += blk.rhov(i,j,k) * h3;
-                pz   += blk.rhow(i,j,k) * h3;
-                etot += blk.E   (i,j,k) * h3;
+
+        // Option C: GPU metric reduction — sum per-leaf GpuBlockMetrics from
+        // the pinned buffer written by k_reduce_metrics in advance().
+        // Falls back to CPU scan when gpu_snap_ is null or Q was just downloaded.
+        if (gpu_snap_ && gpu_solver_ && gpu_snap_->n_leaves > 0) {
+            ms.rho_min = 1e300;
+            ms.rho_max = 0.0;
+            for (int i = 0; i < gpu_snap_->n_leaves; ++i) {
+                const GpuBlockMetrics& bm = gpu_snap_->h_metrics[i];
+                ms.mass    += bm.mass;
+                ms.ke      += bm.ke;
+                px         += bm.px;
+                py         += bm.py;
+                pz         += bm.pz;
+                etot       += bm.etot;
+                if (bm.rho_min < ms.rho_min) ms.rho_min = bm.rho_min;
+                if (bm.rho_max > ms.rho_max) ms.rho_max = bm.rho_max;
+            }
+            for (int li : lvs) {
+                const int lv = tree.nodes[li].level;
+                if (lv < 8) ms.leaves_per_level[lv]++;
+            }
+        } else {
+            // CPU scan (default path when no GPU snapshot buffer is active).
+            ms.rho_min = 1e300;
+            ms.rho_max = 0.0;
+            for (int li : lvs) {
+                auto& blk = *tree.nodes[li].block;
+                const double h3 = blk.h * blk.h * blk.h;
+                const int lv = tree.nodes[li].level;
+                if (lv < 8) ms.leaves_per_level[lv]++;
+                ms.mass += blk.total_mass();
+                for (int k = NG; k < NG+NB; ++k)
+                for (int j = NG; j < NG+NB; ++j)
+                for (int i = NG; i < NG+NB; ++i) {
+                    Prim q = blk.prim(i,j,k);
+                    ms.ke += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w) * h3;
+                    if (q.rho < ms.rho_min) ms.rho_min = q.rho;
+                    if (q.rho > ms.rho_max) ms.rho_max = q.rho;
+                    px   += blk.rhou(i,j,k) * h3;
+                    py   += blk.rhov(i,j,k) * h3;
+                    pz   += blk.rhow(i,j,k) * h3;
+                    etot += blk.E   (i,j,k) * h3;
+                }
             }
         }
+
         ms.cfl = dt / tree_cfl_dt(tree, 1.0);
         // P12.3: conservation baselines (set on first call; relative errors thereafter)
         const double mtm = std::sqrt(px*px + py*py + pz*pz);
@@ -309,7 +354,13 @@ double NSSolver::advance() {
     }
 
     // Phase 6: push completed step to browser live feed (no-op when null).
-    if (streamer_) streamer_->snapshot(tree, step, t);
+    // Option A: use GPU snapshot path when buffer is active (avoids CPU Q read).
+    if (streamer_) {
+        if (gpu_snap_ && gpu_solver_)
+            streamer_->gpu_snapshot(*gpu_snap_, tree, step, t);
+        else
+            streamer_->snapshot(tree, step, t);
+    }
 
     return dt;
 }

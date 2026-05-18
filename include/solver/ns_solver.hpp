@@ -65,6 +65,10 @@ struct IGpuSolver : TimeIntegrator {
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_mpi(MpiPartition* /*p*/) {}
 
+    // Option A/C: wire GPU snapshot buffer for zero-copy slice + metric extraction.
+    // Default no-op — only GpuGraphSolver overrides this.
+    virtual void   set_snapshot_buffer(struct GpuSnapshotBuffer* /*buf*/) {}
+
     // D1: GPU-native AMR regrid.  Default returns false (fall back to CPU regrid).
     // GpuGraphSolver overrides this to run refinement sensor on GPU and do D2D
     // prolongation/restriction without large D2H Q transfers.
@@ -239,6 +243,16 @@ struct NSSolver {
     // NSSolver::regrid() calls build() after every topology change.
     IGpuSolver* gpu_solver_ = nullptr;
     void set_gpu_solver(IGpuSolver* s) noexcept { gpu_solver_ = s; }
+
+    // Option A/C: optional GPU snapshot buffer.
+    // When set together with gpu_solver_, advance() skips download_q() each step
+    // and instead reads 2D slice + metrics from the pinned h_slice/h_metrics buffers.
+    // Caller must also call streamer_->gpu_snapshot() instead of streamer_->snapshot().
+    struct GpuSnapshotBuffer* gpu_snap_ = nullptr;
+    void set_gpu_snapshot(struct GpuSnapshotBuffer* b) noexcept {
+        gpu_snap_ = b;
+        if (gpu_solver_) gpu_solver_->set_snapshot_buffer(b);
+    }
 
     int  scratch_leaf_count_ = -1;  ///< FIX P5: tracks last alloc size
     void alloc_scratch();

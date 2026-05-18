@@ -220,6 +220,85 @@ LiveStreamer::~LiveStreamer() {
 }
 
 // =============================================================================
+// LiveStreamer::gpu_snapshot — Option A: read 2D slice from pinned GPU buffer
+// =============================================================================
+
+void LiveStreamer::gpu_snapshot(const GpuSnapshotBuffer& snap,
+                                const BlockTree& tree, int step, double t)
+{
+    StreamConfig cfg_snap;
+    {
+        std::lock_guard<std::mutex> lk(cfg_mtx_);
+        cfg_snap = cfg_;
+    }
+    if (cfg_snap.stride > 1 && (step % cfg_snap.stride) != 0) return;
+
+    const uint8_t   axis   = cfg_snap.axis;
+    const StreamVar svar   = cfg_snap.var;
+    const double    L      = tree.domain_L();
+    const float     L_f    = static_cast<float>(L);
+    const float     z_phys = static_cast<float>(cfg_snap.pos * L);
+
+    FrameBuffer& fb = back_;
+    fb.step     = step;
+    fb.sim_time = t;
+    fb.axis     = axis;
+    fb.var_id   = static_cast<uint8_t>(svar);
+    fb.domain_L = L_f;
+    fb.descs.clear();
+    fb.data.clear();
+    fb.probe.clear();
+
+    float g_vmin = std::numeric_limits<float>::max();
+    float g_vmax = std::numeric_limits<float>::lowest();
+
+    const auto& leaves = tree.leaf_indices();
+    // snap.h_metas[i] corresponds to leaves[i] in the same compact order.
+    for (int i = 0; i < snap.n_leaves && i < (int)leaves.size(); ++i) {
+        const SnapLeafMeta& m = snap.h_metas[i];
+
+        // Check slice intersection using the same logic as build_frame().
+        float lo, hi;
+        if      (axis == 0) { lo = m.ox; hi = m.ox + NB * m.h; }
+        else if (axis == 1) { lo = m.oy; hi = m.oy + NB * m.h; }
+        else                { lo = m.oz; hi = m.oz + NB * m.h; }
+        if (z_phys < lo || z_phys >= hi) continue;
+
+        // 2D projected origin
+        const BlockNode& node = tree.nodes[leaves[i]];
+        BlockDesc2D desc{};
+        if      (axis == 0) { desc.ox2d = m.oy; desc.oy2d = m.oz; }
+        else if (axis == 1) { desc.ox2d = m.ox; desc.oy2d = m.oz; }
+        else                { desc.ox2d = m.ox; desc.oy2d = m.oy; }
+        desc.h     = m.h;
+        desc.level = static_cast<uint8_t>(node.level);
+        fb.descs.push_back(desc);
+
+        // Read NB*NB floats from pinned slice buffer
+        const float* tile = snap.h_slice + i * NB * NB;
+        for (int c = 0; c < NB * NB; ++c) {
+            float v = tile[c];
+            fb.data.push_back(v);
+            g_vmin = std::min(g_vmin, v);
+            g_vmax = std::max(g_vmax, v);
+        }
+    }
+
+    if (fb.descs.empty()) { g_vmin = 0.f; g_vmax = 1.f; }
+    if (g_vmin == g_vmax)   g_vmax = g_vmin + 1.f;
+    fb.g_vmin   = g_vmin;
+    fb.g_vmax   = g_vmax;
+    fb.n_blocks = static_cast<uint8_t>(std::min((int)fb.descs.size(), 255));
+
+    {
+        std::lock_guard<std::mutex> lk(swap_mtx_);
+        std::swap(back_, front_);
+        front_fresh_ = true;
+    }
+    swap_cv_.notify_one();
+}
+
+// =============================================================================
 // LiveStreamer::snapshot — called by solver after apply_flux_correction()
 // =============================================================================
 
