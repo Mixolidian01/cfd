@@ -34,11 +34,12 @@ enum class GpuReconScheme : uint8_t { WENO5Z, TENO5A };
 
 // ── Per-leaf RHS metadata ─────────────────────────────────────────────────────
 struct alignas(64) GpuLeafRhsMeta {
-    const double* d_Q;       // source block d_Q (with ghost cells filled)
-    double*       d_RHS;     // output RHS (flat SoA NVAR*NCELL; interior written)
-    double*       d_scratch; // 9*NCELL doubles: prim[0..6], mu[7], duc[8]
-    double        h;         // cell size
-    int8_t        _pad[4];
+    const double* d_Q;          // source block d_Q (with ghost cells filled)
+    double*       d_RHS;        // output RHS (flat SoA NVAR*NCELL; interior written)
+    double*       d_scratch;    // 9*NCELL doubles: prim[0..6], mu[7], duc[8]
+    double        h;            // cell size
+    double        duc_p_thr;    // Ducros pressure-sensor threshold (config-driven)
+    double        duc_blend_inv;// 1 / blend_width for Ducros pressure-sensor
 };
 static_assert(sizeof(GpuLeafRhsMeta) <= 64, "GpuLeafRhsMeta too large");
 
@@ -49,6 +50,9 @@ struct GpuRhsList {
     double*         d_rhs_pool     = nullptr;  // d_RHS per leaf
     int             n_leaves  = 0;
     GpuReconScheme  scheme    = GpuReconScheme::TENO5A;  // D3: TENO5-A default
+    // Ducros sensor config — propagated into each leaf's meta on build().
+    double          duc_p_thr_     = 0.1;   // matches DucrosConfig defaults
+    double          duc_blend_inv_ = 10.0;  // 1/0.1
 
     GpuRhsList() = default;
     GpuRhsList(const GpuRhsList&) = delete;

@@ -63,6 +63,10 @@ struct GpuGraphSolver : IGpuSolver {
     double sgs_Cs_     = 0.16;
     double sgs_Pr_t_   = 0.9;
 
+    // Ducros sensor config — set via set_ducros() before build().
+    double duc_p_thr_     = 0.1;
+    double duc_blend_inv_ = 10.0;
+
     // MPI partition — set via set_mpi() before build().
     MpiPartition* mpi_part_ = nullptr;
 
@@ -93,6 +97,11 @@ struct GpuGraphSolver : IGpuSolver {
     // Must be called before build() to take effect on the current topology.
     void set_gpu_sgs(double Cs, double Pr_t) override {
         sgs_Cs_ = Cs; sgs_Pr_t_ = Pr_t; sgs_enabled = true;
+    }
+
+    // Propagate Ducros sensor config to rhs_list for subsequent build() calls.
+    void set_ducros(double p_thr, double blend_inv) override {
+        duc_p_thr_ = p_thr; duc_blend_inv_ = blend_inv;
     }
 
     // P-MPI-GPU: wire MPI partition for subsequent build() calls.

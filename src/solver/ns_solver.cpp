@@ -225,8 +225,6 @@ double NSSolver::advance() {
     // P11.8 / P14.4: GPU path — flat and AMR trees.
     // P14.4 adds GPU Berger-Colella correction (GpuCfList) so the GPU path now
     // handles AMR trees directly via _advance_amr() in GpuGraphSolver.
-    // NOTE: gpu_rhs.cu hardcodes ducros p_threshold=0.1 and blend_width=0.1;
-    // cfg.numerics.ducros_p_threshold/blend_width have no effect on GPU path (R9-D).
     if (gpu_solver_) {
         if (gpu_q_stale_) {
             gpu_solver_->upload_q();
@@ -504,6 +502,8 @@ void NSSolver::regrid() {
             if (auto* sm = dynamic_cast<SmagorinskyModel*>(cfg.physics.sgs.get()))
                 gpu_solver_->set_gpu_sgs(sm->Cs, sm->Pr_t);
         }
+        gpu_solver_->set_ducros(cfg.numerics.ducros_p_threshold,
+                                1.0 / cfg.numerics.ducros_blend_width);
         gpu_solver_->build(tree, *gpu_pool_, bc_to_int(cfg.bc.variant));
     }
 }

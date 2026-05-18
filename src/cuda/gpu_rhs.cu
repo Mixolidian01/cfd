@@ -384,7 +384,7 @@ void k_prim_duc(const GpuLeafRhsMeta* __restrict__ metas) {
             const double dpy = fmax(fabs(P(i,j+1,k)-pC), fabs(P(i,j-1,k)-pC));
             const double dpz = fmax(fabs(P(i,j,k+1)-pC), fabs(P(i,j,k-1)-pC));
             const double phi_p = fmax(dpx, fmax(dpy,dpz)) / (pC+eps_duc);
-            const double phi_p_cl = fmin(1.0, fmax(0.0, (phi_p-0.1)*10.0));
+            const double phi_p_cl = fmin(1.0, fmax(0.0, (phi_p-m.duc_p_thr)*m.duc_blend_inv));
 
             duc = fmax(phi_vel, phi_p_cl);
         }
@@ -1105,11 +1105,12 @@ void GpuRhsList::build(const BlockTree& tree, const GpuPool& pool) {
     for (int li = 0; li < n_leaves; ++li) {
         const BlockNode& nd = tree.nodes[local[li]];
         GpuLeafRhsMeta& meta = h_metas[li];
-        meta.d_Q      = pool.d_Q(nd.block.get());
-        meta.d_RHS    = d_rhs_pool     + (size_t)li * NVAR           * NCELL;
-        meta.d_scratch= d_scratch_pool + (size_t)li * SCRATCH_NCOMP  * NCELL;
-        meta.h        = nd.block->h;
-        meta._pad[0]  = meta._pad[1] = meta._pad[2] = meta._pad[3] = 0;
+        meta.d_Q          = pool.d_Q(nd.block.get());
+        meta.d_RHS        = d_rhs_pool     + (size_t)li * NVAR          * NCELL;
+        meta.d_scratch    = d_scratch_pool + (size_t)li * SCRATCH_NCOMP * NCELL;
+        meta.h            = nd.block->h;
+        meta.duc_p_thr    = duc_p_thr_;
+        meta.duc_blend_inv= duc_blend_inv_;
     }
 
     gpu_upload_meta(d_metas, h_metas);
