@@ -349,6 +349,21 @@ if(NVCC)
         COMMENT "D0 roofline benchmark (run ./build/bench_d0_roofline)"
     )
 
+    # CPU vs GPU throughput benchmark on TGV IC (build-only; run manually)
+    set(_BENCH_TGV_BIN ${CMAKE_BINARY_DIR}/bench_tgv)
+    add_custom_command(
+        OUTPUT  ${_BENCH_TGV_BIN}
+        COMMAND ${NVCC} ${_NVCC_BASE} ${_WNO} ${_GPU_NS}
+                ${_T}/bench_cpu_vs_gpu_tgv.cu
+                -o ${_BENCH_TGV_BIN} -lm
+        DEPENDS ${_T}/bench_cpu_vs_gpu_tgv.cu ${_GPU_NS}
+        COMMENT "nvcc: compiling CPU vs GPU TGV throughput benchmark"
+        VERBATIM
+    )
+    add_custom_target(bench_tgv DEPENDS ${_BENCH_TGV_BIN}
+        COMMENT "CPU vs GPU TGV benchmark (run ./build/bench_tgv)"
+    )
+
     # add_nvcc_mpi_gate: like add_nvcc_gate but runs binary via "mpirun -n 2"
     function(add_nvcc_mpi_gate)
         cmake_parse_arguments(A "" "TARGET;BIN;COMMENT" "EXTRA_FLAGS;EXTRA_LIBS;MPI_INC;SRCS" ${ARGN})
