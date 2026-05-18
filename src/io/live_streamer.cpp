@@ -1256,6 +1256,7 @@ let volTexGL = null, tfTexGL = null;
 let N3d=32, vmin3d=0, vmax3d=1;
 let nsteps=96, opacScale=12, cmapId3d=0;
 let theta=0.6, phi=0.8, radius=2.2, dragStart=null;
+let floatLinearFilter=false;
 const TF_SIZE=256;
 
 function viridis(t){
@@ -1349,6 +1350,9 @@ function makeGLShader(g,type,src){
 function initWebGL(){
   gl=canvas3d.getContext('webgl2');
   if(!gl){infoEl.textContent='3D: WebGL2 not available (need Chrome/Firefox/Edge/Safari 15+)';return false;}
+  // R32F textures need OES_texture_float_linear for LINEAR filtering;
+  // without it the texture is incomplete and returns zero (invisible volume).
+  floatLinearFilter=!!gl.getExtension('OES_texture_float_linear');
   try{
     const vs=makeGLShader(gl,gl.VERTEX_SHADER,VS3D);
     const fs=makeGLShader(gl,gl.FRAGMENT_SHADER,FS3D);
@@ -1378,7 +1382,7 @@ function initWebGL(){
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
     rebuildTF();
-    infoEl.textContent='3D: ready – waiting for volume data…';
+    infoEl.textContent='3D: ready'+(floatLinearFilter?' (linear)':' (nearest – no OES_texture_float_linear)')+'…';
     return true;
   }catch(e){
     infoEl.textContent='3D init error: '+e.message;
@@ -1390,8 +1394,9 @@ function createVolTexGL(sz,data){
   if(volTexGL)gl.deleteTexture(volTexGL);
   volTexGL=gl.createTexture();
   gl.bindTexture(gl.TEXTURE_3D,volTexGL);
-  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  const flt=floatLinearFilter?gl.LINEAR:gl.NEAREST;
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,flt);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,flt);
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
@@ -1468,7 +1473,9 @@ function ingestVolume(bytes){
 
 async function connectVolStream(){
   try{
+    infoEl.textContent='3D: connecting to /volume-stream…';
     const resp=await fetch('/volume-stream');
+    infoEl.textContent='3D: stream open – waiting for first volume frame…';
     const reader=resp.body.getReader();
     let buf=new Uint8Array(0);
     while(true){
