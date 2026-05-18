@@ -1000,9 +1000,6 @@ input[type=number]{background:#222;color:#ccc;border:1px solid #3a3a3a;padding:2
         <option value="3">Gray</option>
       </select>
     </label>
-    <label style="display:flex;align-items:center;gap:4px">TF
-      <canvas id="tf-canvas" width="128" height="32" title="Drag to edit transfer function opacity"></canvas>
-    </label>
   </span>
   <button id="mode-btn" onclick="toggleMode()">3D view</button>
   <span id="info">connecting&hellip;</span>
@@ -1029,10 +1026,13 @@ async function toggleMode() {
   document.getElementById('ctrl3d').style.display = mode3d ? 'flex'  : 'none';
   document.getElementById('mode-btn').textContent = mode3d ? '2D view' : '3D view';
   document.getElementById('err').style.display    = 'none';
-  if (mode3d && !gpuInitDone) {
-    gpuInitDone = await initWebGPU();
+  if (mode3d) {
+    if (!gpuInitDone) {
+      gpuInitDone = await initWebGPU();
+      if (gpuInitDone) connectVolStream();
+    }
+    // Always restart the render loop when entering 3D mode (it stops when leaving)
     if (gpuInitDone) render3d();
-    connectVolStream();
   }
 }
 
@@ -1256,7 +1256,7 @@ document.addEventListener('keydown', e => {
 // ─────────────────────────────────────────────────────────────────────────────
 const canvas3d = document.getElementById('c3d');
 const errEl    = document.getElementById('err');
-let device, pipeline, uniformBuf, tfBuf, volTex, volSampler, bindGroup3d, canvasCtx3d;
+let device, pipeline, uniformBuf, tfBuf, volTex, volSampler, bindGroup3d, canvasCtx3d, fmt3d;
 let N3d=32, vmin3d=0, vmax3d=1;
 let nsteps=96, opacScale=12, cmapId3d=0;
 let theta=0.6, phi=0.8, radius=2.2, dragStart=null;
@@ -1275,57 +1275,39 @@ function cool(t){return[t,1-t,1];}
 function gray(t){return[t,t,t];}
 const CMAPS3D=[viridis,hot,cool,gray];
 
+// Simple linear-ramp TF: low values transparent, high values opaque.
+// Opacity slider (opacScale) uniformly scales the ramp peak.
 function rebuildTF() {
-  const cmap=CMAPS3D[cmapId3d];
-  const tfCtx=document.getElementById('tf-canvas').getContext('2d');
-  const imgd=tfCtx.getImageData(0,0,128,32);
-  for(let i=0;i<TF_SIZE;++i){
-    const[r,g,b]=cmap(i/(TF_SIZE-1));
-    const cx=Math.min(127,Math.round(i/TF_SIZE*128));
-    let maxA=0;
-    for(let row=0;row<32;row++){const px=(row*128+cx)*4;if(imgd.data[px]>maxA)maxA=imgd.data[px];}
-    const base_a=4.0*(i/TF_SIZE)*(1.0-i/TF_SIZE);
-    const user_a=maxA>0?maxA/255:base_a;
-    const a=user_a*opacScale/12.0;
-    tfData[i*4]=r;tfData[i*4+1]=g;tfData[i*4+2]=b;tfData[i*4+3]=a;
+  const cmap = CMAPS3D[cmapId3d];
+  for (let i = 0; i < TF_SIZE; ++i) {
+    const [r, g, b] = cmap(i / (TF_SIZE - 1));
+    const a = (i / (TF_SIZE - 1)) * (opacScale / 12.0);
+    tfData[i*4]=r; tfData[i*4+1]=g; tfData[i*4+2]=b; tfData[i*4+3]=a;
   }
-  if(device&&tfBuf) device.queue.writeBuffer(tfBuf,0,tfData);
-}
-
-// TF canvas init + editor
-const tfCv=document.getElementById('tf-canvas');
-const tfCtx2=tfCv.getContext('2d');
-(function initTF(){
-  for(let i=0;i<128;i++){
-    const[r,g,b]=viridis(i/127);
-    tfCtx2.fillStyle=`rgb(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)})`;
-    tfCtx2.fillRect(i,0,1,32);
-  }
-})();
-let tfDrag=false;
-tfCv.addEventListener('mousedown',e=>{tfDrag=true;drawTFStroke(e);});
-tfCv.addEventListener('mousemove',e=>{if(tfDrag)drawTFStroke(e);});
-tfCv.addEventListener('mouseup',()=>{tfDrag=false;rebuildTF();});
-function drawTFStroke(e){
-  const r=tfCv.getBoundingClientRect();
-  const x=Math.round((e.clientX-r.left)/r.width*128);
-  const y=Math.round((e.clientY-r.top)/r.height*32);
-  tfCtx2.fillStyle='#fff'; tfCtx2.fillRect(x-1,0,3,y);
-  tfCtx2.fillStyle='#000'; tfCtx2.fillRect(x-1,y,3,32-y);
+  if (device && tfBuf) device.queue.writeBuffer(tfBuf, 0, tfData);
 }
 
 async function initWebGPU() {
+  try {
   if(!navigator.gpu){
     errEl.style.display='block';
-    errEl.textContent='WebGPU not available.\nUse Chrome 113+ or Edge 113+.';
+    errEl.textContent='WebGPU not available. Use Chrome 113+ or Edge 113+ with hardware acceleration enabled.';
     return false;
   }
   const adapter=await navigator.gpu.requestAdapter();
-  if(!adapter){errEl.style.display='block';errEl.textContent='No WebGPU adapter.';return false;}
+  if(!adapter){
+    errEl.style.display='block';
+    errEl.textContent='No WebGPU adapter found. Enable hardware acceleration in browser settings.';
+    return false;
+  }
   device=await adapter.requestDevice();
+  device.lost.then(info=>{
+    errEl.style.display='block';
+    errEl.textContent='WebGPU device lost: '+info.message;
+  });
   canvasCtx3d=canvas3d.getContext('webgpu');
-  const fmt=navigator.gpu.getPreferredCanvasFormat();
-  canvasCtx3d.configure({device,format:fmt,alphaMode:'opaque'});
+  fmt3d=navigator.gpu.getPreferredCanvasFormat();
+  canvasCtx3d.configure({device,format:fmt3d,alphaMode:'opaque'});
   uniformBuf=device.createBuffer({size:96,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
   tfBuf=device.createBuffer({size:TF_SIZE*16,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});
   rebuildTF();
@@ -1398,15 +1380,27 @@ fn ray_aabb(ro: vec3<f32>, rd: vec3<f32>) -> vec2<f32> {
   return vec4<f32>(pow(clamp(rgb, vec3(0.0), vec3(1.0)), vec3<f32>(0.4545)), 1.0);
 }
 `;
+  device.pushErrorScope('validation');
   const sm = device.createShaderModule({ code: shaderCode3d });
   pipeline = device.createRenderPipeline({
     layout: 'auto',
     vertex:   { module: sm, entryPoint: 'vs' },
-    fragment: { module: sm, entryPoint: 'fs', targets: [{ format: fmt }] },
+    fragment: { module: sm, entryPoint: 'fs', targets: [{ format: fmt3d }] },
     primitive: { topology: 'triangle-strip' }
   });
+  const valErr = await device.popErrorScope();
+  if (valErr) {
+    errEl.style.display='block';
+    errEl.textContent='WebGPU shader error: '+valErr.message;
+    return false;
+  }
   rebindGroup3d();
   return true;
+  } catch(e) {
+    errEl.style.display='block';
+    errEl.textContent='WebGPU init failed: '+(e.message||String(e));
+    return false;
+  }
 }
 
 function createVolTex(sz){
@@ -1449,18 +1443,30 @@ function updateUniforms3d(){
 }
 
 function render3d(){
+  if(!mode3d){return;}  // loop stopped — will be restarted by toggleMode() on next 3D entry
   if(!device||!pipeline||!bindGroup3d){requestAnimationFrame(render3d);return;}
-  const cw=canvas3d.parentElement.clientWidth,ch=canvas3d.parentElement.clientHeight;
-  if(canvas3d.width!==cw||canvas3d.height!==ch){canvas3d.width=cw;canvas3d.height=ch;}
-  updateUniforms3d();
-  const enc=device.createCommandEncoder();
-  const pass=enc.beginRenderPass({colorAttachments:[{
-    view:canvasCtx3d.getCurrentTexture().createView(),
-    loadOp:'clear',clearValue:{r:.05,g:.05,b:.05,a:1},storeOp:'store'
-  }]});
-  pass.setPipeline(pipeline);pass.setBindGroup(0,bindGroup3d);pass.draw(4,1,0,0);pass.end();
-  device.queue.submit([enc.finish()]);
-  if(mode3d) requestAnimationFrame(render3d);
+  const cw=canvas3d.parentElement.clientWidth, ch=canvas3d.parentElement.clientHeight;
+  if(cw<=0||ch<=0){requestAnimationFrame(render3d);return;}  // layout not ready yet
+  if(canvas3d.width!==cw||canvas3d.height!==ch){
+    canvas3d.width=cw; canvas3d.height=ch;
+    // Reconfigure swap chain after canvas resize
+    canvasCtx3d.configure({device,format:fmt3d,alphaMode:'opaque'});
+  }
+  try{
+    updateUniforms3d();
+    const enc=device.createCommandEncoder();
+    const pass=enc.beginRenderPass({colorAttachments:[{
+      view:canvasCtx3d.getCurrentTexture().createView(),
+      loadOp:'clear',clearValue:{r:.05,g:.05,b:.05,a:1},storeOp:'store'
+    }]});
+    pass.setPipeline(pipeline);pass.setBindGroup(0,bindGroup3d);pass.draw(4,1,0,0);pass.end();
+    device.queue.submit([enc.finish()]);
+  }catch(e){
+    errEl.style.display='block';
+    errEl.textContent='WebGPU render error: '+(e.message||String(e));
+    return;
+  }
+  requestAnimationFrame(render3d);
 }
 
 function ingestVolume(bytes){
