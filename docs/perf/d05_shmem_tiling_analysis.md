@@ -110,11 +110,23 @@ This is a natural prerequisite for TENO7-A (D3) and should be implemented there.
 
 | Requirement | Status |
 |---|---|
-| T08 convergence rate ≥ 1.8 (unchanged) | **PASS** (rate = 1.8; original kernel restored) |
+| T08 convergence rate ≥ 1.8 (unchanged) | **PASS** (rate = 1.8; default kernel unchanged) |
 | BW% logged to docs/perf/ | **DONE** (see above; 4.2% → 4.2%; no improvement) |
-| exec() uses faster kernel | **DONE** (reverted to `k_rhs_conv` 192-thread original) |
-| `k_rhs_conv_tiled` retained for reference | **YES** (retained in gpu_rhs.cu, not called) |
+| exec() uses faster kernel | **DONE** (default is `k_rhs_conv_teno`; TILED not default) |
+| `k_rhs_conv_tiled` retained for reference | **YES** — now `template<bool USE_TENO>` |
 
 The ≥ 20 pp BW improvement target was **not achieved** with shared-memory tiling.
-The analysis and forward path are documented above. D0.5 correctness work is complete;
-performance optimisation is deferred to D3 (per-axis TENO7-A reconstruction).
+D0.5 correctness work is complete; performance optimisation is deferred to D3.
+
+## 2026-05-19 Update: Template Refactor
+
+`k_rhs_conv_tiled` was refactored to `template<bool USE_TENO>` and `gpu_teno5_shmem<AXIS>`
+was added (TENO5-A shmem reconstruction, mirrors `gpu_weno5_shmem`). The enum was extended:
+
+```cpp
+enum class GpuReconScheme : uint8_t { WENO5Z, TENO5A, WENO5Z_TILED, TENO5A_TILED };
+```
+
+`exec()` now dispatches all four variants. The default remains `TENO5A` (untiled) because
+the tiled path regresses latency on this hardware (see root cause above). The TILED variants
+are available for future per-arch tuning or when the problem size grows beyond L2 capacity.

@@ -511,6 +511,111 @@ void gpu_weno5_shmem(const double* __restrict__ s,
     qR_out = safe_prim(QR, fbR);
 }
 
+// D0.5: TENO5-A shmem variant — same padded layout as gpu_weno5_shmem<AXIS> but
+// uses physics_teno5_scalar (hard cutoff q=6) for higher spectral resolution.
+template<int AXIS>
+__device__ __forceinline__
+void gpu_teno5_shmem(const double* __restrict__ s,
+                     int fn, int tb,
+                     GPrim& qL_out, GPrim& qR_out) noexcept {
+    constexpr int PAD  = GPU_NB2 + 1;
+    constexpr int NB2P = GPU_NB2 * PAD;
+
+    auto jkd = [&](int d) -> int {
+        if constexpr (AXIS == 1) return tb       * PAD + (fn + d);
+        else                     return (fn + d) * PAD + tb;
+    };
+    const int jkL = jkd(0), jkR = jkd(1);
+
+    const double rL  = s[0*NB2P+jkL], uL  = s[1*NB2P+jkL];
+    const double vLs = s[2*NB2P+jkL], wL  = s[3*NB2P+jkL];
+    const double pL  = s[4*NB2P+jkL], TL  = s[5*NB2P+jkL], cL = s[6*NB2P+jkL];
+    const double rR  = s[0*NB2P+jkR], uR  = s[1*NB2P+jkR];
+    const double vR  = s[2*NB2P+jkR], wR  = s[3*NB2P+jkR];
+    const double pR  = s[4*NB2P+jkR], TR  = s[5*NB2P+jkR], cR = s[6*NB2P+jkR];
+
+    double Q[6][GPU_NVAR];
+    for (int m = 0; m < 6; ++m) {
+        const int jk = jkd(m - 2);
+        const double rho = s[0*NB2P+jk], u = s[1*NB2P+jk];
+        const double v   = s[2*NB2P+jk], w = s[3*NB2P+jk];
+        const double p   = s[4*NB2P+jk];
+        Q[m][0] = rho;
+        Q[m][1] = rho*u; Q[m][2] = rho*v; Q[m][3] = rho*w;
+        Q[m][4] = p/(GPU_GAMMA-1.0) + 0.5*rho*(u*u+v*v+w*w);
+    }
+
+    const double sqL = sqrt(rL), sqR = sqrt(rR), denom = sqL + sqR;
+    const double u_roe = (sqL*uL  + sqR*uR) / denom;
+    const double v_roe = (sqL*vLs + sqR*vR) / denom;
+    const double w_roe = (sqL*wL  + sqR*wR) / denom;
+    const double HL    = (Q[2][4] + pL) / rL;
+    const double HR    = (Q[3][4] + pR) / rR;
+    const double H_roe = (sqL*HL + sqR*HR) / denom;
+    const double KE    = 0.5*(u_roe*u_roe + v_roe*v_roe + w_roe*w_roe);
+    const double c2    = fmax((GPU_GAMMA-1.0)*(H_roe-KE), 1.0e-300);
+    const double c_roe = sqrt(c2);
+
+    const double un   = (AXIS==1) ? v_roe : w_roe;
+    const double ut1  = u_roe;
+    const double ut2  = (AXIS==1) ? w_roe : v_roe;
+    const int    nidx = AXIS + 1;
+    const int   t1idx = 1;
+    const int   t2idx = (AXIS==1) ? 3 : 2;
+    const double bv   = (GPU_GAMMA-1.0) / c2;
+    const double b2v  = bv * KE;
+    const double ioc  = 1.0 / c_roe;
+
+    double W[5][6];
+    for (int m = 0; m < 6; ++m) {
+        const double rho = Q[m][0];
+        const double qn  = Q[m][nidx];
+        const double qt1 = Q[m][t1idx];
+        const double qt2 = Q[m][t2idx];
+        const double E   = Q[m][4];
+        const double inner   = b2v*rho - bv*(un*qn+ut1*qt1+ut2*qt2) + bv*E;
+        const double delta_n = ioc*(un*rho - qn);
+        W[0][m] = 0.5*(inner + delta_n);
+        W[1][m] = (1.0-b2v)*rho + bv*(un*qn+ut1*qt1+ut2*qt2) - bv*E;
+        W[2][m] = -ut1*rho + qt1;
+        W[3][m] = -ut2*rho + qt2;
+        W[4][m] = 0.5*(inner - delta_n);
+    }
+
+    double wL_w[5], wR_w[5];
+    for (int kk = 0; kk < 5; ++kk)
+        physics_teno5_scalar(W[kk][0],W[kk][1],W[kk][2],W[kk][3],W[kk][4],W[kk][5],
+                             wL_w[kk], wR_w[kk]);
+
+    double QL[GPU_NVAR], QR[GPU_NVAR];
+    auto back_project = [&](const double w[5], double Qrec[GPU_NVAR]) {
+        const double w014 = w[0]+w[1]+w[4];
+        const double dw04 = w[4]-w[0];
+        Qrec[0]     = w014;
+        Qrec[nidx]  = w014*un  + dw04*c_roe;
+        Qrec[t1idx] = w014*ut1 + w[2];
+        Qrec[t2idx] = w014*ut2 + w[3];
+        Qrec[4]     = (w[0]+w[4])*H_roe + dw04*un*c_roe
+                    + w[1]*KE + w[2]*ut1 + w[3]*ut2;
+    };
+    back_project(wL_w, QL);
+    back_project(wR_w, QR);
+
+    auto safe_prim = [](const double Qc[GPU_NVAR], const GPrim& fb) -> GPrim {
+        const double rho = Qc[0]; if (rho <= 0.0) return fb;
+        const double u = Qc[1]/rho, v = Qc[2]/rho, w = Qc[3]/rho;
+        const double p = (GPU_GAMMA-1.0)*(Qc[4]-0.5*rho*(u*u+v*v+w*w));
+        if (p <= 0.0) return fb;
+        GPrim q; q.rho=rho; q.u=u; q.v=v; q.w=w;
+        q.p=p; q.T=p/(rho*GPU_R_GAS); q.c=sqrt(GPU_GAMMA*p/rho);
+        return q;
+    };
+    GPrim fbL; fbL.rho=rL; fbL.u=uL; fbL.v=vLs; fbL.w=wL; fbL.p=pL; fbL.T=TL; fbL.c=cL;
+    GPrim fbR; fbR.rho=rR; fbR.u=uR; fbR.v=vR;  fbR.w=wR; fbR.p=pR; fbR.T=TR; fbR.c=cR;
+    qL_out = safe_prim(QL, fbL);
+    qR_out = safe_prim(QR, fbR);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // k_rhs_conv: hybrid WENO5-Z/KEP/HLLC-ES face-centred convective flux
 // Grid: (n_leaves)  Block: (192) flat threads
@@ -724,7 +829,8 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// D0.5 — k_rhs_conv_tiled: Y/Z faces use i-plane shmem (bank-conflict-free).
+// D0.5 — k_rhs_conv_tiled<USE_TENO>: Y/Z faces use i-plane shmem (bank-conflict-free).
+// USE_TENO=false → WENO5-Z;  USE_TENO=true → TENO5-A.
 //
 // Block: 144 = NB2² threads.  Iterates over NB2/2 = 6 pairs of i-planes:
 //   1. Load both xi_a and xi_b slices into padded shmem s[2][8][NB2][PAD]
@@ -736,6 +842,7 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
 //   5. __syncthreads()
 // X-faces (576 total): global memory, 4 iters/thread.
 // ─────────────────────────────────────────────────────────────────────────────
+template<bool USE_TENO>
 __global__
 void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
     const GpuLeafRhsMeta& m = metas[blockIdx.x];
@@ -813,8 +920,13 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
                 for (int v = 0; v < GPU_NVAR; ++v) Fs[v] = Fk[v];
             } else if (!is_bnd) {
                 GPrim qL, qR;
-                if (axis == 1) gpu_weno5_shmem<1>(sb, fn, tb, qL, qR);
-                else           gpu_weno5_shmem<2>(sb, fn, tb, qL, qR);
+                if constexpr (USE_TENO) {
+                    if (axis == 1) gpu_teno5_shmem<1>(sb, fn, tb, qL, qR);
+                    else           gpu_teno5_shmem<2>(sb, fn, tb, qL, qR);
+                } else {
+                    if (axis == 1) gpu_weno5_shmem<1>(sb, fn, tb, qL, qR);
+                    else           gpu_weno5_shmem<2>(sb, fn, tb, qL, qR);
+                }
                 gpu_hllc_es_flux(qL, qR, axis, Fs);
             } else {
                 gpu_hllc_es_flux(pL, pR, axis, Fs);
@@ -925,7 +1037,10 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
                 for (int v = 0; v < GPU_NVAR; ++v) Fs[v] = Fk[v];
             } else if (!is_bnd) {
                 GPrim qL, qR;
-                gpu_weno5_face(sp, fn, ta, tb, 0, qL, qR);
+                if constexpr (USE_TENO)
+                    gpu_teno5_face(sp, fn, ta, tb, 0, qL, qR);
+                else
+                    gpu_weno5_face(sp, fn, ta, tb, 0, qL, qR);
                 gpu_hllc_es_flux(qL, qR, 0, Fs);
             } else {
                 gpu_hllc_es_flux(pL, pR, 0, Fs);
@@ -941,6 +1056,10 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
             atomicAdd(&rhs[v*GPU_NCELL+idxR], +ih*F[v]);
     }
 }
+
+// Explicit instantiations required for __global__ function templates.
+template __global__ void k_rhs_conv_tiled<false>(const GpuLeafRhsMeta*);
+template __global__ void k_rhs_conv_tiled<true> (const GpuLeafRhsMeta*);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Viscous face helper — used by k_rhs_visc
@@ -1137,12 +1256,22 @@ void GpuRhsList::exec(cudaStream_t stream, bool zero_rhs) const {
         k_zero_rhs<<<nblks, 256, 0, stream>>>(d_rhs_pool, total);
     }
 
-    k_prim_duc  <<<dim3(n_leaves), dim3(GPU_NB2, GPU_NB2), 0, stream>>>(d_metas);
-    if (scheme == GpuReconScheme::TENO5A)
-        k_rhs_conv_teno<<<dim3(n_leaves), 192, 0, stream>>>(d_metas);
-    else
-        k_rhs_conv     <<<dim3(n_leaves), 192, 0, stream>>>(d_metas);
-    k_rhs_visc  <<<dim3(n_leaves), dim3(GPU_NB, GPU_NB),  0, stream>>>(d_metas);
+    k_prim_duc<<<dim3(n_leaves), dim3(GPU_NB2, GPU_NB2), 0, stream>>>(d_metas);
+    switch (scheme) {
+    case GpuReconScheme::TENO5A:
+        k_rhs_conv_teno              <<<dim3(n_leaves), 192, 0, stream>>>(d_metas);
+        break;
+    case GpuReconScheme::WENO5Z_TILED:
+        k_rhs_conv_tiled<false>      <<<dim3(n_leaves), 144, 0, stream>>>(d_metas);
+        break;
+    case GpuReconScheme::TENO5A_TILED:
+        k_rhs_conv_tiled<true>       <<<dim3(n_leaves), 144, 0, stream>>>(d_metas);
+        break;
+    default:  // WENO5Z
+        k_rhs_conv                   <<<dim3(n_leaves), 192, 0, stream>>>(d_metas);
+        break;
+    }
+    k_rhs_visc<<<dim3(n_leaves), dim3(GPU_NB, GPU_NB), 0, stream>>>(d_metas);
 }
 
 void GpuRhsList::download_rhs(const BlockTree& tree) const {
