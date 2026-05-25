@@ -57,6 +57,7 @@ add_library(operators STATIC
     src/schemes/viscous_rhs.cpp             # R9-E3: viscous kernel (viscous_rhs_impl, undo_cf_viscous_energy)
     src/schemes/rhs_sensors.cpp             # R9-E3: sensors & sources (fill_ducros_cache, phi_*, tree_sat_penalty)
     src/schemes/instantiation_matrix.cpp   # R5: pre-compiled (Flux × Recon × EOS) matrix
+    src/schemes/adjoint_rhs.cpp            # D10: block-level adjoint of convective RHS
 )
 target_link_libraries(operators PUBLIC block)
 if(OpenMP_CXX_FOUND)
