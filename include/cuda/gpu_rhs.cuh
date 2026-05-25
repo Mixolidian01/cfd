@@ -32,7 +32,7 @@ static constexpr int SCRATCH_NCOMP = 9;  // rho,u,v,w,p,T,c,mu,duc
 // Convective reconstruction scheme tag — set before GpuRhsList::exec() or graph capture.
 // TILED variants (D0.5) load each NB2×NB2 i-plane into padded shmem before the WENO/TENO
 // sweep, eliminating ~60 % of DRAM reads for Y/Z transverse stencil accesses.
-enum class GpuReconScheme : uint8_t { WENO5Z, TENO5A, WENO5Z_TILED, TENO5A_TILED };
+enum class GpuReconScheme : uint8_t { WENO5Z, TENO5A, WENO5Z_TILED, TENO5A_TILED, TENO7A };
 
 // ── Per-leaf RHS metadata ─────────────────────────────────────────────────────
 struct alignas(64) GpuLeafRhsMeta {
@@ -42,6 +42,7 @@ struct alignas(64) GpuLeafRhsMeta {
     double        h;            // cell size
     double        duc_p_thr;    // Ducros pressure-sensor threshold (config-driven)
     double        duc_blend_inv;// 1 / blend_width for Ducros pressure-sensor
+    uint8_t       is_periodic;  // 1 → all axes periodic; suppress is_bnd seam at domain boundary
 };
 static_assert(sizeof(GpuLeafRhsMeta) <= 64, "GpuLeafRhsMeta too large");
 
@@ -53,7 +54,7 @@ struct GpuRhsList {
     int             n_leaves  = 0;
     // D0.5: TILED variants available but not default — shmem tiling regressed on this
     // hw (latency-bound, L2 already caches stencil; see docs/perf/d05_shmem_tiling_analysis.md).
-    GpuReconScheme  scheme    = GpuReconScheme::TENO5A;  // D3: TENO5-A default
+    GpuReconScheme  scheme    = GpuReconScheme::TENO7A;  // D3: TENO7-A default (7th-order)
     // Ducros sensor config — propagated into each leaf's meta on build().
     double          duc_p_thr_     = 0.1;   // matches DucrosConfig defaults
     double          duc_blend_inv_ = 10.0;  // 1/0.1

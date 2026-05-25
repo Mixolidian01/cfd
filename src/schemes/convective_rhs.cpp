@@ -10,17 +10,18 @@
 // Weno5Recon remains available via compute_rhs_typed<HllcEsFlux, Weno5Recon, ...>.
 
 #include "schemes/operators.hpp"
-#include "physics/teno5_recon.hpp"
+#include "physics/teno7_recon.hpp"
 #include "profiling/profiler.hpp"
 
 #include <cmath>
 #include <algorithm>
 
-// D3: default face reconstruction uses TENO5-A (Weno5Recon available via typed path).
+// D3: default face reconstruction upgraded to TENO7-A (7th-order in smooth regions).
+// Teno5Recon still available via compute_rhs_typed<HllcEsFlux, Teno5Recon, ...>.
 template<Axis DIR>
 static void recon_face_t(const Prim* pc, int i, int j, int k,
                          Prim& qL_out, Prim& qR_out) noexcept {
-    Teno5Recon<DIR>{}(pc, i, j, k, qL_out, qR_out);
+    Teno7Recon<DIR>{}(pc, i, j, k, qL_out, qR_out);
 }
 
 // is_wall_ghost: detect no-slip wall ghost face.

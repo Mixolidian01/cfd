@@ -100,6 +100,93 @@ void gpu_teno5_scalar(double vm2, double vm1, double v0,
     vR = teno5_upwind(vp3, vp2, vp1, v0,  vm1);   // right state (mirrored)
 }
 
+// TENO7-A one-sided reconstruction (Fu, Hu, Adams 2016/2019).
+// 7-point stencil; Balsara-Shu (2000) WENO7 smoothness indicators; C_T=1e-6, q=6.
+// Optimal weights: d0=1/35, d1=12/35, d2=18/35, d3=4/35.
+// Smooth limit: (-3,25,-101,407,70,34,-12)/420 (7th-order combination).
+//
+// Numerical stability: the Balsara-Shu β formulas are quadratic forms that are
+// provably shift-invariant (each coefficient row sums to zero).  Computing them
+// in expanded form with raw values triggers Inf*coeff - Inf*coeff = NaN when
+// the Roe decomposition maps to large characteristic variables (c_roe→0 clamp).
+// Fix: center each 4-point sub-stencil on its local mean before computing β;
+// the shifted values are O(differences), preventing overflow without changing
+// the mathematical result.
+__device__ __forceinline__
+double teno7_upwind(double a, double b, double c, double d,
+                    double e, double f, double g) noexcept {
+    constexpr double eps  = 1.0e-36;
+    constexpr double CT   = 1.0e-6;
+    constexpr double d0   = 1.0/35.0, d1 = 12.0/35.0, d2 = 18.0/35.0, d3 = 4.0/35.0;
+    constexpr double i12  = 1.0/12.0;
+    constexpr double i240 = 1.0/240.0;
+
+    const double s0 = i12*(-3.0*a + 13.0*b - 23.0*c + 25.0*d);
+    const double s1 = i12*( 1.0*b -  5.0*c + 13.0*d +  3.0*e);
+    const double s2 = i12*(-1.0*c +  7.0*d +  7.0*e -  1.0*f);
+    const double s3 = i12*(25.0*d - 23.0*e + 13.0*f -  3.0*g);
+
+    // Center each 4-point sub-stencil on its local mean before computing β.
+    // β is shift-invariant (row sums of the quadratic form = 0), so the result
+    // is identical in exact arithmetic; the centering bounds inputs to O(diff)
+    // and prevents the expanded-form Inf - Inf = NaN when values are O(1e304).
+    const double m0 = 0.25*(a+b+c+d);
+    const double A=a-m0, B=b-m0, C=c-m0, D=d-m0;
+    const double m1 = 0.25*(b+c+d+e);
+    const double Bb=b-m1, Cb=c-m1, Db=d-m1, Eb=e-m1;
+    const double m2 = 0.25*(c+d+e+f);
+    const double Cc=c-m2, Dc=d-m2, Ec=e-m2, Fc=f-m2;
+    const double m3 = 0.25*(d+e+f+g);
+    const double Dd=d-m3, Ed=e-m3, Fd=f-m3, Gd=g-m3;
+
+    const double b0 = i240*(547.0*A*A - 3882.0*A*B + 4642.0*A*C - 1854.0*A*D
+                           + 7043.0*B*B - 17246.0*B*C + 7042.0*B*D
+                           + 11003.0*C*C - 9402.0*C*D + 2107.0*D*D);
+    const double b1 = i240*(267.0*Bb*Bb - 1642.0*Bb*Cb + 1602.0*Bb*Db - 494.0*Bb*Eb
+                           + 2843.0*Cb*Cb - 5966.0*Cb*Db + 1922.0*Cb*Eb
+                           + 3443.0*Db*Db - 2522.0*Db*Eb + 547.0*Eb*Eb);
+    const double b2 = i240*(267.0*Cc*Cc - 1642.0*Cc*Dc + 1602.0*Cc*Ec - 494.0*Cc*Fc
+                           + 2843.0*Dc*Dc - 5966.0*Dc*Ec + 1922.0*Dc*Fc
+                           + 3443.0*Ec*Ec - 2522.0*Ec*Fc + 547.0*Fc*Fc);
+    const double b3 = i240*(2107.0*Dd*Dd - 9402.0*Dd*Ed + 7042.0*Dd*Fd - 1854.0*Dd*Gd
+                           + 11003.0*Ed*Ed - 17246.0*Ed*Fd + 4642.0*Ed*Gd
+                           + 7043.0*Fd*Fd - 3882.0*Fd*Gd + 547.0*Gd*Gd);
+
+    const double tau7 = fabs(b0 - b3);
+    double r0 = 1.0 + tau7/(b0+eps); r0 *= r0; r0 *= r0; r0 *= r0;
+    double r1 = 1.0 + tau7/(b1+eps); r1 *= r1; r1 *= r1; r1 *= r1;
+    double r2 = 1.0 + tau7/(b2+eps); r2 *= r2; r2 *= r2; r2 *= r2;
+    double r3 = 1.0 + tau7/(b3+eps); r3 *= r3; r3 *= r3; r3 *= r3;
+    const double ci = 1.0 / (r0 + r1 + r2 + r3 + eps);
+
+    const double w0 = (r0*ci >= CT) ? d0 : 0.0;
+    const double w1 = (r1*ci >= CT) ? d1 : 0.0;
+    const double w2 = (r2*ci >= CT) ? d2 : 0.0;
+    const double w3 = (r3*ci >= CT) ? d3 : 0.0;
+    const double ws  = w0 + w1 + w2 + w3;
+    if (ws > 0.0) {
+        // Guard: if only s3 (the downwind sub-stencil) is selected while all
+        // upwind sub-stencils s0/s1/s2 are cut, the stencil has crossed to the
+        // wrong side of a discontinuity.  Return NaN so the caller's safe_prim
+        // (which tests !(x > 0), catching NaN) falls back to the cell-centre.
+        if (w0 + w1 + w2 == 0.0) return 0.0 / 0.0;
+        return (w0*s0 + w1*s1 + w2*s2 + w3*s3) / ws;
+    }
+
+    if (b0 <= b1 && b0 <= b2 && b0 <= b3) return s0;
+    if (b1 <= b2 && b1 <= b3)              return s1;
+    if (b2 <= b3)                           return s2;
+    return s3;
+}
+
+__device__ __forceinline__
+void gpu_teno7_scalar(double vm3, double vm2, double vm1, double v0,
+                      double vp1, double vp2, double vp3,
+                      double& vL, double& vR) noexcept {
+    vL = teno7_upwind(vm3, vm2, vm1, v0,  vp1, vp2, vp3);
+    vR = teno7_upwind(vp3, vp2, vp1, v0,  vm1, vm2, vm3);
+}
+
 // WENO5 face reconstruction with Roe characteristic decomposition.
 // Reads prim from d_scratch (comp-major: sp[comp*NCELL + flat]).
 // (i,j,k) = left cell of face; axis = normal direction.
@@ -223,9 +310,19 @@ void gpu_teno5_face(const double* __restrict__ sp,
                     int i, int j, int k, int axis,
                     GPrim& qL_out, GPrim& qR_out) noexcept {
     auto sidx = [&](int d) -> int {
-        if (axis == 0) return gpu_cell_idx(i+d, j, k);
-        if (axis == 1) return gpu_cell_idx(i, j+d, k);
-        return                gpu_cell_idx(i, j, k+d);
+        if (axis == 0) {
+            int ii = i+d;
+            if (ii < 0) ii += GPU_NB; else if (ii >= GPU_NB2) ii -= GPU_NB;
+            return gpu_cell_idx(ii, j, k);
+        }
+        if (axis == 1) {
+            int jj = j+d;
+            if (jj < 0) jj += GPU_NB; else if (jj >= GPU_NB2) jj -= GPU_NB;
+            return gpu_cell_idx(i, jj, k);
+        }
+        int kk = k+d;
+        if (kk < 0) kk += GPU_NB; else if (kk >= GPU_NB2) kk -= GPU_NB;
+        return gpu_cell_idx(i, j, kk);
     };
 
     double Q[6][GPU_NVAR];
@@ -324,6 +421,137 @@ void gpu_teno5_face(const double* __restrict__ sp,
     qR_out = safe_prim(QR, fbR);
 }
 
+// D3: TENO7-A face reconstruction — 7-point stencil with Roe decomposition.
+// At face fn=2, d=-3 maps to index -1 which is outside the ghost layer.
+// The correct periodic cell is index -1+NB = 7 (an interior cell).
+// Using periodic wrap-around (not clamping) ensures fn=2 uses the same
+// physical stencil as fn=3..8 and preserves axis symmetry (A73).
+__device__ __forceinline__
+void gpu_teno7_face(const double* __restrict__ sp,
+                    int i, int j, int k, int axis,
+                    GPrim& qL_out, GPrim& qR_out) noexcept {
+    auto sidx = [&](int d) -> int {
+        if (axis == 0) {
+            int ii = i+d;
+            if (ii < 0) ii += GPU_NB; else if (ii >= GPU_NB2) ii -= GPU_NB;
+            return gpu_cell_idx(ii, j, k);
+        }
+        if (axis == 1) {
+            int jj = j+d;
+            if (jj < 0) jj += GPU_NB; else if (jj >= GPU_NB2) jj -= GPU_NB;
+            return gpu_cell_idx(i, jj, k);
+        }
+        int kk = k+d;
+        if (kk < 0) kk += GPU_NB; else if (kk >= GPU_NB2) kk -= GPU_NB;
+        return gpu_cell_idx(i, j, kk);
+    };
+
+    double Q[7][GPU_NVAR];
+    for (int m = 0; m < 7; ++m) {
+        int flat = sidx(m-3);
+        const double rho = sp[0*GPU_NCELL+flat];
+        const double u   = sp[1*GPU_NCELL+flat];
+        const double v   = sp[2*GPU_NCELL+flat];
+        const double w   = sp[3*GPU_NCELL+flat];
+        const double p   = sp[4*GPU_NCELL+flat];
+        Q[m][0] = rho;
+        Q[m][1] = rho*u; Q[m][2] = rho*v; Q[m][3] = rho*w;
+        Q[m][4] = p/(GPU_GAMMA-1.0) + 0.5*rho*(u*u+v*v+w*w);
+    }
+
+    // Roe average: left cell m=3 (d=0), right cell m=4 (d=1)
+    int f3 = sidx(0), f4 = sidx(1);
+    const double rL = sp[0*GPU_NCELL+f3], uL = sp[1*GPU_NCELL+f3];
+    const double vLs= sp[2*GPU_NCELL+f3], wL = sp[3*GPU_NCELL+f3];
+    const double pL = sp[4*GPU_NCELL+f3], TL = sp[5*GPU_NCELL+f3], cL = sp[6*GPU_NCELL+f3];
+    const double rR = sp[0*GPU_NCELL+f4], uR = sp[1*GPU_NCELL+f4];
+    const double vR = sp[2*GPU_NCELL+f4], wR = sp[3*GPU_NCELL+f4];
+    const double pR = sp[4*GPU_NCELL+f4], TR = sp[5*GPU_NCELL+f4], cR = sp[6*GPU_NCELL+f4];
+
+    const double sqL   = sqrt(rL), sqR = sqrt(rR), denom = sqL+sqR;
+    const double u_roe = (sqL*uL + sqR*uR)/denom;
+    const double v_roe = (sqL*vLs+ sqR*vR)/denom;
+    const double w_roe = (sqL*wL + sqR*wR)/denom;
+    const double HL    = (Q[3][4]+pL)/rL;
+    const double HR    = (Q[4][4]+pR)/rR;
+    const double H_roe = (sqL*HL+sqR*HR)/denom;
+    const double KE    = 0.5*(u_roe*u_roe+v_roe*v_roe+w_roe*w_roe);
+    const double c2    = fmax((GPU_GAMMA-1.0)*(H_roe-KE), 1.0e-300);
+    const double c_roe = sqrt(c2);
+
+    const double un   = (axis==0)?u_roe:(axis==1)?v_roe:w_roe;
+    const double ut1  = (axis==0)?v_roe:(axis==1)?u_roe:u_roe;
+    const double ut2  = (axis==0)?w_roe:(axis==1)?w_roe:v_roe;
+    const int    nidx = 1+axis;
+    const int  t1idx  = (axis==0)?2:1;
+    const int  t2idx  = (axis==2)?2:3;
+    const double bv   = (GPU_GAMMA-1.0)/c2;
+    const double b2v  = bv*KE;
+    const double ioc  = 1.0/c_roe;
+
+    double W[5][7];
+    for (int m = 0; m < 7; ++m) {
+        const double rho = Q[m][0];
+        const double qn  = Q[m][nidx];
+        const double qt1 = Q[m][t1idx];
+        const double qt2 = Q[m][t2idx];
+        const double E   = Q[m][4];
+        const double inner   = b2v*rho - bv*(un*qn+ut1*qt1+ut2*qt2) + bv*E;
+        const double delta_n = ioc*(un*rho - qn);
+        W[0][m] = 0.5*(inner + delta_n);
+        W[1][m] = (1.0-b2v)*rho + bv*(un*qn+ut1*qt1+ut2*qt2) - bv*E;
+        W[2][m] = -ut1*rho + qt1;
+        W[3][m] = -ut2*rho + qt2;
+        W[4][m] = 0.5*(inner - delta_n);
+    }
+
+    double wL_w[5], wR_w[5];
+    for (int kk = 0; kk < 5; ++kk)
+        gpu_teno7_scalar(W[kk][0],W[kk][1],W[kk][2],W[kk][3],
+                         W[kk][4],W[kk][5],W[kk][6],
+                         wL_w[kk], wR_w[kk]);
+
+    // If the downwind-only NaN sentinel fired for ANY characteristic,
+    // fall back to TENO5-A. The sentinel can fire for any W[kk] depending
+    // on the flow configuration — must check all 5 indices.
+    for (int kk = 0; kk < 5; ++kk) {
+        if (!isfinite(wL_w[kk]) || !isfinite(wR_w[kk])) {
+            gpu_teno5_face(sp, i, j, k, axis, qL_out, qR_out);
+            return;
+        }
+    }
+
+    double QL[GPU_NVAR], QR[GPU_NVAR];
+    auto back_project = [&](const double w[5], double Qrec[GPU_NVAR]) {
+        const double w014 = w[0]+w[1]+w[4];
+        const double dw04 = w[4]-w[0];
+        Qrec[0]     = w014;
+        Qrec[nidx]  = w014*un  + dw04*c_roe;
+        Qrec[t1idx] = w014*ut1 + w[2];
+        Qrec[t2idx] = w014*ut2 + w[3];
+        Qrec[4]     = (w[0]+w[4])*H_roe + dw04*un*c_roe
+                    + w[1]*KE + w[2]*ut1 + w[3]*ut2;
+    };
+    back_project(wL_w, QL);
+    back_project(wR_w, QR);
+
+    GPrim fbL; fbL.rho=rL; fbL.u=uL; fbL.v=vLs; fbL.w=wL; fbL.p=pL; fbL.T=TL; fbL.c=cL;
+    GPrim fbR; fbR.rho=rR; fbR.u=uR; fbR.v=vR;  fbR.w=wR; fbR.p=pR; fbR.T=TR; fbR.c=cR;
+
+    // Use !(x > 0) instead of (x <= 0) to also catch NaN (NaN > 0 is false).
+    auto safe_prim = [](const double Qc[GPU_NVAR], const GPrim& fb) -> GPrim {
+        const double rho = Qc[0]; if (!(rho > 0.0)) return fb;
+        const double u = Qc[1]/rho, v = Qc[2]/rho, w = Qc[3]/rho;
+        const double p = (GPU_GAMMA-1.0)*(Qc[4]-0.5*rho*(u*u+v*v+w*w));
+        if (!(p > 0.0)) return fb;
+        GPrim q; q.rho=rho; q.u=u; q.v=v; q.w=w;
+        q.p=p; q.T=p/(rho*GPU_R_GAS); q.c=sqrt(GPU_GAMMA*p/rho);
+        return q;
+    };
+    qL_out = safe_prim(QL, fbL);
+    qR_out = safe_prim(QR, fbR);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // k_prim_duc: conservative → primitives + µ + Ducros φ → d_scratch
 // Grid: (n_leaves)  Block: (GPU_NB2, GPU_NB2) = 144 threads
@@ -334,12 +562,25 @@ void k_prim_duc(const GpuLeafRhsMeta* __restrict__ metas) {
     int i = threadIdx.x, j = threadIdx.y;
 
     // ── Pass 1: prim + µ ─────────────────────────────────────────────────────
+    // P_FLOOR: the positivity floor (k_positivity_floor) clamps d_Q so that
+    // p >= 1e-12 in conserved space.  However, gpu_cons_to_prim recomputes ke
+    // from d_Q via a divide-then-multiply pattern that can differ by ~1 ULP
+    // from the floor's multiply-then-divide form, leaving p=0 in the scratch.
+    // Matching EPS_POS (1e-12) here ensures the scratch pressure is consistent
+    // with the conserved-space floor and keeps HLLC-ES (which divides by p
+    // via log_mean) from encountering p=0.
+    constexpr double P_FLOOR = 1.0e-12;
     for (int k = 0; k < GPU_NB2; ++k) {
         int flat = gpu_cell_idx(i, j, k);
         GPrim q = gpu_cons_to_prim(
             m.d_Q[0*GPU_NCELL+flat], m.d_Q[1*GPU_NCELL+flat],
             m.d_Q[2*GPU_NCELL+flat], m.d_Q[3*GPU_NCELL+flat],
             m.d_Q[4*GPU_NCELL+flat]);
+        if (q.p < P_FLOOR) {
+            q.p = P_FLOOR;
+            q.T = P_FLOOR / (q.rho * GPU_R_GAS);
+            q.c = sqrt(GPU_GAMMA * P_FLOOR / q.rho);
+        }
         m.d_scratch[0*GPU_NCELL+flat] = q.rho;
         m.d_scratch[1*GPU_NCELL+flat] = q.u;
         m.d_scratch[2*GPU_NCELL+flat] = q.v;
@@ -829,6 +1070,107 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// D3: k_rhs_conv_teno7 — TENO7-A/KEP/HLLC-ES face-centred convective flux.
+// 7-point stencil; falls back to TENO5-A at boundary-adjacent interior faces.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__
+void k_rhs_conv_teno7(const GpuLeafRhsMeta* __restrict__ metas) {
+    const GpuLeafRhsMeta& m = metas[blockIdx.x];
+    const double* sp  = m.d_scratch;
+    double*       rhs = m.d_RHS;
+    const int  ilo    = GPU_NG;
+    const int  ihi    = GPU_NG + GPU_NB - 1;
+    const double ih   = 1.0 / m.h;
+    constexpr double kep_thr = 1.0e-8;
+
+    constexpr int NF   = GPU_NB + 1;
+    constexpr int FPA  = NF * GPU_NB * GPU_NB;
+    constexpr int FTOT = 3 * FPA;
+
+    auto load_prim = [&](int flat, GPrim& q) {
+        q.rho = sp[0*GPU_NCELL+flat]; q.u = sp[1*GPU_NCELL+flat];
+        q.v   = sp[2*GPU_NCELL+flat]; q.w = sp[3*GPU_NCELL+flat];
+        q.p   = sp[4*GPU_NCELL+flat]; q.T = sp[5*GPU_NCELL+flat];
+        q.c   = sp[6*GPU_NCELL+flat];
+    };
+
+    for (int fid = threadIdx.x; fid < FTOT; fid += blockDim.x) {
+        const int axis  = fid / FPA;
+        const int fi    = fid % FPA;
+        const int f0    = fi % NF;
+        const int fa    = (fi / NF) % GPU_NB;
+        const int fb    = fi / (NF * GPU_NB);
+
+        const int fn = ilo - 1 + f0;
+        const int ta = ilo + fa;
+        const int tb = ilo + fb;
+
+        int idxL, idxR;
+        if (axis == 0) {
+            idxL = gpu_cell_idx(fn,   ta, tb);
+            idxR = gpu_cell_idx(fn+1, ta, tb);
+        } else if (axis == 1) {
+            idxL = gpu_cell_idx(ta, fn,   tb);
+            idxR = gpu_cell_idx(ta, fn+1, tb);
+        } else {
+            idxL = gpu_cell_idx(ta, tb, fn  );
+            idxR = gpu_cell_idx(ta, tb, fn+1);
+        }
+
+        const bool bL = (fn   >= ilo);
+        const bool bR = (fn+1 <= ihi);
+        if (!bL && !bR) continue;
+
+        GPrim pL, pR;
+        load_prim(idxL, pL); load_prim(idxR, pR);
+
+        const double ducL = sp[8*GPU_NCELL+idxL];
+        const double ducR = sp[8*GPU_NCELL+idxR];
+        const double theta = fmax(ducL, ducR);
+        const bool is_bnd = !m.is_periodic && (fn < ilo || fn+1 > ihi);
+
+        double Fk[GPU_NVAR];
+        gpu_kep_flux(pL, pR, axis, Fk);
+
+        double F[GPU_NVAR];
+        if (!is_bnd && theta < kep_thr) {
+            for (int v = 0; v < GPU_NVAR; ++v) F[v] = Fk[v];
+        } else {
+            double Fs[GPU_NVAR];
+            bool wall = is_bnd;
+            if (wall) {
+                auto antisym = [](double a, double b) -> bool {
+                    return fabs(a+b) < 1.0e-8*(fabs(a)+fabs(b)+1.0e-300);
+                };
+                wall = (pL.p == pR.p) && antisym(pL.u,pR.u)
+                                       && antisym(pL.v,pR.v)
+                                       && antisym(pL.w,pR.w);
+            }
+            if (wall) {
+                for (int v = 0; v < GPU_NVAR; ++v) Fs[v] = Fk[v];
+            } else if (!is_bnd) {
+                // Interior: TENO7-A + HLLC-ES (D3 7th-order default)
+                GPrim qL, qR;
+                if (axis == 0) gpu_teno7_face(sp, fn, ta, tb, 0, qL, qR);
+                else if (axis == 1) gpu_teno7_face(sp, ta, fn, tb, 1, qL, qR);
+                else               gpu_teno7_face(sp, ta, tb, fn, 2, qL, qR);
+                gpu_hllc_es_flux(qL, qR, axis, Fs);
+            } else {
+                gpu_hllc_es_flux(pL, pR, axis, Fs);
+            }
+            const double th = is_bnd ? 1.0 : theta;
+            const double om = 1.0 - th;
+            for (int v = 0; v < GPU_NVAR; ++v) F[v] = om*Fk[v] + th*Fs[v];
+        }
+
+        if (bL) for (int v = 0; v < GPU_NVAR; ++v)
+            atomicAdd(&rhs[v*GPU_NCELL+idxL], -ih*F[v]);
+        if (bR) for (int v = 0; v < GPU_NVAR; ++v)
+            atomicAdd(&rhs[v*GPU_NCELL+idxR], +ih*F[v]);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // D0.5 — k_rhs_conv_tiled<USE_TENO>: Y/Z faces use i-plane shmem (bank-conflict-free).
 // USE_TENO=false → WENO5-Z;  USE_TENO=true → TENO5-A.
 //
@@ -1230,6 +1572,7 @@ void GpuRhsList::build(const BlockTree& tree, const GpuPool& pool) {
         meta.h            = nd.block->h;
         meta.duc_p_thr    = duc_p_thr_;
         meta.duc_blend_inv= duc_blend_inv_;
+        meta.is_periodic  = tree.is_fully_periodic() ? 1u : 0u;
     }
 
     gpu_upload_meta(d_metas, h_metas);
@@ -1258,6 +1601,9 @@ void GpuRhsList::exec(cudaStream_t stream, bool zero_rhs) const {
 
     k_prim_duc<<<dim3(n_leaves), dim3(GPU_NB2, GPU_NB2), 0, stream>>>(d_metas);
     switch (scheme) {
+    case GpuReconScheme::TENO7A:
+        k_rhs_conv_teno7             <<<dim3(n_leaves), 192, 0, stream>>>(d_metas);
+        break;
     case GpuReconScheme::TENO5A:
         k_rhs_conv_teno              <<<dim3(n_leaves), 192, 0, stream>>>(d_metas);
         break;

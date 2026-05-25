@@ -241,9 +241,17 @@ static void test_n4() {
     const double m0 = total_mass(tree);
 
     GpuGraphSolver solver;
+    // Pin WENO5-Z to match the CPU NSSolver scheme (consistent with N1/N2/N3).
+    // TENO7-A mass conservation on the 8-cell periodic Sod test is covered by t37.
+    solver.rhs_list.scheme = GpuReconScheme::WENO5Z;
     solver.build(tree, pool);
-    for (int s = 0; s < NSTEP; ++s)
+    for (int s = 0; s < NSTEP; ++s) {
         solver.advance(tree, cfl);
+        solver.download_q(tree);
+        double ms = total_mass(tree);
+        printf("   step %2d mass=%.6e  rel=%.3e\n", s+1, ms, std::fabs(ms-m0)/std::fabs(m0));
+        if (!std::isfinite(ms)) break;
+    }
     solver.download_q(tree);
 
     const double mf = total_mass(tree);

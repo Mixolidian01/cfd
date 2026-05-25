@@ -119,7 +119,15 @@ void k_positivity_floor(const GpuRk3LeafMeta* __restrict__ metas) {
         if (rho < EPS_POS) {
             m.d_Q[0 * NCELL + c] = rho = EPS_POS;
         }
-        const double ke = 0.5 * (rhou * rhou + rhov * rhov + rhow * rhow) / rho;
+        // Compute ke using the same divide-then-multiply pattern as gpu_cons_to_prim,
+        // so the subsequent prim conversion (k_prim_duc) gives p >= EPS_POS exactly.
+        // The old (a²+b²+c²)/rho pattern diverges from a*(a/rho)+... by ~1 ULP,
+        // allowing catastrophic cancellation E-ke=0 (p=0) after the floor is applied.
+        const double inv_rho = 1.0 / rho;
+        const double u = rhou * inv_rho;
+        const double v = rhov * inv_rho;
+        const double w = rhow * inv_rho;
+        const double ke = 0.5 * (rhou*u + rhov*v + rhow*w);
         if ((GPU_GAMMA - 1.0) * (E - ke) < EPS_POS) {
             m.d_Q[4 * NCELL + c] = ke + EPS_POS / (GPU_GAMMA - 1.0);
         }

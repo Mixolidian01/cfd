@@ -111,6 +111,7 @@ struct FaceEntry {
     int face;
 };
 
+#ifdef HAVE_MPI
 static void pack_face(const CellBlock& blk, FaceDir d,
                       double* buf /* HALO_FACE_DOUBLES doubles */)
 {
@@ -231,6 +232,7 @@ static void unpack_face(CellBlock& blk, FaceDir d,
     }
     assert(ptr == HALO_FACE_DOUBLES);
 }
+#endif // HAVE_MPI
 
 void mpi_exchange_halos(BlockTree& tree, const MpiPartition* mpi_part) {
     PROFILE_SCOPE("mpi_exchange_halos");

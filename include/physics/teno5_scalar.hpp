@@ -27,7 +27,7 @@ __host__ __device__ inline void physics_teno5_scalar(
     // __CUDA_ARCH__ is defined only during device compilation; device FMA is controlled by
     // --fmad=false (in _NVCC_BASE). For host code (both GCC standalone and NVCC host pass)
     // we use the C standard pragma to enforce strict multiply-add rounding.
-#ifndef __CUDA_ARCH__
+#if !defined(__CUDA_ARCH__) && (defined(__NVCC__) || defined(__clang__))
 #pragma STDC FP_CONTRACT OFF
 #endif
     constexpr double eps  = 1.0e-36;

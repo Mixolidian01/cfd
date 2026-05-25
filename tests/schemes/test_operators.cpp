@@ -310,7 +310,7 @@ static void t08_isentropic_vortex_convergence() {
         printf("      %-6d  %-8.4f  %-14.4e  %.2f\n", N, h_cell, l2, rate);
         err_prev = l2; h_prev = h_cell;
     }
-    check("T08 isentropic vortex convergence rate >= 1.8", rate >= 1.8, rate, 1.8);
+    check("T08 isentropic vortex convergence rate >= 3.8", rate >= 3.8, rate, 3.8);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

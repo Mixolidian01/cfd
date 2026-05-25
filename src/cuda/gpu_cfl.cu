@@ -19,7 +19,7 @@
 #include <vector>
 #include <limits>
 
-static inline unsigned long long double_to_ull(double x) noexcept {
+[[maybe_unused]] static inline unsigned long long double_to_ull(double x) noexcept {
     unsigned long long u; memcpy(&u, &x, sizeof(u)); return u;
 }
 static inline double ull_to_double(unsigned long long u) noexcept {

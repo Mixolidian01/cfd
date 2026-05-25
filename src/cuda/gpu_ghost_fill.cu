@@ -15,11 +15,6 @@
 #include <string>
 #include <vector>
 
-static void chk(cudaError_t e, const char* w) {
-    if (e != cudaSuccess)
-        throw std::runtime_error(std::string(w) + ": " + cudaGetErrorString(e));
-}
-
 // ── Device helpers ────────────────────────────────────────────────────────────
 __device__ __forceinline__ int cidx(int i, int j, int k) {
     return k * NB2 * NB2 + j * NB2 + i;

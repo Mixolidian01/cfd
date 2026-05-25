@@ -190,6 +190,9 @@ struct BlockTree {
     void set_periodic_axes(bool x, bool y, bool z) noexcept {
         periodic_axis_[0] = x; periodic_axis_[1] = y; periodic_axis_[2] = z;
     }
+    bool is_fully_periodic() const noexcept {
+        return periodic_axis_[0] && periodic_axis_[1] && periodic_axis_[2];
+    }
 
     // P7.1: optional MPI partition.  When set, fill_ghosts_* skips remote faces
     // (they are already filled by mpi_exchange_halos() before the ghost fill).
