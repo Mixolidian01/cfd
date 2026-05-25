@@ -224,6 +224,7 @@ void fill_cf_ghosts(CellBlock& fine, const CellBlock& coarse,
 
         fine.phi_data_[cell_idx(gf_i, gf_j, gf_k)] = val;
     }
+
     } // gl
 }
 

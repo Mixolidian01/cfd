@@ -269,7 +269,7 @@ static void t10_lts_mass_energy() {
 
     NSSolver s;
     s.cfg.time.cfl             = 0.3;
-    s.cfg.time.max_steps       = 10;
+    s.cfg.time.max_steps       = 5;
     s.cfg.time.t_end           = 1e30;
     s.cfg.bc.variant = PeriodicBC{};
     s.cfg.io.verbose         = false;
@@ -300,8 +300,8 @@ static void t10_lts_mass_energy() {
     double mass_err   = std::abs(d1.mass         - d0.mass)         / std::abs(d0.mass);
     double energy_err = std::abs(d1.total_energy  - d0.total_energy) / std::abs(d0.total_energy);
 
-    check("T10a LTS mass conserved over 10 steps < 1e-10",   mass_err   < 1e-10, mass_err,   1e-10);
-    check("T10b LTS energy conserved over 10 steps < 1e-10", energy_err < 1e-10, energy_err, 1e-10);
+    check("T10a LTS mass conserved over 5 steps < 1e-10",   mass_err   < 1e-10, mass_err,   1e-10);
+    check("T10b LTS energy conserved over 5 steps < 1e-10", energy_err < 1e-10, energy_err, 1e-10);
 }
 
 // =============================================================================

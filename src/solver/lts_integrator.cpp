@@ -15,6 +15,45 @@
 #include <cassert>
 #include <cmath>
 
+// P11.3: Zhang-Shu positivity floor — ρ ≥ ε, p ≥ ε (interior cells only).
+static constexpr double LTS_EPS_POS = 1e-12;
+
+static void floor_block(CellBlock& blk) noexcept {
+    for (int k = ilo(); k <= ihi(); ++k)
+    for (int j = ilo(); j <= ihi(); ++j)
+    for (int i = ilo(); i <= ihi(); ++i) {
+        const int f = cell_idx(i, j, k);
+        double rho_v = blk.rho(f);
+        if (!(rho_v >= LTS_EPS_POS)) { blk.rho(f) = rho_v = LTS_EPS_POS; }
+        if (!std::isfinite(blk.rhou(f))) blk.rhou(f) = 0.0;
+        if (!std::isfinite(blk.rhov(f))) blk.rhov(f) = 0.0;
+        if (!std::isfinite(blk.rhow(f))) blk.rhow(f) = 0.0;
+        const double ke = 0.5 * (blk.rhou(f)*blk.rhou(f)
+                               + blk.rhov(f)*blk.rhov(f)
+                               + blk.rhow(f)*blk.rhow(f)) / rho_v;
+        if (!((GAMMA - 1.0) * (blk.E(f) - ke) >= LTS_EPS_POS))
+            blk.E(f) = ke + LTS_EPS_POS / (GAMMA - 1.0);
+    }
+}
+
+static void lts_positivity_floor(std::vector<CellBlock>& stage,
+                                  const std::vector<int>& leaves,
+                                  const BlockTree& tree,
+                                  int level) noexcept {
+    for (int ii = 0; ii < (int)leaves.size(); ++ii) {
+        if (tree.nodes[leaves[ii]].level != level) continue;
+        floor_block(stage[ii]);
+    }
+}
+
+static void lts_positivity_floor_tree(BlockTree& tree) noexcept {
+    for (int li : tree.leaf_indices()) {
+        auto& nd = tree.nodes[li];
+        if (!nd.has_block()) continue;
+        floor_block(*nd.block);
+    }
+}
+
 // =============================================================================
 // Level-filtered copy helpers — only touch leaves at `level`.
 // =============================================================================
@@ -65,6 +104,7 @@ void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = qn[lane] + dt * r[lane];
     }
+    lts_positivity_floor(solver.Qs_, leaves, tree, level);
     copy_stage_to_tree_level(solver.Qs_, level);
 
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))
@@ -81,6 +121,7 @@ void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = (3.0/4.0)*qn[lane] + (1.0/4.0)*(qs[lane] + dt*r[lane]);
     }
+    lts_positivity_floor(solver.Qs_, leaves, tree, level);
     copy_stage_to_tree_level(solver.Qs_, level);
 
     // Stage 3: Q^{n+1} = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))
@@ -97,6 +138,7 @@ void LtsIntegrator::rk3_level(BlockTree& tree, int level, double dt,
         for (int lane = 0; lane < CellBlock::W; ++lane)
             qs[lane] = (1.0/3.0)*qn[lane] + (2.0/3.0)*(qs[lane] + dt*r[lane]);
     }
+    lts_positivity_floor(solver.Qs_, leaves, tree, level);
     copy_stage_to_tree_level(solver.Qs_, level);
 }
 
@@ -132,6 +174,7 @@ double LtsIntegrator::step(BlockTree& tree, double cfl) {
     rk3_level(tree, L_min, dt_c, 1.0, /*coarse_mode=*/true);
 
     tree.apply_flux_correction(dt_c);
+    lts_positivity_floor_tree(tree);
 
     return dt_c;
 }
