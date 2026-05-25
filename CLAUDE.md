@@ -140,6 +140,48 @@ A fully GPU-native, production-grade compressible CFD solver with:
 - Guard with `#if __CUDA_ARCH__ >= 900`
 - Gate: k_rhs_conv throughput ≥ 1.5× D0.5 baseline on H100; same accuracy
 
+### D9 — NSCBC outflow / inflow boundary conditions
+- Replace the current zero-gradient / Riemann-invariant `OpenBC` ghost fill with
+  full **Navier-Stokes Characteristic Boundary Conditions** (Thompson 1987;
+  Poinsot & Lele 1992): decompose the boundary state into characteristic waves,
+  damp only the incoming wave amplitudes, leave outgoing waves unchanged
+- CPU implementation in `src/mesh/block_tree.cpp` (`fill_ghosts_open`); GPU
+  variant in `gpu_ghost_fill.cu` (extend `k_fill_faces` for bc_type=2)
+- Subsonic inflow: prescribe total pressure + total temperature + flow angle;
+  extrapolate entropy from interior
+- Subsonic outflow: prescribe static pressure; extrapolate velocity + density
+- Supersonic faces: zero-gradient (all waves outgoing — current behaviour kept)
+- Gate: 1D acoustic pulse in a periodic-x, open-y duct; reflected amplitude at
+  outflow boundary ≤ 1 % of incident amplitude over 100 steps (vs ~20 % for
+  current zero-gradient BC)
+
+### D10 — Discrete adjoint of SSP-RK3 + HLLC-ES
+- Implement `adjoint_rhs(Q, lambda_in, lambda_out)` — reverse-mode differentiation
+  of `compute_rhs` / `tree_rhs` through HLLC-ES flux Jacobian and TENO7-A
+  smoothness-indicator gradients; one `template <Axis DIR>` adjoint only
+- Implement `adjoint_rk3_step`: reverse the three Shu-Osher stages in order 3→2→1;
+  requires checkpointing `Qn` and both `Qs_` intermediates (6 block arrays per
+  leaf per step); apply `adjoint_rhs` at each reversed stage
+- Adjoint of Berger-Colella flux correction for AMR trees
+- Validate with dot-product test: `〈L(Q)·δQ, λ〉 = 〈δQ, L*(Q)·λ〉` to 1e-10
+  for a random `δQ` and `λ` on a two-level AMR tree
+- Gate `t38`: dot-product test passes for all five conserved variables; adjoint
+  of a 10-step rollout matches finite-difference gradient to 1e-6 relative error
+
+### D11 — Python bindings (pybind11)
+- Expose `NSSolver` to Python via pybind11 in `src/python/cfd_module.cpp`:
+  `init(domain_size, ic_fn)`, `advance()`, `run()`, `compute_diag()`,
+  `get_block_arrays() → list[np.ndarray]`, `set_block_arrays(list[np.ndarray])`
+- Keep bindings thin: Python holds no physics logic; it drives the C++ solver
+  and reads/writes block arrays as NumPy views (zero-copy where possible via
+  `py::buffer_protocol`)
+- Once D10 adjoint exists, add `adjoint_step(lambda_arrays) → lambda_arrays`
+  and register a JAX custom primitive with `jax.core.Primitive` +
+  `ad.defvjp` so that `jax.grad` can differentiate through a forward rollout
+- Gate `t39` (Python unit test, run via `pytest`): `NSSolver` round-trips a
+  10-step periodic isentropic vortex from Python; mass error < 1e-10; block
+  arrays retrieved as NumPy match `compute_diag().mass` to 1e-12
+
 ## Code rules
 
 ### Numerical / Physical
