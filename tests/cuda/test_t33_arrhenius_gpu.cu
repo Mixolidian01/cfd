@@ -243,6 +243,9 @@ static void test_g53() {
     pool.alloc(&blk); pool.upload(&blk);
 
     GpuGraphSolver solver;
+    // TENO5A: detonation on NB=8 cells is shock-dominated; TENO7A (default) selects
+    // different sub-stencils at the front and changes the numerical wave speed by ~17%.
+    solver.rhs_list.scheme = GpuReconScheme::TENO5A;
     solver.build(tree, pool, 0);
 
     GpuArrheniusList chem;
