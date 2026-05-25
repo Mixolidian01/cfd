@@ -85,8 +85,9 @@ double GpuGraphSolver::advance_imex(const BlockTree& tree, double cfl, double mu
     cublasCreate(&cb);
     cublasSetStream(cb, stream);
 
-    // GmresBcType from stored bc_type_
-    GmresBcType gmres_bc = (bc_type_ == 1) ? GmresBcType::WallY : GmresBcType::Periodic;
+    // WallY when either y-face (YMINUS=2, YPLUS=3) is wall type.
+    GmresBcType gmres_bc = (bc_types_[2] == 1 || bc_types_[3] == 1)
+                           ? GmresBcType::WallY : GmresBcType::Periodic;
 
     // Device scalars for rho_sum reduction
     double *d_rho_sum_dev, *d_u, *d_v, *d_w, *d_rhs;

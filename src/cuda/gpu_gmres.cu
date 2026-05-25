@@ -122,13 +122,6 @@ __global__ static void k_diag_precond(double* __restrict__ out,
     if (t < n) out[t] = in[t] * dinv[t];
 }
 
-__global__ static void k_axpby(double* __restrict__ z, double a,
-                                 const double* __restrict__ x,
-                                 double b, const double* __restrict__ y, int n) {
-    int t = blockIdx.x * blockDim.x + threadIdx.x;
-    if (t < n) z[t] = a * x[t] + b * y[t];
-}
-
 // ── matrix-free Helmholtz apply: compact NB3 → compact NB3 ───────────────────
 static void helm_apply(double* out3, const double* in3,
                         double* scratch23, double aoh2, int bc_int,
