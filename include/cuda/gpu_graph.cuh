@@ -128,6 +128,10 @@ struct GpuGraphSolver : IGpuSolver {
     void build_faces(const BlockTree& tree, const GpuPool& pool,
                      const std::array<int,6>& bc_types) override;
 
+    // Per-face variant: passes FaceBCArray to ghost_list.build (which extracts p_inf from NscbcBC).
+    void build_faces(const BlockTree& tree, const GpuPool& pool,
+                     const FaceBCArray& face_bcs);
+
     // Run one SSP-RK3 step.  Returns the CFL-limited dt.
     // PRECONDITION: build() must be called before the first advance() and
     // after every regrid — even when the leaf count is unchanged (a same-count

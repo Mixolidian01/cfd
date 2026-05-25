@@ -339,6 +339,10 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_t37_teno7a_gpu.cu ${_GPU_NS}
     )
+    add_nvcc_gate(TARGET t40 BIN t40_nscbc COMMENT "D9 NSCBC outflow/inflow BC (acoustic reflection < 1%)"
+        EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
+        SRCS ${_T}/test_t40_nscbc.cu ${_GPU_NS}
+    )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu

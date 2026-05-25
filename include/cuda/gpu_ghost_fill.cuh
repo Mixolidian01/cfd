@@ -17,7 +17,7 @@
 //   Reads from own interior cells — no cross-block dependency.
 //   Source formula: src_coord = (ghost < NG) ? ghost+NB : ghost-NB
 //
-// BCType encoding:  0=periodic  1=wall  2=open  (must match ns_solver.hpp)
+// BCType encoding:  0=periodic  1=wall  2=open  3=nscbc  (must match ns_solver.hpp)
 
 #include "mesh/cell_block.hpp"
 #include "mesh/block_tree.hpp"
@@ -33,15 +33,13 @@ struct MpiPartition;
 // ── Per-leaf GPU ghost fill metadata ─────────────────────────────────────────
 // Built on host, uploaded to device, reused every RK3 stage until next regrid.
 struct alignas(64) GpuLeafGhostMeta {
-    double*       d_Q;             // this block's d_Q (device ptr)
-    const double* d_nb[NFACES];    // neighbor d_Q: same-level neighbor OR
-                                   // coarse block for CF fine←coarse fill.
-                                   // null = domain boundary.
-    int8_t  level_rel[NFACES];     // 0=same, -1=neighbor is coarser (→CF fine←coarse)
-                                   // +1=neighbor is finer (→zero-grad fallback in P8.2)
-    int8_t  cf_oct;                // child octant of THIS block (for CF fine←coarse)
-    int8_t  bc_type[NFACES];       // per-face: 0=periodic, 1=wall, 2=open
-    int8_t  is_mpi_face[NFACES];   // 1 = ghost already filled via MPI; skip k_fill_faces
+    double*       d_Q;                    // offset 0,  8 B
+    const double* d_nb[NFACES];           // offset 8,  48 B
+    int8_t  level_rel[NFACES];            // offset 56, 6 B
+    int8_t  cf_oct;                       // offset 62, 1 B
+    int8_t  bc_type[NFACES];              // offset 63, 6 B
+    int8_t  is_mpi_face[NFACES];          // offset 69, 6 B
+    float   open_p_inf[NFACES];           // offset 76, 24 B (padded to 100 B → sizeof=128)
 };
 static_assert(sizeof(GpuLeafGhostMeta) <= 128, "GpuLeafGhostMeta too large");
 
@@ -64,6 +62,17 @@ struct GpuGhostFillList {
     // Per-face variant: bc_types[d] gives the BC for face d (0=periodic,1=wall,2=open).
     void build(const BlockTree& tree, const GpuPool& pool,
                const std::array<int,6>& bc_types,
+               const MpiPartition* mpi_part = nullptr);
+
+    // bc_types + per-face p_inf for NSCBC (bc_type==3).
+    void build(const BlockTree& tree, const GpuPool& pool,
+               const std::array<int,6>& bc_types,
+               const std::array<float,6>& p_infs,
+               const MpiPartition* mpi_part = nullptr);
+
+    // Convenience overload: extracts bc_types and p_infs from FaceBCArray.
+    void build(const BlockTree& tree, const GpuPool& pool,
+               const FaceBCArray& face_bcs,
                const MpiPartition* mpi_part = nullptr);
 
     // Launch kernels for face fill + edge/corner fill on the given stream.

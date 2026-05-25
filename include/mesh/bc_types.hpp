@@ -26,7 +26,12 @@ struct ContactAngleBC {
     double contact_angle_deg = 90.0;
 };
 
-using BCVariant = std::variant<PeriodicBC, WallBC, OpenBC, ContactAngleBC>;
+struct NscbcBC {
+    void fill_ghost(CellBlock&, int, int) const noexcept {}
+    double p_inf = 1.0;  // far-field static pressure (subsonic outflow)
+};
+
+using BCVariant = std::variant<PeriodicBC, WallBC, OpenBC, ContactAngleBC, NscbcBC>;
 
 // Convenience query helpers
 inline bool bc_is_periodic(const BCVariant& v) noexcept {
@@ -35,12 +40,16 @@ inline bool bc_is_periodic(const BCVariant& v) noexcept {
 inline bool bc_is_open(const BCVariant& v) noexcept {
     return std::holds_alternative<OpenBC>(v);
 }
+inline bool bc_is_nscbc(const BCVariant& v) noexcept {
+    return std::holds_alternative<NscbcBC>(v);
+}
 
-// GPU integer encoding: 0=periodic, 1=wall, 2=open
+// GPU integer encoding: 0=periodic, 1=wall, 2=open, 3=nscbc
 // ContactAngleBC uses GPU wall path (1); Phase 14.2 sets contact angle via BlockTree::bc_cfg.
 inline int bc_to_int(const BCVariant& v) noexcept {
     if (std::holds_alternative<WallBC>(v))           return 1;
     if (std::holds_alternative<OpenBC>(v))           return 2;
+    if (std::holds_alternative<NscbcBC>(v))          return 3;  // NEW
     if (std::holds_alternative<ContactAngleBC>(v))   return 1;
     return 0;
 }
@@ -50,3 +59,4 @@ static_assert(BoundaryCondition<PeriodicBC>);
 static_assert(BoundaryCondition<WallBC>);
 static_assert(BoundaryCondition<OpenBC>);
 static_assert(BoundaryCondition<ContactAngleBC>);
+static_assert(BoundaryCondition<NscbcBC>);

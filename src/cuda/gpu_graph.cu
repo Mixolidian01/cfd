@@ -282,6 +282,15 @@ void GpuGraphSolver::build_faces(const BlockTree& tree, const GpuPool& pool,
     bc_types_ = bc_types;
 }
 
+void GpuGraphSolver::build_faces(const BlockTree& tree, const GpuPool& pool,
+                                   const FaceBCArray& face_bcs) {
+    std::array<int,6> bc_types{};
+    for (int d = 0; d < NFACES; ++d) bc_types[d] = bc_to_int(face_bcs[d]);
+    build(tree, pool, bc_types[0]);
+    ghost_list.build(tree, pool, face_bcs, mpi_part_);
+    bc_types_ = bc_types;
+}
+
 void GpuGraphSolver::set_snapshot_buffer(GpuSnapshotBuffer* buf)
 {
     snap_buf_ = buf;

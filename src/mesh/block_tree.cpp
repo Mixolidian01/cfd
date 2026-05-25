@@ -1501,6 +1501,32 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
                         }
                     }
                 }
+            } else if (std::holds_alternative<NscbcBC>(bcs[d])) {
+                const double nscbc_p = std::get<NscbcBC>(bcs[d]).p_inf;
+                const double outward = (side == 0) ? -1.0 : +1.0;
+                for (int gl = 0; gl < NG; ++gl) {
+                    const int ghost = (side==0) ? (NG-1-gl) : (NB2-NG+gl);
+                    const int int_r = (side==0) ? ilo()     : ihi();
+                    if (axis == 0) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int j=ilo();j<=ihi();++j) {
+                            write_ghost(ghost,j,k, open_char_ghost(blk.prim(int_r,j,k), 0, outward, nscbc_p));
+                            blk.phi(ghost,j,k) = blk.phi(int_r,j,k);
+                        }
+                    } else if (axis == 1) {
+                        for (int k=ilo();k<=ihi();++k)
+                        for (int i=ilo();i<=ihi();++i) {
+                            write_ghost(i,ghost,k, open_char_ghost(blk.prim(i,int_r,k), 1, outward, nscbc_p));
+                            blk.phi(i,ghost,k) = blk.phi(i,int_r,k);
+                        }
+                    } else {
+                        for (int j=ilo();j<=ihi();++j)
+                        for (int i=ilo();i<=ihi();++i) {
+                            write_ghost(i,j,ghost, open_char_ghost(blk.prim(i,j,int_r), 2, outward, nscbc_p));
+                            blk.phi(i,j,ghost) = blk.phi(i,j,int_r);
+                        }
+                    }
+                }
             } else {
                 // OpenBC: characteristic ghost
                 const double outward = (side == 0) ? -1.0 : +1.0;
