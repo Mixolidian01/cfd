@@ -21,6 +21,7 @@ project(cfd CXX C)   # C required by zfp-config.cmake's find_package(OpenMP COMP
 set(CMAKE_CXX_STANDARD          20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # required for pybind11 shared module
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "" FORCE)
@@ -650,3 +651,48 @@ add_custom_target(timex    DEPENDS test_imex     COMMAND $<TARGET_FILE:test_imex
 add_custom_target(t145     DEPENDS test_ensemble      COMMAND $<TARGET_FILE:test_ensemble>      COMMENT "P14.5 gate: EnsembleSolver"         USES_TERMINAL)
 add_custom_target(tr5      DEPENDS test_scheme_select COMMAND $<TARGET_FILE:test_scheme_select> COMMENT "R5 gate: scheme selection"           USES_TERMINAL)
 add_custom_target(t38      DEPENDS test_t38_adjoint   COMMAND $<TARGET_FILE:test_t38_adjoint>   COMMENT "D10 gate: discrete adjoint dot-product test" USES_TERMINAL)
+
+# =============================================================================
+# D11 — Python bindings (pybind11)
+# =============================================================================
+find_package(Python3 COMPONENTS Interpreter Development.Module QUIET)
+if(Python3_FOUND)
+    # Locate pybind11 installed via pip (pip install pybind11).
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -c
+                "import pybind11; print(pybind11.get_cmake_dir())"
+        OUTPUT_VARIABLE _pybind11_cmake_dir
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE _pybind11_result
+    )
+    if(_pybind11_result EQUAL 0)
+        find_package(pybind11 CONFIG REQUIRED PATHS "${_pybind11_cmake_dir}" NO_DEFAULT_PATH)
+
+        pybind11_add_module(cfd src/python/cfd_module.cpp)
+        target_link_libraries(cfd PRIVATE ns_solver)
+        target_include_directories(cfd PRIVATE include)
+        set_target_properties(cfd PROPERTIES
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python")
+
+        # t39: run pytest on the Python gate test
+        add_custom_target(t39
+            DEPENDS cfd
+            COMMAND "${Python3_EXECUTABLE}" -m pytest
+                    "${CMAKE_SOURCE_DIR}/tests/python/test_t39_python_bindings.py"
+                    -v
+            COMMENT "D11 gate: Python bindings — 10-step isentropic vortex, mass conserved"
+            USES_TERMINAL
+        )
+        add_test(NAME t39_python
+            COMMAND "${Python3_EXECUTABLE}" -m pytest
+                    "${CMAKE_SOURCE_DIR}/tests/python/test_t39_python_bindings.py" -v
+            WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/python"
+        )
+        message(STATUS "D11: pybind11 found — cfd module and t39 gate enabled")
+    else()
+        message(STATUS "D11: pybind11 not found (pip install pybind11 to enable t39)")
+    endif()
+else()
+    message(STATUS "D11: Python3 not found — skipping pybind11 module")
+endif()
