@@ -24,6 +24,7 @@
 #include "physics/teno7_scalar.hpp"  // physics_teno7_scalar (for fwd reference)
 #include "physics/teno7_recon.hpp"   // Teno7Recon<DIR>
 #include "physics/teno5_recon.hpp"   // Teno5Recon<DIR> (fallback path)
+#include "physics/recon_util.hpp"    // prim_to_cons, safe_prim
 #include <cmath>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -371,15 +372,8 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
 
         // 6-point conservative stencil: m=0 → d=-2, m=5 → d=+3
         double Q5[6][NVAR];
-        for (int m = 0; m < 6; ++m) {
-            const Prim& p = pc[idx_at(m - 2)];
-            Q5[m][0] = p.rho;
-            Q5[m][1] = p.rho * p.u;
-            Q5[m][2] = p.rho * p.v;
-            Q5[m][3] = p.rho * p.w;
-            Q5[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
-                      + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
-        }
+        for (int m = 0; m < 6; ++m)
+            prim_to_cons(pc[idx_at(m - 2)], Q5[m]);
         // pL = d=0 (m=2), pR = d=1 (m=3)
         const Prim& pL5 = pc[idx_at(0)];
         const Prim& pR5 = pc[idx_at(1)];
@@ -430,20 +424,8 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
         teno7_back_project(cf, cf.wL, QL5);
         teno7_back_project(cf, cf.wR, QR5);
 
-        auto safe_prim5 = [](const double Qc[NVAR], const Prim& fb) noexcept -> Prim {
-            const double rho = Qc[0];
-            if (rho <= 0.0) return fb;
-            const double u = Qc[1]/rho, v = Qc[2]/rho, w_ = Qc[3]/rho;
-            const double gm = fb.gamma_m, pim = fb.p_inf_m;
-            const double p = (gm-1.0)*(Qc[4]-0.5*rho*(u*u+v*v+w_*w_)) - gm*pim;
-            if (p + pim <= 0.0) return fb;
-            Prim q; q.rho=rho; q.u=u; q.v=v; q.w=w_; q.p=p;
-            q.gamma_m=gm; q.p_inf_m=pim;
-            q.T=(p+pim)/(rho*R_GAS); q.c=std::sqrt(gm*(p+pim)/rho);
-            return q;
-        };
-        qL_out = safe_prim5(QL5, pL5);
-        qR_out = safe_prim5(QR5, pR5);
+        qL_out = safe_prim(QL5, pL5);
+        qR_out = safe_prim(QR5, pR5);
         return;
     }
 
@@ -451,15 +433,8 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
 
     // 7-point conservative stencil (m=0 → d=-3, m=3 → d=0 left cell)
     double Q[7][NVAR];
-    for (int m = 0; m < 7; ++m) {
-        const Prim& p = pc[idx_at(m - 3)];
-        Q[m][0] = p.rho;
-        Q[m][1] = p.rho * p.u;
-        Q[m][2] = p.rho * p.v;
-        Q[m][3] = p.rho * p.w;
-        Q[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
-                  + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
-    }
+    for (int m = 0; m < 7; ++m)
+        prim_to_cons(pc[idx_at(m - 3)], Q[m]);
 
     // Roe averages (left=m=3/d=0, right=m=4/d=1)
     const Prim& pL = pc[idx_at(0)];
@@ -513,22 +488,6 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
     double QL[NVAR], QRv[NVAR];
     teno7_back_project(cf, cf.wL, QL);
     teno7_back_project(cf, cf.wR, QRv);
-
-    auto safe_prim = [](const double Qc[NVAR], const Prim& fallback) noexcept -> Prim {
-        const double rho = Qc[0];
-        if (rho <= 0.0) return fallback;
-        const double u   = Qc[1] / rho;
-        const double v   = Qc[2] / rho;
-        const double w_  = Qc[3] / rho;
-        const double gm  = fallback.gamma_m;
-        const double pim = fallback.p_inf_m;
-        const double p   = (gm-1.0)*(Qc[4] - 0.5*rho*(u*u+v*v+w_*w_)) - gm*pim;
-        if (p + pim <= 0.0) return fallback;
-        Prim q; q.rho=rho; q.u=u; q.v=v; q.w=w_; q.p=p;
-        q.gamma_m=gm; q.p_inf_m=pim;
-        q.T=(p+pim)/(rho*R_GAS); q.c=std::sqrt(gm*(p+pim)/rho);
-        return q;
-    };
 
     qL_out = safe_prim(QL,  pL);
     qR_out = safe_prim(QRv, pR);
@@ -801,34 +760,14 @@ inline void teno7_recon_apply_frozen(
         return                              cell_idx(i, j, k+d);
     };
 
-    auto safe_prim = [](const double Qc[NVAR], const Prim& fb) noexcept -> Prim {
-        const double rho = Qc[0];
-        if (rho <= 0.0) return fb;
-        const double u_ = Qc[1]/rho, v_ = Qc[2]/rho, w_ = Qc[3]/rho;
-        const double gm = fb.gamma_m, pim = fb.p_inf_m;
-        const double p  = (gm-1.0)*(Qc[4]-0.5*rho*(u_*u_+v_*v_+w_*w_)) - gm*pim;
-        if (p + pim <= 0.0) return fb;
-        Prim q; q.rho=rho; q.u=u_; q.v=v_; q.w=w_; q.p=p;
-        q.gamma_m=gm; q.p_inf_m=pim;
-        q.T=(p+pim)/(rho*R_GAS); q.c=std::sqrt(gm*(p+pim)/rho);
-        return q;
-    };
-
     const Prim& fbL = pc_pert[idx_at(0)];
     const Prim& fbR = pc_pert[idx_at(1)];
     const int   ni  = cf.n_idx, ti1 = cf.t1_idx, ti2 = cf.t2_idx;
 
     if (cf.is_teno5) {
         double Q5[6][NVAR];
-        for (int m = 0; m < 6; ++m) {
-            const Prim& p = pc_pert[idx_at(m - 2)];
-            Q5[m][0] = p.rho;
-            Q5[m][1] = p.rho * p.u;
-            Q5[m][2] = p.rho * p.v;
-            Q5[m][3] = p.rho * p.w;
-            Q5[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
-                      + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
-        }
+        for (int m = 0; m < 6; ++m)
+            prim_to_cons(pc_pert[idx_at(m - 2)], Q5[m]);
         double W5[5][6];
         for (int m = 0; m < 6; ++m) {
             const double rho = Q5[m][0], qn = Q5[m][ni], qt1 = Q5[m][ti1], qt2 = Q5[m][ti2];
@@ -857,15 +796,8 @@ inline void teno7_recon_apply_frozen(
     }
 
     double Q[7][NVAR];
-    for (int m = 0; m < 7; ++m) {
-        const Prim& p = pc_pert[idx_at(m - 3)];
-        Q[m][0] = p.rho;
-        Q[m][1] = p.rho * p.u;
-        Q[m][2] = p.rho * p.v;
-        Q[m][3] = p.rho * p.w;
-        Q[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
-                  + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
-    }
+    for (int m = 0; m < 7; ++m)
+        prim_to_cons(pc_pert[idx_at(m - 3)], Q[m]);
     double W[5][7];
     for (int m = 0; m < 7; ++m) {
         const double rho = Q[m][0], qn = Q[m][ni], qt1 = Q[m][ti1], qt2 = Q[m][ti2];
