@@ -35,16 +35,6 @@ static bool is_wall_ghost(const Prim& pL, const Prim& pR) noexcept {
     return antisym(pL.u, pR.u) && antisym(pL.v, pR.v) && antisym(pL.w, pR.w);
 }
 
-// face_to_ijk<DIR>: convert face coords (n, a, b) to (xi, yi, zi) of the left
-// cell, for passing into Weno5Recon which still uses natural (i,j,k) indexing.
-template <Axis DIR>
-static inline void face_to_ijk(int n, int a, int b,
-                                int& xi, int& yi, int& zi) noexcept {
-    if constexpr (DIR == Axis::X) { xi = n; yi = a; zi = b; }
-    else if constexpr (DIR == Axis::Y) { xi = a; yi = n; zi = b; }
-    else                               { xi = a; yi = b; zi = n; }
-}
-
 // accumulate_face<DIR>: compute the flux at one face and accumulate into rhs.
 // R6: rhs updates use axis_view<DIR> — no axis dispatch in the accumulation.
 // P15.2: has_nbr mask enables MUSCL reconstruction at block boundaries where
@@ -124,20 +114,21 @@ void convective_rhs_impl(const Prim* pc, const double* duc,
     const double ih = 1.0 / h;
 
     // X: n=i (normal), a=j, b=k
-    for (int k = ilo(); k <= ihi(); ++k)
-    for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo()-1; i <= ihi(); ++i)
-        accumulate_face<Axis::X>(pc, duc, rhs, ih, i, j, k, has_nbr);
-
+    for (int k = ilo(); k <= ihi(); ++k) {
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo()-1; i <= ihi(); ++i)
+            accumulate_face<Axis::X>(pc, duc, rhs, ih, i, j, k, has_nbr);
+    }
     // Y: n=j (normal), a=i (innermost for stride-1), b=k
-    for (int k = ilo(); k <= ihi(); ++k)
-    for (int j = ilo()-1; j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i)
-        accumulate_face<Axis::Y>(pc, duc, rhs, ih, j, i, k, has_nbr);
-
+    for (int k = ilo(); k <= ihi(); ++k) {
+        for (int j = ilo()-1; j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i)
+            accumulate_face<Axis::Y>(pc, duc, rhs, ih, j, i, k, has_nbr);
+    }
     // Z: n=k (normal), a=i (innermost for stride-1), b=j
-    for (int k = ilo()-1; k <= ihi(); ++k)
-    for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i)
-        accumulate_face<Axis::Z>(pc, duc, rhs, ih, k, i, j, has_nbr);
+    for (int k = ilo()-1; k <= ihi(); ++k) {
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i)
+            accumulate_face<Axis::Z>(pc, duc, rhs, ih, k, i, j, has_nbr);
+    }
 }

@@ -27,15 +27,6 @@
 #include <algorithm>
 #include <cstring>
 
-// ── face_to_ijk: same as convective_rhs.cpp ─────────────────────────────────
-template<Axis DIR>
-static inline void face_to_ijk(int n, int a, int b,
-                                int& xi, int& yi, int& zi) noexcept {
-    if constexpr (DIR == Axis::X) { xi = n; yi = a; zi = b; }
-    else if constexpr (DIR == Axis::Y) { xi = a; yi = n; zi = b; }
-    else                               { xi = a; yi = b; zi = n; }
-}
-
 // ── adjoint_accumulate_face<DIR> ─────────────────────────────────────────────
 // Adjoint of one face contribution in accumulate_face<DIR>.
 //
@@ -140,10 +131,11 @@ void adjoint_rhs(const CellBlock& Q_blk,
 {
     // ── Step 1: Build flat primitive array ───────────────────────────────────
     Prim pc[NCELL];
-    for (int k = 0; k < NB2; ++k)
-    for (int j = 0; j < NB2; ++j)
-    for (int i = 0; i < NB2; ++i)
-        pc[cell_idx(i,j,k)] = Q_blk.prim(i,j,k);
+    for (int k = 0; k < NB2; ++k) {
+        for (int j = 0; j < NB2; ++j)
+        for (int i = 0; i < NB2; ++i)
+            pc[cell_idx(i,j,k)] = Q_blk.prim(i,j,k);
+    }
 
     const double ih = 1.0 / Q_blk.h;
 
@@ -155,32 +147,34 @@ void adjoint_rhs(const CellBlock& Q_blk,
     // ── Step 3: Adjoint of face loops (same bounds as convective_rhs_impl) ───
 
     // X: n=i (normal), a=j, b=k
-    for (int k = ilo(); k <= ihi(); ++k)
-    for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo()-1; i <= ihi(); ++i)
-        adjoint_accumulate_face<Axis::X>(pc, lambda_rhs, l_pc, ih, i, j, k, has_nbr);
-
+    for (int k = ilo(); k <= ihi(); ++k) {
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo()-1; i <= ihi(); ++i)
+            adjoint_accumulate_face<Axis::X>(pc, lambda_rhs, l_pc, ih, i, j, k, has_nbr);
+    }
     // Y: n=j (normal), a=i, b=k
-    for (int k = ilo(); k <= ihi(); ++k)
-    for (int j = ilo()-1; j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i)
-        adjoint_accumulate_face<Axis::Y>(pc, lambda_rhs, l_pc, ih, j, i, k, has_nbr);
-
+    for (int k = ilo(); k <= ihi(); ++k) {
+        for (int j = ilo()-1; j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i)
+            adjoint_accumulate_face<Axis::Y>(pc, lambda_rhs, l_pc, ih, j, i, k, has_nbr);
+    }
     // Z: n=k (normal), a=i, b=j
-    for (int k = ilo()-1; k <= ihi(); ++k)
-    for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i)
-        adjoint_accumulate_face<Axis::Z>(pc, lambda_rhs, l_pc, ih, k, i, j, has_nbr);
+    for (int k = ilo()-1; k <= ihi(); ++k) {
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i)
+            adjoint_accumulate_face<Axis::Z>(pc, lambda_rhs, l_pc, ih, k, i, j, has_nbr);
+    }
 
     // ── Step 4: Convert prim adjoint → cons adjoint, accumulate into lambda_Q ─
     // Only accumulate for interior cells (ghost cells are not independent vars).
-    for (int k = ilo(); k <= ihi(); ++k)
-    for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i) {
-        const int f = cell_idx(i, j, k);
-        double lq[NVAR] = {};
-        acc_adj_cons_to_prim(pc[f], l_pc[f], lq);
-        for (int v = 0; v < NVAR; ++v)
-            lambda_Q.Q[v][f] += lq[v];
+    for (int k = ilo(); k <= ihi(); ++k) {
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i) {
+            const int f = cell_idx(i, j, k);
+            double lq[NVAR] = {};
+            acc_adj_cons_to_prim(pc[f], l_pc[f], lq);
+            for (int v = 0; v < NVAR; ++v)
+                lambda_Q.Q[v][f] += lq[v];
+        }
     }
 }

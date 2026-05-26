@@ -326,6 +326,21 @@ struct Teno7CharFwd {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 4b. teno7_back_project — char values → conserved (shared between forward paths)
+// ─────────────────────────────────────────────────────────────────────────────
+inline void teno7_back_project(const Teno7CharFwd& cf,
+                                const double w[5], double Qrec[NVAR]) noexcept {
+    const double w014 = w[0] + w[1] + w[4];
+    const double dw04 = w[4] - w[0];
+    Qrec[0]         = w014;
+    Qrec[cf.n_idx]  = w014*cf.un  + dw04*cf.c_roe;
+    Qrec[cf.t1_idx] = w014*cf.ut1 + w[2];
+    Qrec[cf.t2_idx] = w014*cf.ut2 + w[3];
+    Qrec[4]         = (w[0]+w[4])*cf.H_roe + dw04*cf.un*cf.c_roe
+                    + w[1]*cf.KE + w[2]*cf.ut1 + w[3]*cf.ut2;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 5. teno7_recon_fwd<DIR> — forward Teno7Recon<DIR> capturing Teno7CharFwd
 //    Must match Teno7Recon<DIR>::operator() exactly.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -411,19 +426,9 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
                                      cf.fwd5_L[kk], cf.fwd5_R[kk]);
 
         // Back-project to conserved, then to prim
-        auto bp5 = [&](const double w[5], double Qrec[NVAR]) noexcept {
-            const double w014 = w[0]+w[1]+w[4];
-            const double dw04 = w[4]-w[0];
-            Qrec[0]          = w014;
-            Qrec[n_idx_c]    = w014*cf.un  + dw04*cf.c_roe;
-            Qrec[t1_idx_c]   = w014*cf.ut1 + w[2];
-            Qrec[t2_idx_c]   = w014*cf.ut2 + w[3];
-            Qrec[4]          = (w[0]+w[4])*cf.H_roe + dw04*cf.un*cf.c_roe
-                             + w[1]*cf.KE + w[2]*cf.ut1 + w[3]*cf.ut2;
-        };
         double QL5[NVAR], QR5[NVAR];
-        bp5(cf.wL, QL5);
-        bp5(cf.wR, QR5);
+        teno7_back_project(cf, cf.wL, QL5);
+        teno7_back_project(cf, cf.wR, QR5);
 
         auto safe_prim5 = [](const double Qc[NVAR], const Prim& fb) noexcept -> Prim {
             const double rho = Qc[0];
@@ -505,21 +510,9 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
                                  cf.wL[kk], cf.wR[kk],
                                  cf.fwd_L[kk], cf.fwd_R[kk]);
 
-    // back_project
-    auto back_project = [&](const double w[5], double Qrec[NVAR]) noexcept {
-        const double w014 = w[0] + w[1] + w[4];
-        const double dw04 = w[4] - w[0];
-        Qrec[0]        = w014;
-        Qrec[n_idx_c]  = w014*cf.un  + dw04*cf.c_roe;
-        Qrec[t1_idx_c] = w014*cf.ut1 + w[2];
-        Qrec[t2_idx_c] = w014*cf.ut2 + w[3];
-        Qrec[4]        = (w[0]+w[4])*cf.H_roe + dw04*cf.un*cf.c_roe
-                       + w[1]*cf.KE + w[2]*cf.ut1 + w[3]*cf.ut2;
-    };
-
     double QL[NVAR], QRv[NVAR];
-    back_project(cf.wL, QL);
-    back_project(cf.wR, QRv);
+    teno7_back_project(cf, cf.wL, QL);
+    teno7_back_project(cf, cf.wR, QRv);
 
     auto safe_prim = [](const double Qc[NVAR], const Prim& fallback) noexcept -> Prim {
         const double rho = Qc[0];
@@ -748,4 +741,153 @@ void teno7_recon_adj(const Prim* pc, int i, int j, int k,
         const int flat_m = idx_at(m - 3);
         acc_adj_prim_to_cons(pc[flat_m], l_Q, l_pc[flat_m]);
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Frozen-weight forward helpers (JVP pair for sections 3/3b/6)
+//
+// Apply frozen TENO7/TENO5 weights and frozen Roe eigenvectors (captured in a
+// base-state teno7_recon_fwd call) to a perturbed stencil.  Used to build the
+// Jacobian-vector product that matches the frozen-weight adjoint in section 6.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Apply frozen TENO7 one-sided weights to a perturbed 7-point stencil.
+inline double teno7_one_sided_frozen(const Teno7ScalarFwd& fw,
+    double a, double b, double c, double d,
+    double e, double f, double g) noexcept
+{
+    constexpr double i12 = 1.0/12.0;
+    const double s0 = i12*(-3.0*a + 13.0*b - 23.0*c + 25.0*d);
+    const double s1 = i12*( 1.0*b -  5.0*c + 13.0*d +  3.0*e);
+    const double s2 = i12*(-1.0*c +  7.0*d +  7.0*e -  1.0*f);
+    const double s3 = i12*(25.0*d - 23.0*e + 13.0*f -  3.0*g);
+    if (fw.ws > 0.0)
+        return (fw.w[0]*s0 + fw.w[1]*s1 + fw.w[2]*s2 + fw.w[3]*s3) / fw.ws;
+    switch (fw.eno_k) {
+        case 0: return s0;
+        case 1: return s1;
+        case 2: return s2;
+        default: return s3;
+    }
+}
+
+// Apply frozen TENO5 one-sided weights to a perturbed 5-point stencil.
+inline double teno5_one_sided_frozen(const Teno5ScalarFwd& fw,
+    double a, double b, double c, double d, double e) noexcept
+{
+    constexpr double i6 = 1.0/6.0;
+    const double s0 = ( 2.0*a -  7.0*b + 11.0*c) * i6;
+    const double s1 = (     -b +  5.0*c +  2.0*d) * i6;
+    const double s2 = ( 2.0*c +  5.0*d -      e) * i6;
+    if (fw.ws > 0.0)
+        return (fw.w[0]*s0 + fw.w[1]*s1 + fw.w[2]*s2) / fw.ws;
+    switch (fw.eno_k) {
+        case 0: return s0;
+        case 1: return s1;
+        default: return s2;
+    }
+}
+
+// Apply frozen characteristic reconstruction to a perturbed prim array pc_pert.
+// Roe eigenvectors and TENO7/TENO5 weights are taken from cf (base state).
+template<Axis DIR>
+inline void teno7_recon_apply_frozen(
+    const Prim* pc_pert, const Teno7CharFwd& cf, int i, int j, int k,
+    Prim& qL_out, Prim& qR_out) noexcept
+{
+    auto idx_at = [&](int d) noexcept -> int {
+        if constexpr (DIR == Axis::X) return cell_idx(i+d, j, k);
+        if constexpr (DIR == Axis::Y) return cell_idx(i, j+d, k);
+        return                              cell_idx(i, j, k+d);
+    };
+
+    auto safe_prim = [](const double Qc[NVAR], const Prim& fb) noexcept -> Prim {
+        const double rho = Qc[0];
+        if (rho <= 0.0) return fb;
+        const double u_ = Qc[1]/rho, v_ = Qc[2]/rho, w_ = Qc[3]/rho;
+        const double gm = fb.gamma_m, pim = fb.p_inf_m;
+        const double p  = (gm-1.0)*(Qc[4]-0.5*rho*(u_*u_+v_*v_+w_*w_)) - gm*pim;
+        if (p + pim <= 0.0) return fb;
+        Prim q; q.rho=rho; q.u=u_; q.v=v_; q.w=w_; q.p=p;
+        q.gamma_m=gm; q.p_inf_m=pim;
+        q.T=(p+pim)/(rho*R_GAS); q.c=std::sqrt(gm*(p+pim)/rho);
+        return q;
+    };
+
+    const Prim& fbL = pc_pert[idx_at(0)];
+    const Prim& fbR = pc_pert[idx_at(1)];
+    const int   ni  = cf.n_idx, ti1 = cf.t1_idx, ti2 = cf.t2_idx;
+
+    if (cf.is_teno5) {
+        double Q5[6][NVAR];
+        for (int m = 0; m < 6; ++m) {
+            const Prim& p = pc_pert[idx_at(m - 2)];
+            Q5[m][0] = p.rho;
+            Q5[m][1] = p.rho * p.u;
+            Q5[m][2] = p.rho * p.v;
+            Q5[m][3] = p.rho * p.w;
+            Q5[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
+                      + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
+        }
+        double W5[5][6];
+        for (int m = 0; m < 6; ++m) {
+            const double rho = Q5[m][0], qn = Q5[m][ni], qt1 = Q5[m][ti1], qt2 = Q5[m][ti2];
+            const double E = Q5[m][4];
+            const double inn   = cf.b2*rho - cf.b*(cf.un*qn+cf.ut1*qt1+cf.ut2*qt2) + cf.b*E;
+            const double del_n = cf.ioc*(cf.un*rho - qn);
+            W5[0][m] = 0.5*(inn + del_n);
+            W5[1][m] = (1.0-cf.b2)*rho + cf.b*(cf.un*qn+cf.ut1*qt1+cf.ut2*qt2) - cf.b*E;
+            W5[2][m] = -cf.ut1*rho + qt1;
+            W5[3][m] = -cf.ut2*rho + qt2;
+            W5[4][m] = 0.5*(inn - del_n);
+        }
+        double wL[5], wR[5];
+        for (int kk = 0; kk < 5; ++kk) {
+            wL[kk] = teno5_one_sided_frozen(cf.fwd5_L[kk],
+                W5[kk][0], W5[kk][1], W5[kk][2], W5[kk][3], W5[kk][4]);
+            wR[kk] = teno5_one_sided_frozen(cf.fwd5_R[kk],
+                W5[kk][5], W5[kk][4], W5[kk][3], W5[kk][2], W5[kk][1]);
+        }
+        double QL[NVAR], QR[NVAR];
+        teno7_back_project(cf, wL, QL);
+        teno7_back_project(cf, wR, QR);
+        qL_out = safe_prim(QL, fbL);
+        qR_out = safe_prim(QR, fbR);
+        return;
+    }
+
+    double Q[7][NVAR];
+    for (int m = 0; m < 7; ++m) {
+        const Prim& p = pc_pert[idx_at(m - 3)];
+        Q[m][0] = p.rho;
+        Q[m][1] = p.rho * p.u;
+        Q[m][2] = p.rho * p.v;
+        Q[m][3] = p.rho * p.w;
+        Q[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
+                  + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
+    }
+    double W[5][7];
+    for (int m = 0; m < 7; ++m) {
+        const double rho = Q[m][0], qn = Q[m][ni], qt1 = Q[m][ti1], qt2 = Q[m][ti2];
+        const double E = Q[m][4];
+        const double inner   = cf.b2*rho - cf.b*(cf.un*qn+cf.ut1*qt1+cf.ut2*qt2) + cf.b*E;
+        const double delta_n = cf.ioc*(cf.un*rho - qn);
+        W[0][m] = 0.5*(inner + delta_n);
+        W[1][m] = (1.0-cf.b2)*rho + cf.b*(cf.un*qn+cf.ut1*qt1+cf.ut2*qt2) - cf.b*E;
+        W[2][m] = -cf.ut1*rho + qt1;
+        W[3][m] = -cf.ut2*rho + qt2;
+        W[4][m] = 0.5*(inner - delta_n);
+    }
+    double wL[5], wR[5];
+    for (int kk = 0; kk < 5; ++kk) {
+        wL[kk] = teno7_one_sided_frozen(cf.fwd_L[kk],
+            W[kk][0], W[kk][1], W[kk][2], W[kk][3], W[kk][4], W[kk][5], W[kk][6]);
+        wR[kk] = teno7_one_sided_frozen(cf.fwd_R[kk],
+            W[kk][6], W[kk][5], W[kk][4], W[kk][3], W[kk][2], W[kk][1], W[kk][0]);
+    }
+    double QL[NVAR], QR[NVAR];
+    teno7_back_project(cf, wL, QL);
+    teno7_back_project(cf, wR, QR);
+    qL_out = safe_prim(QL, fbL);
+    qR_out = safe_prim(QR, fbR);
 }
