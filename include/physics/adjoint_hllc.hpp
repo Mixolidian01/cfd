@@ -223,7 +223,10 @@ void adj_chandrashekar_ec(const Prim& L, const Prim& R,
                    + l_F[t2_idx] * t2_a
                    + l_F[4]      * H_hat;
 
-    double d_un_a  = l_F[n_idx] * mass;   // from F[n_idx]=mass*un_a+p_hat (un_a part only)
+    // F_EC[n_idx] = mass*un_a + p_hat  → un_a appears both through mass=rho_ln*un_a
+    // and directly; adjoint of mass=rho_ln*un_a:  d_un_a += d_mass*rho_ln
+    double d_un_a  = l_F[n_idx] * mass   // from direct un_a in F_EC[n_idx]
+                   + d_mass * rho_ln;    // from mass = rho_ln*un_a
 
     double d_t1_a   = l_F[t1_idx] * mass;
     double d_t2_a   = l_F[t2_idx] * mass;
@@ -329,18 +332,19 @@ void adj_chandrashekar_ec(const Prim& L, const Prim& R,
 }
 
 // ── adjoint_hllces_flux ────────────────────────────────────────────────────────
-// Full adjoint of HllcEsFlux<DIR> with frozen spectral radius lam_frozen.
+// Full adjoint of HllcEsFlux<DIR>.
 //
 //   F_ES[v] = F_EC[v] - 0.5*lam*(Q_R[v] - Q_L[v])
+//   lam     = max(|unL|+cL, |unR|+cR)
 //
-// Adjoint of dissipation term:
-//   for each var v:
-//     lqL[v] = +0.5*lam*l_F[v]   (from -(-Q_L[v]))
-//     lqR[v] = -0.5*lam*l_F[v]
-//   then acc_adj_prim_to_cons(L, lqL, l_pL)
-//        acc_adj_prim_to_cons(R, lqR, l_pR)
+// Adjoint of dissipation (Q_R - Q_L) term with frozen lam_frozen:
+//   lqL[v] = +0.5*lam*l_F[v],  lqR[v] = -0.5*lam*l_F[v]  → acc_adj_prim_to_cons
 //
-// Plus the EC adjoint contribution.
+// Adjoint of lam = max(|unL|+cL, |unR|+cR):
+//   d_lam = -0.5 * Σ l_F[v]*(Q_R[v]-Q_L[v])
+//   ∂lamX/∂rhoX = -cX/(2*rhoX),  ∂lamX/∂unX = sign(unX),  ∂lamX/∂pX = cX/(2*pX)
+//   lamL == lamR (degenerate, e.g. uniform base): 50/50 subgradient split,
+//   consistent with centered-FD dot-product test.
 template<Axis DIR>
 __host__ __device__ inline
 void adjoint_hllces_flux(const Prim& L, const Prim& R,
@@ -349,17 +353,14 @@ void adjoint_hllces_flux(const Prim& L, const Prim& R,
                          double       l_pL[NVAR],
                          double       l_pR[NVAR]) noexcept
 {
+    constexpr int ax    = static_cast<int>(DIR);
+    constexpr int n_prim = (ax==0)?1:(ax==1)?2:3;  // prim index of normal velocity
+
     // ── EC part ───────────────────────────────────────────────────────────────
     adj_chandrashekar_ec<DIR>(L, R, l_F, l_pL, l_pR);
 
-    // ── Dissipation part ──────────────────────────────────────────────────────
-    // F_ES[v] = F_EC[v] - 0.5*lam*(Q_R[v] - Q_L[v])
-    // where Q = cons(rho, rho*u, rho*v, rho*w, E)
-    //
-    // Adjoint: for each v, seed on Q_L is +0.5*lam*l_F[v],
-    //                        seed on Q_R is -0.5*lam*l_F[v]
-    // These are seeds in cons space → chain through prim_to_cons adjoint.
-
+    // ── Dissipation (Q_R - Q_L) with frozen lam ───────────────────────────────
+    // Seed: lqL[v] = +0.5*lam*l_F[v], lqR[v] = -0.5*lam*l_F[v] (cons space)
     double lqL[NVAR], lqR[NVAR];
     for (int v = 0; v < NVAR; ++v) {
         lqL[v] = +0.5 * lam_frozen * l_F[v];
@@ -367,4 +368,39 @@ void adjoint_hllces_flux(const Prim& L, const Prim& R,
     }
     acc_adj_prim_to_cons(L, lqL, l_pL);
     acc_adj_prim_to_cons(R, lqR, l_pR);
+
+    // ── Lam adjoint: ∂lam/∂prim ───────────────────────────────────────────────
+    // d_lam = -0.5 * Σ_v l_F[v] * (Q_R[v] - Q_L[v])  (in cons space)
+    const double gm1 = L.gamma_m - 1.0;
+    const double keL = 0.5*(L.u*L.u + L.v*L.v + L.w*L.w);
+    const double keR = 0.5*(R.u*R.u + R.v*R.v + R.w*R.w);
+    const double EL  = L.p/gm1 + L.rho*keL;
+    const double ER  = R.p/gm1 + R.rho*keR;
+    double d_lam = 0.0;
+    d_lam -= 0.5 * l_F[0] * (R.rho         - L.rho);
+    d_lam -= 0.5 * l_F[1] * (R.rho*R.u     - L.rho*L.u);
+    d_lam -= 0.5 * l_F[2] * (R.rho*R.v     - L.rho*L.v);
+    d_lam -= 0.5 * l_F[3] * (R.rho*R.w     - L.rho*L.w);
+    d_lam -= 0.5 * l_F[4] * (ER            - EL);
+
+    const double unL_ = (ax==0)?L.u:(ax==1)?L.v:L.w;
+    const double unR_ = (ax==0)?R.u:(ax==1)?R.v:R.w;
+    const double lamL_ = std::abs(unL_) + L.c;
+    const double lamR_ = std::abs(unR_) + R.c;
+
+    // Weight for L: 1 if L strictly dominates, 0 if R strictly dominates, 0.5 if equal.
+    // Equal case (lamL==lamR) is the correct 50/50 subgradient for centered-FD consistency.
+    const double wL = (lamL_ > lamR_) ? 1.0 : (lamR_ > lamL_) ? 0.0 : 0.5;
+    const double wR = 1.0 - wL;
+
+    if (wL > 0.0) {
+        l_pL[n_prim] += wL * d_lam * (unL_ >= 0.0 ? 1.0 : -1.0);  // ∂|unL|/∂unL
+        l_pL[0]      += wL * d_lam * (-L.c / (2.0 * L.rho));       // ∂cL/∂rhoL
+        l_pL[4]      += wL * d_lam * ( L.c / (2.0 * L.p));         // ∂cL/∂pL
+    }
+    if (wR > 0.0) {
+        l_pR[n_prim] += wR * d_lam * (unR_ >= 0.0 ? 1.0 : -1.0);  // ∂|unR|/∂unR
+        l_pR[0]      += wR * d_lam * (-R.c / (2.0 * R.rho));       // ∂cR/∂rhoR
+        l_pR[4]      += wR * d_lam * ( R.c / (2.0 * R.p));         // ∂cR/∂pR
+    }
 }

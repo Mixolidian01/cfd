@@ -27,7 +27,17 @@
 #include <cmath>
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. Teno7ScalarFwd — frozen state from one one_sided() call
+// 1a. Teno5ScalarFwd — frozen state from one TENO5 one_sided() call (3 substencils)
+// ─────────────────────────────────────────────────────────────────────────────
+struct Teno5ScalarFwd {
+    double w[3];   // frozen active weights (0 if substencil excluded)
+    double ws;     // sum of active weights (>0 → smooth, ≤0 → ENO fallback)
+    double s[3];   // polynomial values s0..s2
+    int    eno_k;  // ENO fallback index (0..2); valid only when ws<=0
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1b. Teno7ScalarFwd — frozen state from one TENO7 one_sided() call (4 substencils)
 // ─────────────────────────────────────────────────────────────────────────────
 struct Teno7ScalarFwd {
     double w[4];   // frozen active weights (0 if substencil excluded)
@@ -185,23 +195,130 @@ void teno7_one_sided_adj(const Teno7ScalarFwd& fw,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 3b. physics_teno5_scalar_fwd — forward TENO5 scalar + capture frozen state
+// ─────────────────────────────────────────────────────────────────────────────
+__host__ __device__ inline void physics_teno5_scalar_fwd(
+        double vm2, double vm1, double v0,
+        double vp1, double vp2, double vp3,
+        double& vL, double& vR,
+        Teno5ScalarFwd& fwdL, Teno5ScalarFwd& fwdR) noexcept
+{
+    constexpr double eps = 1.0e-36;
+    constexpr double CT  = 1.0e-5;
+    constexpr double d0  = 0.1, d1 = 0.6, d2 = 0.3;
+
+    auto sq = [](double x) noexcept -> double { return x * x; };
+
+    auto one_sided_fwd = [&](double a, double b, double c, double d, double e,
+                              Teno5ScalarFwd& fw) noexcept -> double
+    {
+        fw.s[0] = ( 2.0*a -  7.0*b + 11.0*c) * (1.0/6.0);
+        fw.s[1] = (     -b +  5.0*c +  2.0*d) * (1.0/6.0);
+        fw.s[2] = ( 2.0*c +  5.0*d -      e) * (1.0/6.0);
+
+        const double b0 = (13.0/12.0)*sq(a-2.0*b+c) + (1.0/4.0)*sq(a-4.0*b+3.0*c);
+        const double b1 = (13.0/12.0)*sq(b-2.0*c+d) + (1.0/4.0)*sq(b-d);
+        const double b2 = (13.0/12.0)*sq(c-2.0*d+e) + (1.0/4.0)*sq(3.0*c-4.0*d+e);
+        const double tau5 = (b0 > b2) ? b0 - b2 : b2 - b0;
+
+        auto chi6 = [&](double bk) noexcept -> double {
+            double r = 1.0 + tau5 / (bk + eps); r *= r; r *= r; r *= r; return r;
+        };
+        const double c0 = chi6(b0), c1 = chi6(b1), c2 = chi6(b2);
+        const double ci = 1.0 / (c0 + c1 + c2 + eps);
+
+        fw.w[0] = (c0*ci >= CT) ? d0 : 0.0;
+        fw.w[1] = (c1*ci >= CT) ? d1 : 0.0;
+        fw.w[2] = (c2*ci >= CT) ? d2 : 0.0;
+        fw.ws   = fw.w[0] + fw.w[1] + fw.w[2];
+
+        if (fw.ws > 0.0)
+            return (fw.w[0]*fw.s[0] + fw.w[1]*fw.s[1] + fw.w[2]*fw.s[2]) / fw.ws;
+
+        if (b0 <= b1 && b0 <= b2) { fw.eno_k = 0; return fw.s[0]; }
+        if (b1 <= b2)              { fw.eno_k = 1; return fw.s[1]; }
+        fw.eno_k = 2; return fw.s[2];
+    };
+
+    vL = one_sided_fwd(vm2, vm1, v0,  vp1, vp2, fwdL);
+    vR = one_sided_fwd(vp3, vp2, vp1, v0,  vm1, fwdR);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3c. teno5_one_sided_adj — adjoint of TENO5 one_sided() with frozen weights
+//    fw     : frozen state from the matching forward one_sided_fwd call
+//    l_out  : ∂J/∂output (scalar seed)
+//    la[5]  : accumulated ∂J/∂{a,b,c,d,e}  (accumulate, not overwrite)
+// ─────────────────────────────────────────────────────────────────────────────
+__host__ __device__ inline
+void teno5_one_sided_adj(const Teno5ScalarFwd& fw,
+                         double l_out,
+                         double la[5]) noexcept
+{
+    constexpr double i6 = 1.0/6.0;
+
+    if (fw.ws > 0.0) {
+        const double l_s0 = l_out * fw.w[0] / fw.ws;
+        const double l_s1 = l_out * fw.w[1] / fw.ws;
+        const double l_s2 = l_out * fw.w[2] / fw.ws;
+        // s0 = ( 2a -  7b + 11c)/6
+        la[0] += l_s0 * ( 2.0*i6);
+        la[1] += l_s0 * (-7.0*i6);
+        la[2] += l_s0 * (11.0*i6);
+        // s1 = (   -b +  5c +  2d)/6
+        la[1] += l_s1 * (-i6);
+        la[2] += l_s1 * ( 5.0*i6);
+        la[3] += l_s1 * ( 2.0*i6);
+        // s2 = ( 2c +  5d -   e)/6
+        la[2] += l_s2 * ( 2.0*i6);
+        la[3] += l_s2 * ( 5.0*i6);
+        la[4] += l_s2 * (-i6);
+    } else {
+        switch (fw.eno_k) {
+            case 0:  // s0 = (2a-7b+11c)/6
+                la[0] += l_out * ( 2.0*i6);
+                la[1] += l_out * (-7.0*i6);
+                la[2] += l_out * (11.0*i6);
+                break;
+            case 1:  // s1 = (-b+5c+2d)/6
+                la[1] += l_out * (-i6);
+                la[2] += l_out * ( 5.0*i6);
+                la[3] += l_out * ( 2.0*i6);
+                break;
+            default: // s2 = (2c+5d-e)/6
+                la[2] += l_out * ( 2.0*i6);
+                la[3] += l_out * ( 5.0*i6);
+                la[4] += l_out * (-i6);
+                break;
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 4. Teno7CharFwd — frozen state from a full Teno7Recon<DIR> pass
 // ─────────────────────────────────────────────────────────────────────────────
 struct Teno7CharFwd {
-    // Frozen Roe averages
+    // Frozen Roe averages (shared between TENO7 and TENO5 paths)
     double u_roe, v_roe, w_roe, H_roe, c_roe;
     double KE, b, b2, ioc, gm_roe;
     double un, ut1, ut2;
 
-    // Per-characteristic frozen scalar states (5 char fields × left + right)
-    Teno7ScalarFwd fwd_L[5];  // frozen state for left one_sided call
-    Teno7ScalarFwd fwd_R[5];  // frozen state for right one_sided call (mirrored)
+    // TENO7 frozen scalar states (5 char fields × left + right; valid when !is_teno5)
+    Teno7ScalarFwd fwd_L[5];
+    Teno7ScalarFwd fwd_R[5];
 
-    // Reconstructed characteristic values
+    // TENO5 frozen scalar states (valid when is_teno5)
+    Teno5ScalarFwd fwd5_L[5];
+    Teno5ScalarFwd fwd5_R[5];
+
+    // Reconstructed characteristic values (written by whichever path was used)
     double wL[5];  // left-face char reconstructions
     double wR[5];  // right-face char reconstructions
 
-    // n_idx sentinel: -1 if TENO5 fallback was used (n0 < NG+1)
+    // is_teno5: true if TENO5 fallback was used (n0 < NG+1)
+    bool is_teno5;
+
+    // Characteristic axis indices (always valid)
     int n_idx;
     // t1_idx, t2_idx stored for the adjoint
     int t1_idx;
@@ -218,14 +335,6 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
                      Prim& qL_out, Prim& qR_out,
                      Teno7CharFwd& cf) noexcept
 {
-    const int n0 = (DIR==Axis::X) ? i : (DIR==Axis::Y) ? j : k;
-    if (n0 < NG + 1) {
-        // TENO5 fallback — mark and call the regular forward
-        cf.n_idx = -1;
-        Teno5Recon<DIR>{}(pc, i, j, k, qL_out, qR_out);
-        return;
-    }
-
     constexpr int n_idx_c  = (DIR==Axis::X) ? 1 : (DIR==Axis::Y) ? 2 : 3;
     constexpr int t1_idx_c = (DIR==Axis::X) ? 2 : 1;
     constexpr int t2_idx_c = (DIR==Axis::Z) ? 2 : 3;
@@ -238,6 +347,102 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
         if constexpr (DIR == Axis::Y) return cell_idx(i, j+d, k);
         return                              cell_idx(i, j, k+d);
     };
+
+    const int n0 = (DIR==Axis::X) ? i : (DIR==Axis::Y) ? j : k;
+    if (n0 < NG + 1) {
+        // TENO5 fallback (n0=NG: d=-3 would be OOB for TENO7; TENO5 needs d=-2..+3)
+        // Capture Roe averages and TENO5 frozen state for the adjoint.
+        cf.is_teno5 = true;
+
+        // 6-point conservative stencil: m=0 → d=-2, m=5 → d=+3
+        double Q5[6][NVAR];
+        for (int m = 0; m < 6; ++m) {
+            const Prim& p = pc[idx_at(m - 2)];
+            Q5[m][0] = p.rho;
+            Q5[m][1] = p.rho * p.u;
+            Q5[m][2] = p.rho * p.v;
+            Q5[m][3] = p.rho * p.w;
+            Q5[m][4] = (p.p + p.gamma_m*p.p_inf_m)/(p.gamma_m-1.0)
+                      + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
+        }
+        // pL = d=0 (m=2), pR = d=1 (m=3)
+        const Prim& pL5 = pc[idx_at(0)];
+        const Prim& pR5 = pc[idx_at(1)];
+        const double sqL5   = std::sqrt(pL5.rho);
+        const double sqR5   = std::sqrt(pR5.rho);
+        const double denom5 = sqL5 + sqR5;
+        cf.u_roe = (sqL5*pL5.u + sqR5*pR5.u) / denom5;
+        cf.v_roe = (sqL5*pL5.v + sqR5*pR5.v) / denom5;
+        cf.w_roe = (sqL5*pL5.w + sqR5*pR5.w) / denom5;
+        const double HL5    = (Q5[2][4] + pL5.p) / pL5.rho;
+        const double HR5    = (Q5[3][4] + pR5.p) / pR5.rho;
+        cf.H_roe = (sqL5*HL5 + sqR5*HR5) / denom5;
+        cf.KE    = 0.5*(cf.u_roe*cf.u_roe + cf.v_roe*cf.v_roe + cf.w_roe*cf.w_roe);
+        cf.gm_roe = 0.5*(pL5.gamma_m + pR5.gamma_m);
+        const double c25    = std::max((cf.gm_roe-1.0)*(cf.H_roe - cf.KE), 1.0e-300);
+        cf.c_roe  = std::sqrt(c25);
+        cf.un  = (DIR==Axis::X) ? cf.u_roe : (DIR==Axis::Y) ? cf.v_roe : cf.w_roe;
+        cf.ut1 = (DIR==Axis::X) ? cf.v_roe : cf.u_roe;
+        cf.ut2 = (DIR==Axis::Z) ? cf.v_roe : cf.w_roe;
+        cf.b   = (cf.gm_roe-1.0) / c25;
+        cf.b2  = cf.b * cf.KE;
+        cf.ioc = 1.0 / cf.c_roe;
+
+        // Char projection of 6-point stencil
+        double W5[5][6];
+        for (int m = 0; m < 6; ++m) {
+            const double rho = Q5[m][0];
+            const double qn  = Q5[m][n_idx_c];
+            const double qt1 = Q5[m][t1_idx_c];
+            const double qt2 = Q5[m][t2_idx_c];
+            const double E   = Q5[m][4];
+            const double inn    = cf.b2*rho - cf.b*(cf.un*qn + cf.ut1*qt1 + cf.ut2*qt2) + cf.b*E;
+            const double del_n  = cf.ioc*(cf.un*rho - qn);
+            W5[0][m] = 0.5*(inn + del_n);
+            W5[1][m] = (1.0 - cf.b2)*rho + cf.b*(cf.un*qn + cf.ut1*qt1 + cf.ut2*qt2) - cf.b*E;
+            W5[2][m] = -cf.ut1*rho + qt1;
+            W5[3][m] = -cf.ut2*rho + qt2;
+            W5[4][m] = 0.5*(inn - del_n);
+        }
+        for (int kk = 0; kk < 5; ++kk)
+            physics_teno5_scalar_fwd(W5[kk][0], W5[kk][1], W5[kk][2],
+                                     W5[kk][3], W5[kk][4], W5[kk][5],
+                                     cf.wL[kk], cf.wR[kk],
+                                     cf.fwd5_L[kk], cf.fwd5_R[kk]);
+
+        // Back-project to conserved, then to prim
+        auto bp5 = [&](const double w[5], double Qrec[NVAR]) noexcept {
+            const double w014 = w[0]+w[1]+w[4];
+            const double dw04 = w[4]-w[0];
+            Qrec[0]          = w014;
+            Qrec[n_idx_c]    = w014*cf.un  + dw04*cf.c_roe;
+            Qrec[t1_idx_c]   = w014*cf.ut1 + w[2];
+            Qrec[t2_idx_c]   = w014*cf.ut2 + w[3];
+            Qrec[4]          = (w[0]+w[4])*cf.H_roe + dw04*cf.un*cf.c_roe
+                             + w[1]*cf.KE + w[2]*cf.ut1 + w[3]*cf.ut2;
+        };
+        double QL5[NVAR], QR5[NVAR];
+        bp5(cf.wL, QL5);
+        bp5(cf.wR, QR5);
+
+        auto safe_prim5 = [](const double Qc[NVAR], const Prim& fb) noexcept -> Prim {
+            const double rho = Qc[0];
+            if (rho <= 0.0) return fb;
+            const double u = Qc[1]/rho, v = Qc[2]/rho, w_ = Qc[3]/rho;
+            const double gm = fb.gamma_m, pim = fb.p_inf_m;
+            const double p = (gm-1.0)*(Qc[4]-0.5*rho*(u*u+v*v+w_*w_)) - gm*pim;
+            if (p + pim <= 0.0) return fb;
+            Prim q; q.rho=rho; q.u=u; q.v=v; q.w=w_; q.p=p;
+            q.gamma_m=gm; q.p_inf_m=pim;
+            q.T=(p+pim)/(rho*R_GAS); q.c=std::sqrt(gm*(p+pim)/rho);
+            return q;
+        };
+        qL_out = safe_prim5(QL5, pL5);
+        qR_out = safe_prim5(QR5, pR5);
+        return;
+    }
+
+    cf.is_teno5 = false;
 
     // 7-point conservative stencil (m=0 → d=-3, m=3 → d=0 left cell)
     double Q[7][NVAR];
@@ -363,9 +568,6 @@ void teno7_recon_adj(const Prim* pc, int i, int j, int k,
                      const double l_qR_cons[NVAR],
                      double l_pc[][NVAR]) noexcept
 {
-    // TENO5 fallback: no adjoint propagated (safe conservative choice)
-    if (cf.n_idx < 0) return;
-
     const int n_idx_c  = cf.n_idx;
     const int t1_idx_c = cf.t1_idx;
     const int t2_idx_c = cf.t2_idx;
@@ -422,6 +624,42 @@ void teno7_recon_adj(const Prim* pc, int i, int j, int k,
     double l_wL[5], l_wR[5];
     back_project_adj(l_qL_cons, l_wL);
     back_project_adj(l_qR_cons, l_wR);
+
+    // ── TENO5 fallback adjoint (6-point stencil, m=0→d=-2, m=5→d=+3) ─────────
+    if (cf.is_teno5) {
+        double l_W5[5][6] = {};
+        for (int kk = 0; kk < 5; ++kk) {
+            // Left state: one_sided(W[kk][0..4]) → la_fwd[r] → l_W5[kk][r]
+            double la_fwd[5] = {};
+            teno5_one_sided_adj(cf.fwd5_L[kk], l_wL[kk], la_fwd);
+            for (int r = 0; r < 5; ++r)
+                l_W5[kk][r] += la_fwd[r];
+            // Right state: one_sided(W[kk][5],W[kk][4],..,W[kk][1]) → la_rev[r] → l_W5[kk][5-r]
+            double la_rev[5] = {};
+            teno5_one_sided_adj(cf.fwd5_R[kk], l_wR[kk], la_rev);
+            for (int r = 0; r < 5; ++r)
+                l_W5[kk][5-r] += la_rev[r];
+        }
+        // P^T and prim_to_cons adjoint for 6 stencil cells (d = m-2 = -2..+3)
+        const double b   = cf.b,  b2  = cf.b2,  ioc = cf.ioc;
+        const double un  = cf.un, ut1 = cf.ut1, ut2 = cf.ut2;
+        for (int m = 0; m < 6; ++m) {
+            const double lW0 = l_W5[0][m], lW1 = l_W5[1][m], lW2 = l_W5[2][m];
+            const double lW3 = l_W5[3][m], lW4 = l_W5[4][m];
+            const double l_rho = 0.5*(b2+un*ioc)*lW0 + (1.0-b2)*lW1
+                               + (-ut1)*lW2 + (-ut2)*lW3 + 0.5*(b2-un*ioc)*lW4;
+            const double l_qn  = 0.5*(-b*un-ioc)*lW0 + b*un*lW1 + 0.5*(-b*un+ioc)*lW4;
+            const double l_qt1 = (-0.5*b*ut1)*lW0 + b*ut1*lW1 + lW2 + (-0.5*b*ut1)*lW4;
+            const double l_qt2 = (-0.5*b*ut2)*lW0 + b*ut2*lW1 + lW3 + (-0.5*b*ut2)*lW4;
+            const double l_E   = b*(0.5*lW0 - lW1 + 0.5*lW4);
+            double l_Q[NVAR] = {};
+            l_Q[0] = l_rho; l_Q[n_idx_c] = l_qn;
+            l_Q[t1_idx_c] = l_qt1; l_Q[t2_idx_c] = l_qt2; l_Q[4] = l_E;
+            const int flat_m = idx_at(m - 2);  // TENO5: d = m-2
+            acc_adj_prim_to_cons(pc[flat_m], l_Q, l_pc[flat_m]);
+        }
+        return;
+    }
 
     // ── Step 2: teno7_one_sided_adj for each characteristic field ─────────────
     // For the LEFT state: one_sided(vm3,vm2,vm1,v0,vp1,vp2,vp3)

@@ -128,6 +128,7 @@ add_executable(test_ghost_fill tests/mesh/test_ghost_fill.cpp)  # R9-C
 add_executable(test_cell_block_accessors tests/mesh/test_cell_block_accessors.cpp)  # R10-T1
 add_executable(test_ensemble      tests/solver/test_ensemble.cpp)                   # P14.5
 add_executable(test_scheme_select tests/solver/test_scheme_select.cpp)              # R5
+add_executable(test_t38_adjoint   tests/schemes/test_t38_adjoint.cpp)               # D10
 
 target_link_libraries(test_linalg    PRIVATE linalg    m)
 target_link_libraries(test_block     PRIVATE block      m)
@@ -142,6 +143,7 @@ target_link_libraries(test_ghost_fill PRIVATE block     m)  # R9-C: libblock onl
 target_link_libraries(test_cell_block_accessors PRIVATE block m)  # R10-T1
 target_link_libraries(test_ensemble      PRIVATE ns_solver m)      # P14.5
 target_link_libraries(test_scheme_select PRIVATE ns_solver m)      # R5
+target_link_libraries(test_t38_adjoint   PRIVATE operators  m)      # D10
 
 add_test(NAME linalg     COMMAND test_linalg)
 add_test(NAME block      COMMAND test_block)
@@ -156,6 +158,7 @@ add_test(NAME ghost_fill COMMAND test_ghost_fill)  # R9-C
 add_test(NAME cell_block_accessors COMMAND test_cell_block_accessors)  # R10-T1
 add_test(NAME ensemble             COMMAND test_ensemble)              # P14.5
 add_test(NAME scheme_select        COMMAND test_scheme_select)         # R5
+add_test(NAME t38_adjoint          COMMAND test_t38_adjoint)            # D10
 add_custom_target(taccess DEPENDS test_cell_block_accessors
     COMMAND $<TARGET_FILE:test_cell_block_accessors>
     COMMENT "R10-T1: flat-index accessor test" USES_TERMINAL)
@@ -623,7 +626,7 @@ add_custom_target(ba
             test_config test_imex test_sat test_ghost_fill test_cell_block_accessors
             test_bn_amr test_bn_solver test_multiphase
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
-            test_ensemble test_scheme_select
+            test_ensemble test_scheme_select test_t38_adjoint
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
@@ -646,3 +649,4 @@ add_custom_target(tconfig  DEPENDS test_config   COMMAND $<TARGET_FILE:test_conf
 add_custom_target(timex    DEPENDS test_imex     COMMAND $<TARGET_FILE:test_imex>     COMMENT "R9-F1 gate: test_imex"     USES_TERMINAL)
 add_custom_target(t145     DEPENDS test_ensemble      COMMAND $<TARGET_FILE:test_ensemble>      COMMENT "P14.5 gate: EnsembleSolver"         USES_TERMINAL)
 add_custom_target(tr5      DEPENDS test_scheme_select COMMAND $<TARGET_FILE:test_scheme_select> COMMENT "R5 gate: scheme selection"           USES_TERMINAL)
+add_custom_target(t38      DEPENDS test_t38_adjoint   COMMAND $<TARGET_FILE:test_t38_adjoint>   COMMENT "D10 gate: discrete adjoint dot-product test" USES_TERMINAL)
