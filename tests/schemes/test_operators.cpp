@@ -415,66 +415,35 @@ static void t_scheme_selection() {
 }
 
 // ── R7 T-DA: CellGrad<DIR,2> — O(h²) convergence on sin(2πx) ────────────────
-static void t_da_cell_grad_order2() {
-    // f(x) = sin(2π·x),  x_i = i·h (integer lattice so ghost cells are natural)
-    // ∂f/∂x = 2π·cos(2π·x)
-    const double k2pi = 2.0 * M_PI;
-    // Convergence: halve h twice, expect error ratio ≥ 3.9 each time
+template<Axis A>
+static void check_cell_grad_conv(double k2pi) {
+    CellGrad<A, 2> dOp;
     double prev_err = -1.0;
     for (double h : {0.04, 0.02, 0.01}) {
-        CellGrad<Axis::X, 2> dX;
         double max_err = 0.0;
-        // interior indices 2..23 (avoid boundaries so ghost cells exist)
-        for (int i = 2; i <= 23; ++i) {
-            double got   = dX([&](int ii, int /*jj*/, int /*kk*/){ return std::sin(k2pi * ii * h); },
-                              i, 0, 0, h);
-            double exact = k2pi * std::cos(k2pi * i * h);
+        for (int n = 2; n <= 23; ++n) {
+            const int pi = (A==Axis::X)?n:0, pj = (A==Axis::Y)?n:0, pk = (A==Axis::Z)?n:0;
+            double got   = dOp([&](int i, int j, int k){
+                                   int nc = (A==Axis::X)?i:(A==Axis::Y)?j:k;
+                                   return std::sin(k2pi * nc * h); },
+                               pi, pj, pk, h);
+            double exact = k2pi * std::cos(k2pi * n * h);
             max_err = std::max(max_err, std::abs(got - exact));
         }
         if (prev_err > 0.0) {
-            double ratio = prev_err / max_err;
-            check("CellGrad<X,2> O(h²) ratio >= 3.9", ratio >= 3.9, ratio, 3.9);
+            const char* tag = (A==Axis::X)?"CellGrad<X,2> O(h²) ratio >= 3.9":
+                              (A==Axis::Y)?"CellGrad<Y,2> O(h²) ratio >= 3.9":
+                                           "CellGrad<Z,2> O(h²) ratio >= 3.9";
+            check(tag, prev_err/max_err >= 3.9, prev_err/max_err, 3.9);
         }
         prev_err = max_err;
     }
-    // Y axis — same convergence structure as X
-    {
-        double prev_err_y = -1.0;
-        for (double h : {0.04, 0.02, 0.01}) {
-            CellGrad<Axis::Y, 2> dY;
-            double max_err = 0.0;
-            for (int j = 2; j <= 23; ++j) {
-                double got   = dY([&](int /*ii*/, int jj, int /*kk*/){ return std::sin(k2pi * jj * h); },
-                                  0, j, 0, h);
-                double exact = k2pi * std::cos(k2pi * j * h);
-                max_err = std::max(max_err, std::abs(got - exact));
-            }
-            if (prev_err_y > 0.0) {
-                double ratio = prev_err_y / max_err;
-                check("CellGrad<Y,2> O(h²) ratio >= 3.9", ratio >= 3.9, ratio, 3.9);
-            }
-            prev_err_y = max_err;
-        }
-    }
-    // Z axis — same convergence structure as X
-    {
-        double prev_err_z = -1.0;
-        for (double h : {0.04, 0.02, 0.01}) {
-            CellGrad<Axis::Z, 2> dZ;
-            double max_err = 0.0;
-            for (int k = 2; k <= 23; ++k) {
-                double got   = dZ([&](int /*ii*/, int /*jj*/, int kk){ return std::sin(k2pi * kk * h); },
-                                  0, 0, k, h);
-                double exact = k2pi * std::cos(k2pi * k * h);
-                max_err = std::max(max_err, std::abs(got - exact));
-            }
-            if (prev_err_z > 0.0) {
-                double ratio = prev_err_z / max_err;
-                check("CellGrad<Z,2> O(h²) ratio >= 3.9", ratio >= 3.9, ratio, 3.9);
-            }
-            prev_err_z = max_err;
-        }
-    }
+}
+static void t_da_cell_grad_order2() {
+    const double k2pi = 2.0 * M_PI;
+    check_cell_grad_conv<Axis::X>(k2pi);
+    check_cell_grad_conv<Axis::Y>(k2pi);
+    check_cell_grad_conv<Axis::Z>(k2pi);
 }
 
 // ── R7 T-DB: CellLaplacian<2> — exact on quadratic f = x²+y²+z² ─────────────
@@ -521,28 +490,36 @@ static void t_dc_cell_div_order2() {
 }
 
 // ── R7 T-DD: FaceGrad<DIR,2> — normal O(h²), tangential O(h²) ───────────────
-static void t_dd_face_grad_order2() {
-    // Normal: f(x)=sin(2πx), face at x_{i+½}=(i+0.5)*h
-    // (f(i+1)-f(i))/h approximates ∂f/∂x at (i+0.5)*h to O(h²)
-    const double k2pi = 2.0 * M_PI;
+template<Axis A>
+static void check_face_grad_normal_conv(double k2pi) {
+    FaceGrad<A, 2> fg;
     double prev_err = -1.0;
     for (double h : {0.04, 0.02, 0.01}) {
-        FaceGrad<Axis::X, 2> fg;
-        auto f = [&](int i, int /*j*/, int /*k*/){ return std::sin(k2pi * i * h); };
         double max_err = 0.0;
-        for (int i = 2; i <= 23; ++i) {
-            double got   = fg.normal(f, i, 0, 0, h);
-            double xface = (i + 0.5) * h;
-            double exact = k2pi * std::cos(k2pi * xface);
+        for (int n = 2; n <= 23; ++n) {
+            const int pi = (A==Axis::X)?n:0, pj = (A==Axis::Y)?n:0, pk = (A==Axis::Z)?n:0;
+            auto f = [&](int i, int j, int k){
+                int nc = (A==Axis::X)?i:(A==Axis::Y)?j:k;
+                return std::sin(k2pi * nc * h); };
+            double got   = fg.normal(f, pi, pj, pk, h);
+            double nface = (n + 0.5) * h;
+            double exact = k2pi * std::cos(k2pi * nface);
             max_err = std::max(max_err, std::abs(got - exact));
         }
-        if (prev_err > 0.0)
-            check("FaceGrad<X,2> normal O(h²) ratio >= 3.9", prev_err/max_err >= 3.9,
-                  prev_err/max_err, 3.9);
+        if (prev_err > 0.0) {
+            const char* tag = (A==Axis::X)?"FaceGrad<X,2> normal O(h²) ratio >= 3.9":
+                              (A==Axis::Y)?"FaceGrad<Y,2> normal O(h²) ratio >= 3.9":
+                                           "FaceGrad<Z,2> normal O(h²) ratio >= 3.9";
+            check(tag, prev_err/max_err >= 3.9, prev_err/max_err, 3.9);
+        }
         prev_err = max_err;
     }
+}
+static void t_dd_face_grad_order2() {
+    const double k2pi = 2.0 * M_PI;
+    check_face_grad_normal_conv<Axis::X>(k2pi);
     // Tangential: f(y)=sin(2πy) at x-face, ∂f/∂y averaged from both sides
-    prev_err = -1.0;
+    double prev_err = -1.0;
     for (double h : {0.04, 0.02, 0.01}) {
         FaceGrad<Axis::X, 2> fg;
         auto f = [&](int /*i*/, int j, int /*k*/){ return std::sin(k2pi * j * h); };
@@ -558,40 +535,8 @@ static void t_dd_face_grad_order2() {
                   prev_err/max_err, 3.9);
         prev_err = max_err;
     }
-    // Y-axis normal convergence
-    prev_err = -1.0;
-    for (double h : {0.04, 0.02, 0.01}) {
-        FaceGrad<Axis::Y, 2> fgy;
-        auto fy = [&](int /*i*/, int j, int /*k*/){ return std::sin(k2pi * j * h); };
-        double max_err = 0.0;
-        for (int j = 2; j <= 23; ++j) {
-            double got   = fgy.normal(fy, 0, j, 0, h);
-            double yface = (j + 0.5) * h;
-            double exact = k2pi * std::cos(k2pi * yface);
-            max_err = std::max(max_err, std::abs(got - exact));
-        }
-        if (prev_err > 0.0)
-            check("FaceGrad<Y,2> normal O(h²) ratio >= 3.9", prev_err/max_err >= 3.9,
-                  prev_err/max_err, 3.9);
-        prev_err = max_err;
-    }
-    // Z-axis normal convergence
-    prev_err = -1.0;
-    for (double h : {0.04, 0.02, 0.01}) {
-        FaceGrad<Axis::Z, 2> fgz;
-        auto fz = [&](int /*i*/, int /*j*/, int k){ return std::sin(k2pi * k * h); };
-        double max_err = 0.0;
-        for (int k = 2; k <= 23; ++k) {
-            double got   = fgz.normal(fz, 0, 0, k, h);
-            double zface = (k + 0.5) * h;
-            double exact = k2pi * std::cos(k2pi * zface);
-            max_err = std::max(max_err, std::abs(got - exact));
-        }
-        if (prev_err > 0.0)
-            check("FaceGrad<Z,2> normal O(h²) ratio >= 3.9", prev_err/max_err >= 3.9,
-                  prev_err/max_err, 3.9);
-        prev_err = max_err;
-    }
+    check_face_grad_normal_conv<Axis::Y>(k2pi);
+    check_face_grad_normal_conv<Axis::Z>(k2pi);
 }
 
 // ── R7 T-DD4: FaceGrad<X,4> — smoke test, O(h⁴) error visibly smaller ────────
