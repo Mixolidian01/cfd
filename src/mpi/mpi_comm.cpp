@@ -112,126 +112,38 @@ struct FaceEntry {
 };
 
 #ifdef HAVE_MPI
-static void pack_face(const CellBlock& blk, FaceDir d,
-                      double* buf /* HALO_FACE_DOUBLES doubles */)
+// Pack (PACK=true) or unpack (PACK=false) NG planes for face d.
+// FaceDir encoding: axis = d>>1 (0=X,1=Y,2=Z); is_plus = d&1.
+// Pack start: is_plus ? NB2-2*NG : NG    Unpack start: is_plus ? NB2-NG : 0
+template<bool PACK>
+static void face_io(CellBlock& blk, FaceDir d, double* buf)
 {
-    // Pack the NG real-cell planes adjacent to face d.
-    // These will fill the NG ghost planes of the neighbor on the opposite side.
     int ptr = 0;
-
-    auto pack_cell = [&](int i, int j, int k) {
+    auto do_cell = [&](int i, int j, int k) {
         int idx = cell_idx(i, j, k);
-        for (int v = 0; v < NVAR; ++v)
-            buf[ptr++] = blk.Q[v][idx];
+        for (int v = 0; v < NVAR; ++v) {
+            if constexpr (PACK) buf[ptr++] = blk.Q[v][idx];
+            else                blk.Q[v][idx] = buf[ptr++];
+        }
     };
-
-    // Real planes to send for each direction:
-    //   XMINUS: send planes i = [NG, 2*NG-1]         → fills neighbor's XPLUS  ghost i=[NB2-NG,NB2-1]
-    //   XPLUS : send planes i = [NB2-2*NG, NB2-NG-1] → fills neighbor's XMINUS ghost i=[0,NG-1]
-    //   YMINUS: send planes j = [NG, 2*NG-1]
-    //   YPLUS : send planes j = [NB2-2*NG, NB2-NG-1]
-    //   ZMINUS: send planes k = [NG, 2*NG-1]
-    //   ZPLUS : send planes k = [NB2-2*NG, NB2-NG-1]
-
-    switch (d) {
-    case XMINUS:
-        for (int p = 0; p < NG; ++p)
-        for (int k = 0; k < NB2; ++k)
-        for (int j = 0; j < NB2; ++j)
-            pack_cell(NG + p, j, k);
-        break;
-    case XPLUS:
-        for (int p = 0; p < NG; ++p)
-        for (int k = 0; k < NB2; ++k)
-        for (int j = 0; j < NB2; ++j)
-            pack_cell(NB2 - 2*NG + p, j, k);
-        break;
-    case YMINUS:
-        for (int p = 0; p < NG; ++p)
-        for (int k = 0; k < NB2; ++k)
-        for (int i = 0; i < NB2; ++i)
-            pack_cell(i, NG + p, k);
-        break;
-    case YPLUS:
-        for (int p = 0; p < NG; ++p)
-        for (int k = 0; k < NB2; ++k)
-        for (int i = 0; i < NB2; ++i)
-            pack_cell(i, NB2 - 2*NG + p, k);
-        break;
-    case ZMINUS:
-        for (int p = 0; p < NG; ++p)
-        for (int j = 0; j < NB2; ++j)
-        for (int i = 0; i < NB2; ++i)
-            pack_cell(i, j, NG + p);
-        break;
-    case ZPLUS:
-        for (int p = 0; p < NG; ++p)
-        for (int j = 0; j < NB2; ++j)
-        for (int i = 0; i < NB2; ++i)
-            pack_cell(i, j, NB2 - 2*NG + p);
-        break;
-    default: break;
+    const int axis    = (int)d >> 1;
+    const bool is_plus = (int)d & 1;
+    const int start   = PACK ? (is_plus ? NB2-2*NG : NG) : (is_plus ? NB2-NG : 0);
+    for (int p = 0; p < NG; ++p)
+    for (int a = 0; a < NB2; ++a)
+    for (int b = 0; b < NB2; ++b) {
+        const int ax = start + p;
+        if      (axis == 0) do_cell(ax, a, b);
+        else if (axis == 1) do_cell(a, ax, b);
+        else                do_cell(a, b, ax);
     }
     assert(ptr == HALO_FACE_DOUBLES);
 }
 
-static void unpack_face(CellBlock& blk, FaceDir d,
-                        const double* buf /* HALO_FACE_DOUBLES doubles */)
-{
-    // Unpack data sent by the neighbor for face d of blk.
-    // The sender packed its real cells; we place them into our ghost cells.
-    //   Received for our XMINUS ghost (d=XMINUS): write i=[0,NG-1]
-    //   Received for our XPLUS  ghost (d=XPLUS ): write i=[NB2-NG,NB2-1]
-    //   etc.
-
-    int ptr = 0;
-    auto unpack_cell = [&](int i, int j, int k) {
-        int idx = cell_idx(i, j, k);
-        for (int v = 0; v < NVAR; ++v)
-            blk.Q[v][idx] = buf[ptr++];
-    };
-
-    switch (d) {
-    case XMINUS:
-        for (int p = 0; p < NG; ++p)
-        for (int k = 0; k < NB2; ++k)
-        for (int j = 0; j < NB2; ++j)
-            unpack_cell(p, j, k);
-        break;
-    case XPLUS:
-        for (int p = 0; p < NG; ++p)
-        for (int k = 0; k < NB2; ++k)
-        for (int j = 0; j < NB2; ++j)
-            unpack_cell(NB2 - NG + p, j, k);
-        break;
-    case YMINUS:
-        for (int p = 0; p < NG; ++p)
-        for (int k = 0; k < NB2; ++k)
-        for (int i = 0; i < NB2; ++i)
-            unpack_cell(i, p, k);
-        break;
-    case YPLUS:
-        for (int p = 0; p < NG; ++p)
-        for (int k = 0; k < NB2; ++k)
-        for (int i = 0; i < NB2; ++i)
-            unpack_cell(i, NB2 - NG + p, k);
-        break;
-    case ZMINUS:
-        for (int p = 0; p < NG; ++p)
-        for (int j = 0; j < NB2; ++j)
-        for (int i = 0; i < NB2; ++i)
-            unpack_cell(i, j, p);
-        break;
-    case ZPLUS:
-        for (int p = 0; p < NG; ++p)
-        for (int j = 0; j < NB2; ++j)
-        for (int i = 0; i < NB2; ++i)
-            unpack_cell(i, j, NB2 - NG + p);
-        break;
-    default: break;
-    }
-    assert(ptr == HALO_FACE_DOUBLES);
-}
+static void pack_face  (const CellBlock& blk, FaceDir d, double* buf)
+{ face_io<true> (const_cast<CellBlock&>(blk), d, buf); }
+static void unpack_face(CellBlock&       blk, FaceDir d, const double* buf)
+{ face_io<false>(blk, d, const_cast<double*>(buf)); }
 #endif // HAVE_MPI
 
 void mpi_exchange_halos(BlockTree& tree, const MpiPartition* mpi_part) {

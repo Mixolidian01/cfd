@@ -96,37 +96,26 @@ static void apply_sgs_stress_div(CellBlock& blk, double h, double dt,
     const bool wall_ym = has_wall_bc(1, true),  wall_yp = has_wall_bc(1, false);
     const bool wall_zm = has_wall_bc(2, true),  wall_zp = has_wall_bc(2, false);
 
-    // Outer ghost (g=0): periodic wrap or zero Dirichlet at wall.
-    // Inner ghost layers (g=1..NG-1): also zero at wall faces — for NG>=2 the
-    // inner ghost j=g is computed from anti-symmetric Q ghost values and would
-    // otherwise carry inflated Smag that creates spurious wall-face SGS viscosity.
-    for (int k = 0; k < NB2; ++k)
-    for (int j = 0; j < NB2; ++j) {
-        mu_t_arr[cell_idx(0,     j, k)] = wall_xm ? 0.0 : mu_t_arr[cell_idx(NB2-2, j, k)];
-        mu_t_arr[cell_idx(NB2-1, j, k)] = wall_xp ? 0.0 : mu_t_arr[cell_idx(1,     j, k)];
-        for (int g = 1; g < NG; ++g) {
-            if (wall_xm) mu_t_arr[cell_idx(g,       j, k)] = 0.0;
-            if (wall_xp) mu_t_arr[cell_idx(NB2-1-g, j, k)] = 0.0;
+    // Ghost wrap for mu_t: periodic or zero-Dirichlet for wall faces (all 3 axes).
+    auto mu_ghost_fill = [&](int dim, bool wall_lo, bool wall_hi) {
+        auto ci = [&](int ax, int a, int b) {
+            if (dim == 0) return cell_idx(ax, a, b);
+            if (dim == 1) return cell_idx(a, ax, b);
+            return               cell_idx(a, b, ax);
+        };
+        for (int a = 0; a < NB2; ++a)
+        for (int b = 0; b < NB2; ++b) {
+            mu_t_arr[ci(0,      a, b)] = wall_lo ? 0.0 : mu_t_arr[ci(NB2-2, a, b)];
+            mu_t_arr[ci(NB2-1,  a, b)] = wall_hi ? 0.0 : mu_t_arr[ci(1,     a, b)];
+            for (int g = 1; g < NG; ++g) {
+                if (wall_lo) mu_t_arr[ci(g,       a, b)] = 0.0;
+                if (wall_hi) mu_t_arr[ci(NB2-1-g, a, b)] = 0.0;
+            }
         }
-    }
-    for (int k = 0; k < NB2; ++k)
-    for (int i = 0; i < NB2; ++i) {
-        mu_t_arr[cell_idx(i, 0,     k)] = wall_ym ? 0.0 : mu_t_arr[cell_idx(i, NB2-2, k)];
-        mu_t_arr[cell_idx(i, NB2-1, k)] = wall_yp ? 0.0 : mu_t_arr[cell_idx(i, 1,     k)];
-        for (int g = 1; g < NG; ++g) {
-            if (wall_ym) mu_t_arr[cell_idx(i, g,       k)] = 0.0;
-            if (wall_yp) mu_t_arr[cell_idx(i, NB2-1-g, k)] = 0.0;
-        }
-    }
-    for (int j = 0; j < NB2; ++j)
-    for (int i = 0; i < NB2; ++i) {
-        mu_t_arr[cell_idx(i, j, 0    )] = wall_zm ? 0.0 : mu_t_arr[cell_idx(i, j, NB2-2)];
-        mu_t_arr[cell_idx(i, j, NB2-1)] = wall_zp ? 0.0 : mu_t_arr[cell_idx(i, j, 1    )];
-        for (int g = 1; g < NG; ++g) {
-            if (wall_zm) mu_t_arr[cell_idx(i, j, g      )] = 0.0;
-            if (wall_zp) mu_t_arr[cell_idx(i, j, NB2-1-g)] = 0.0;
-        }
-    }
+    };
+    mu_ghost_fill(0, wall_xm, wall_xp);
+    mu_ghost_fill(1, wall_ym, wall_yp);
+    mu_ghost_fill(2, wall_zm, wall_zp);
 
     constexpr VelocityGradAtFace<Axis::X, 2> VGX;
     constexpr VelocityGradAtFace<Axis::Y, 2> VGY;
