@@ -257,6 +257,9 @@ GPrim gpu_safe_prim_f(const double Qc[GPU_NVAR], const GPrim& fb) noexcept
     return q;
 }
 
+// Forward declaration (defined after gpu_recon_shmem).
+__device__ __forceinline__ GPrim gpu_sp_load_prim(const double* __restrict__ sp, int flat) noexcept;
+
 // 6-point Roe characteristic face reconstruction — WENO5Z (WRAP=false) or TENO5A (WRAP=true).
 // WRAP=true: periodic index wrapping for boundary blocks (needed by TENO5A/TENO7A fallback).
 template<bool WRAP, bool USE_TENO5>
@@ -275,14 +278,9 @@ void gpu_face6(const double* __restrict__ sp,
             return                gpu_cell_idx(i, j, k+d);
         }
     };
-    const int fL = sidx(0), fR = sidx(1);
-    const double rL = sp[0*GPU_NCELL+fL], uL = sp[1*GPU_NCELL+fL];
-    const double vL = sp[2*GPU_NCELL+fL], wL = sp[3*GPU_NCELL+fL];
-    const double pL = sp[4*GPU_NCELL+fL], TL = sp[5*GPU_NCELL+fL], cL = sp[6*GPU_NCELL+fL];
-    const double rR = sp[0*GPU_NCELL+fR], uR = sp[1*GPU_NCELL+fR];
-    const double vR = sp[2*GPU_NCELL+fR], wR = sp[3*GPU_NCELL+fR];
-    const double pR = sp[4*GPU_NCELL+fR], TR = sp[5*GPU_NCELL+fR], cR = sp[6*GPU_NCELL+fR];
-    const GpuRoeState rs = gpu_roe_from_prim(rL,uL,vL,wL,pL, rR,uR,vR,wR,pR, axis);
+    const GPrim qL = gpu_sp_load_prim(sp, sidx(0));
+    const GPrim qR = gpu_sp_load_prim(sp, sidx(1));
+    const GpuRoeState rs = gpu_roe_from_prim(qL.rho,qL.u,qL.v,qL.w,qL.p, qR.rho,qR.u,qR.v,qR.w,qR.p, axis);
     double Q[6][GPU_NVAR];
     for (int m = 0; m < 6; ++m) {
         const int flat = sidx(m-2);
@@ -304,10 +302,8 @@ void gpu_face6(const double* __restrict__ sp,
     double QL[GPU_NVAR], QR[GPU_NVAR];
     gpu_back_proj(wL_w, rs, QL);
     gpu_back_proj(wR_w, rs, QR);
-    GPrim fbL; fbL.rho=rL; fbL.u=uL; fbL.v=vL; fbL.w=wL; fbL.p=pL; fbL.T=TL; fbL.c=cL;
-    GPrim fbR; fbR.rho=rR; fbR.u=uR; fbR.v=vR; fbR.w=wR; fbR.p=pR; fbR.T=TR; fbR.c=cR;
-    qL_out = gpu_safe_prim_f(QL, fbL);
-    qR_out = gpu_safe_prim_f(QR, fbR);
+    qL_out = gpu_safe_prim_f(QL, qL);
+    qR_out = gpu_safe_prim_f(QR, qR);
 }
 __device__ __forceinline__
 void gpu_weno5_face(const double* sp, int i, int j, int k, int axis, GPrim& qL, GPrim& qR) noexcept {
@@ -333,14 +329,9 @@ void gpu_teno7_face(const double* __restrict__ sp,
         int kk=k+d; if(kk<0)kk+=GPU_NB; else if(kk>=GPU_NB2)kk-=GPU_NB; return gpu_cell_idx(i,j,kk);
     };
 
-    const int fL = sidx(0), fR = sidx(1);
-    const double rL = sp[0*GPU_NCELL+fL], uL = sp[1*GPU_NCELL+fL];
-    const double vL = sp[2*GPU_NCELL+fL], wL = sp[3*GPU_NCELL+fL];
-    const double pL = sp[4*GPU_NCELL+fL], TL = sp[5*GPU_NCELL+fL], cL = sp[6*GPU_NCELL+fL];
-    const double rR = sp[0*GPU_NCELL+fR], uR = sp[1*GPU_NCELL+fR];
-    const double vR = sp[2*GPU_NCELL+fR], wR = sp[3*GPU_NCELL+fR];
-    const double pR = sp[4*GPU_NCELL+fR], TR = sp[5*GPU_NCELL+fR], cR = sp[6*GPU_NCELL+fR];
-    const GpuRoeState rs = gpu_roe_from_prim(rL,uL,vL,wL,pL, rR,uR,vR,wR,pR, axis);
+    const GPrim qL = gpu_sp_load_prim(sp, sidx(0));
+    const GPrim qR = gpu_sp_load_prim(sp, sidx(1));
+    const GpuRoeState rs = gpu_roe_from_prim(qL.rho,qL.u,qL.v,qL.w,qL.p, qR.rho,qR.u,qR.v,qR.w,qR.p, axis);
 
     double Q[7][GPU_NVAR];
     for (int m = 0; m < 7; ++m) {
@@ -368,10 +359,8 @@ void gpu_teno7_face(const double* __restrict__ sp,
     double QL[GPU_NVAR], QR[GPU_NVAR];
     gpu_back_proj(wL_w, rs, QL);
     gpu_back_proj(wR_w, rs, QR);
-    GPrim fbL; fbL.rho=rL; fbL.u=uL; fbL.v=vL; fbL.w=wL; fbL.p=pL; fbL.T=TL; fbL.c=cL;
-    GPrim fbR; fbR.rho=rR; fbR.u=uR; fbR.v=vR; fbR.w=wR; fbR.p=pR; fbR.T=TR; fbR.c=cR;
-    qL_out = gpu_safe_prim_f(QL, fbL);
-    qR_out = gpu_safe_prim_f(QR, fbR);
+    qL_out = gpu_safe_prim_f(QL, qL);
+    qR_out = gpu_safe_prim_f(QR, qR);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -479,13 +468,12 @@ void gpu_recon_shmem(const double* __restrict__ s,
     };
     auto jkL = jkd(0), jkR = jkd(1);  // left / right cell of the face
 
-    const double rL = s[0*NB2P+jkL], uL = s[1*NB2P+jkL];
-    const double vL = s[2*NB2P+jkL], wL = s[3*NB2P+jkL];
-    const double pL = s[4*NB2P+jkL], TL = s[5*NB2P+jkL], cL = s[6*NB2P+jkL];
-    const double rR = s[0*NB2P+jkR], uR = s[1*NB2P+jkR];
-    const double vR = s[2*NB2P+jkR], wR = s[3*NB2P+jkR];
-    const double pR = s[4*NB2P+jkR], TR = s[5*NB2P+jkR], cR = s[6*NB2P+jkR];
-    const GpuRoeState rs = gpu_roe_from_prim(rL,uL,vL,wL,pL, rR,uR,vR,wR,pR, AXIS);
+    auto sload_prim = [&](int jk) noexcept -> GPrim {
+        GPrim q; q.rho=s[0*NB2P+jk]; q.u=s[1*NB2P+jk]; q.v=s[2*NB2P+jk];
+        q.w=s[3*NB2P+jk]; q.p=s[4*NB2P+jk]; q.T=s[5*NB2P+jk]; q.c=s[6*NB2P+jk]; return q;
+    };
+    const GPrim qL = sload_prim(jkL), qR = sload_prim(jkR);
+    const GpuRoeState rs = gpu_roe_from_prim(qL.rho,qL.u,qL.v,qL.w,qL.p, qR.rho,qR.u,qR.v,qR.w,qR.p, AXIS);
 
     double Q[6][GPU_NVAR];
     for (int m = 0; m < 6; ++m) {
@@ -510,10 +498,8 @@ void gpu_recon_shmem(const double* __restrict__ s,
     double QL[GPU_NVAR], QR[GPU_NVAR];
     gpu_back_proj(wL_w, rs, QL);
     gpu_back_proj(wR_w, rs, QR);
-    GPrim fbL; fbL.rho=rL; fbL.u=uL; fbL.v=vL; fbL.w=wL; fbL.p=pL; fbL.T=TL; fbL.c=cL;
-    GPrim fbR; fbR.rho=rR; fbR.u=uR; fbR.v=vR; fbR.w=wR; fbR.p=pR; fbR.T=TR; fbR.c=cR;
-    qL_out = gpu_safe_prim_f(QL, fbL);
-    qR_out = gpu_safe_prim_f(QR, fbR);
+    qL_out = gpu_safe_prim_f(QL, qL);
+    qR_out = gpu_safe_prim_f(QR, qR);
 }
 
 // Load 7 prim components from the flat scratch array (layout: comp * GPU_NCELL + flat).
@@ -597,10 +583,7 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
             for (int v = 0; v < GPU_NVAR; ++v) F[v] = Fk[v];
         } else {
             double Fs[GPU_NVAR];
-            bool wall = is_bnd;
-            if (wall) {
-                wall = gpu_is_wall_bc(pL, pR);
-            }
+            const bool wall = is_bnd && gpu_is_wall_bc(pL, pR);
             if (wall) {
                 for (int v = 0; v < GPU_NVAR; ++v) Fs[v] = Fk[v];
             } else if (!is_bnd) {

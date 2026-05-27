@@ -176,16 +176,12 @@ void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
 
         for (int b = ilo(); b <= ihi(); ++b)
         for (int a = ilo(); a <= ihi(); ++a) {
-            int ci, cj, ck, gi, gj, gk;
-            if      (axis == 0) { ci=bound; cj=a; ck=b; gi=gbound; gj=a;      gk=b; }
-            else if (axis == 1) { ci=a; cj=bound; ck=b; gi=a;      gj=gbound; gk=b; }
-            else                { ci=a; cj=b; ck=bound; gi=a;      gj=b;      gk=gbound; }
-
-            double Fvisc_E;
-            if      (axis == 0) Fvisc_E = cf_visc_energy_flux<Axis::X>(blk,h,ci,cj,ck,gi,gj,gk,ns);
-            else if (axis == 1) Fvisc_E = cf_visc_energy_flux<Axis::Y>(blk,h,ci,cj,ck,gi,gj,gk,ns);
-            else                Fvisc_E = cf_visc_energy_flux<Axis::Z>(blk,h,ci,cj,ck,gi,gj,gk,ns);
-
+            const int ci=(axis==0)?bound:a, cj=(axis==1)?bound:(axis==0)?a:b, ck=(axis==2)?bound:b;
+            const int gi=(axis==0)?gbound:a, gj=(axis==1)?gbound:(axis==0)?a:b, gk=(axis==2)?gbound:b;
+            const double Fvisc_E =
+                (axis==0) ? cf_visc_energy_flux<Axis::X>(blk,h,ci,cj,ck,gi,gj,gk,ns) :
+                (axis==1) ? cf_visc_energy_flux<Axis::Y>(blk,h,ci,cj,ck,gi,gj,gk,ns) :
+                            cf_visc_energy_flux<Axis::Z>(blk,h,ci,cj,ck,gi,gj,gk,ns);
             rhs.Q[4][cell_idx(ci,cj,ck)] -= ns * ih * Fvisc_E;
         }
     }

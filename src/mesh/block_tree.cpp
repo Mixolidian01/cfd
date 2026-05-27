@@ -609,9 +609,7 @@ static Prim open_char_ghost(const Prim& p, int axis, double outward_sign,
     Prim g = p;
     g.p   = open_bc_p;
     g.rho = p.rho * std::pow(ratio, 1.0/GAMMA);
-    if (axis==0) g.u = p.u + delta_u_n;
-    else if (axis==1) g.v = p.v + delta_u_n;
-    else g.w = p.w + delta_u_n;
+    ((axis==0)?g.u:(axis==1)?g.v:g.w) = ((axis==0)?p.u:(axis==1)?p.v:p.w) + delta_u_n;
     g.T = g.p / (g.rho * R_GAS);
     g.c = c_g;
     return g;
