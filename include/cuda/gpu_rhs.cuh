@@ -8,7 +8,7 @@
 //
 // Kernel pipeline per leaf:
 //   k_prim_duc   — primitive variables + Ducros sensor → d_scratch
-//   k_rhs_conv   — WENO5-Z / KEP / HLLC-ES convective flux (atomicAdd)
+//   k_rhs_conv_teno<S> — convective flux (S=0:WENO5Z, S=1:TENO5A, S=2:TENO7A; atomicAdd)
 //   k_rhs_visc   — viscous stress divergence (direct write, no atomics)
 //
 // Scratch layout: d_scratch[comp * NCELL + flat]
