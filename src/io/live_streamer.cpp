@@ -262,18 +262,15 @@ void LiveStreamer::gpu_snapshot(const GpuSnapshotBuffer& snap,
         const SnapLeafMeta& m = snap.h_metas[i];
 
         // Check slice intersection using the same logic as build_frame().
-        float lo, hi;
-        if      (axis == 0) { lo = m.ox; hi = m.ox + NB * m.h; }
-        else if (axis == 1) { lo = m.oy; hi = m.oy + NB * m.h; }
-        else                { lo = m.oz; hi = m.oz + NB * m.h; }
+        const float lo = (axis == 0) ? m.ox : (axis == 1) ? m.oy : m.oz;
+        const float hi = lo + NB * m.h;
         if (z_phys < lo || z_phys >= hi) continue;
 
         // 2D projected origin
         const BlockNode& node = tree.nodes[leaves[i]];
         BlockDesc2D desc{};
-        if      (axis == 0) { desc.ox2d = m.oy; desc.oy2d = m.oz; }
-        else if (axis == 1) { desc.ox2d = m.ox; desc.oy2d = m.oz; }
-        else                { desc.ox2d = m.ox; desc.oy2d = m.oy; }
+        desc.ox2d = (axis == 0) ? m.oy : m.ox;
+        desc.oy2d = (axis == 2) ? m.oy : m.oz;
         desc.h     = m.h;
         desc.level = static_cast<uint8_t>(node.level);
         fb.descs.push_back(desc);
@@ -404,10 +401,8 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
         const double     h    = blk.h;
 
         // Find the axis-aligned block range and check intersection
-        double lo, hi;
-        if      (axis == 0) { lo = node.ox; hi = node.ox + NB * h; }
-        else if (axis == 1) { lo = node.oy; hi = node.oy + NB * h; }
-        else                { lo = node.oz; hi = node.oz + NB * h; }
+        const double lo = (axis == 0) ? node.ox : (axis == 1) ? node.oy : node.oz;
+        const double hi = lo + NB * h;
         if (z_phys < lo || z_phys >= hi) continue;
 
         // Slice index along the axis (clamped to interior)
@@ -416,12 +411,8 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
 
         // 2-D projected origin (the two axes not sliced through)
         BlockDesc2D desc{};
-        if      (axis == 0) { desc.ox2d = static_cast<float>(node.oy);
-                              desc.oy2d = static_cast<float>(node.oz); }
-        else if (axis == 1) { desc.ox2d = static_cast<float>(node.ox);
-                              desc.oy2d = static_cast<float>(node.oz); }
-        else                { desc.ox2d = static_cast<float>(node.ox);
-                              desc.oy2d = static_cast<float>(node.oy); }
+        desc.ox2d = static_cast<float>((axis == 0) ? node.oy : node.ox);
+        desc.oy2d = static_cast<float>((axis == 2) ? node.oy : node.oz);
         desc.h     = static_cast<float>(h);
         desc.level = static_cast<uint8_t>(node.level);
         fb.descs.push_back(desc);
@@ -430,10 +421,9 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
         for (int b = 0; b < NB; ++b)
         for (int a = 0; a < NB; ++a) {
             const int ia = NG + a, ib = NG + b;
-            int ci, cj, ck;
-            if      (axis == 0) { ci = s;  cj = ia; ck = ib; }
-            else if (axis == 1) { ci = ia; cj = s;  ck = ib; }
-            else                { ci = ia; cj = ib; ck = s;  }
+            const int ci = (axis == 0) ? s  : ia;
+            const int cj = (axis == 1) ? s  : (axis == 0) ? ia : ib;
+            const int ck = (axis == 2) ? s  : ib;
             float v = ls_cell_val(blk, svar, ci, cj, ck);
             fb.data.push_back(v);
             g_vmin = std::min(g_vmin, v);
