@@ -159,13 +159,12 @@ double MGSolver::residual_norm(const MGLevel& lv) const {
     return std::sqrt(s);
 }
 
-// Red-black Gauss-Seidel (Neumann: skip boundary, count real neighbours only).
-void MGSolver::smooth_rb(MGLevel& lv, int n_sweeps, bool zero_mean) {
+// Shared red-black Gauss-Seidel kernel; UpdateFn(flat_idx, nb_sum, nb_count).
+template<class UpdateFn>
+static void smooth_rb_impl(MGLevel& lv, int n_sweeps, UpdateFn upd, bool zero_mean = false) {
     int nx = lv.nx, ny = lv.ny, nz = lv.nz;
-    double h2 = lv.hx * lv.hx;
-    auto& u = lv.u; auto& f = lv.f;
+    auto& u = lv.u;
     auto idx = [&](int i, int j, int k) { return k*ny*nx + j*nx + i; };
-
     for (int sw = 0; sw < n_sweeps; ++sw) {
         for (int color = 0; color < 2; ++color) {
             for (int k = 0; k < nz; ++k)
@@ -180,11 +179,19 @@ void MGSolver::smooth_rb(MGLevel& lv, int n_sweeps, bool zero_mean) {
                 if (k > 0)    { nb += u[idx(i,j,k-1)]; ++cnt; }
                 if (k < nz-1) { nb += u[idx(i,j,k+1)]; ++cnt; }
                 if (cnt == 0) continue;
-                u[idx(i,j,k)] = (nb - h2 * f[idx(i,j,k)]) / cnt;
+                upd(idx(i,j,k), nb, cnt);
             }
         }
         if (zero_mean) subtract_mean(u);
     }
+}
+
+void MGSolver::smooth_rb(MGLevel& lv, int n_sweeps, bool zero_mean) {
+    double h2 = lv.hx * lv.hx;
+    auto& u = lv.u; auto& f = lv.f;
+    smooth_rb_impl(lv, n_sweeps,
+        [&](int c, double nb, int cnt) { u[c] = (nb - h2 * f[c]) / cnt; },
+        zero_mean);
 }
 
 // Full-weighting restriction: average 8 fine children into 1 coarse cell.
@@ -374,31 +381,12 @@ int MGSolver::solve(std::vector<double>& u,
 
 // Red-black Gauss-Seidel for (I - alpha*Lap) u = f.
 void MGSolver::smooth_helmholtz(MGLevel& lv, double alpha, int n_sweeps) {
-    int nx = lv.nx, ny = lv.ny, nz = lv.nz;
-    double h2     = lv.hx * lv.hx;
-    double a_ih2  = alpha / h2;   // alpha / h^2   (dimensionless viscous weight)
+    const double a_ih2 = alpha / (lv.hx * lv.hx);
     auto& u = lv.u; auto& f = lv.f;
-    auto idx = [&](int i, int j, int k) { return k*ny*nx + j*nx + i; };
-
-    for (int sw = 0; sw < n_sweeps; ++sw) {
-        for (int color = 0; color < 2; ++color) {
-            for (int k = 0; k < nz; ++k)
-            for (int j = 0; j < ny; ++j)
-            for (int i = 0; i < nx; ++i) {
-                if (((i+j+k) & 1) != color) continue;
-                double nb = 0.0; int cnt = 0;
-                if (i > 0)    { nb += u[idx(i-1,j,k)]; ++cnt; }
-                if (i < nx-1) { nb += u[idx(i+1,j,k)]; ++cnt; }
-                if (j > 0)    { nb += u[idx(i,j-1,k)]; ++cnt; }
-                if (j < ny-1) { nb += u[idx(i,j+1,k)]; ++cnt; }
-                if (k > 0)    { nb += u[idx(i,j,k-1)]; ++cnt; }
-                if (k < nz-1) { nb += u[idx(i,j,k+1)]; ++cnt; }
-                if (cnt == 0) continue;
-                // (1 + cnt*a_ih2)*u_ijk = f_ijk + a_ih2*Σ_nb u_nb
-                u[idx(i,j,k)] = (f[idx(i,j,k)] + a_ih2 * nb) / (1.0 + cnt * a_ih2);
-            }
-        }
-    }
+    smooth_rb_impl(lv, n_sweeps, [&](int c, double nb, int cnt) {
+        // (1 + cnt*a_ih2)*u = f + a_ih2*Σ_nb u_nb
+        u[c] = (f[c] + a_ih2 * nb) / (1.0 + cnt * a_ih2);
+    });
 }
 
 void MGSolver::vcycle_helmholtz(std::vector<double>& u_in,
