@@ -55,6 +55,11 @@ void bn_fill_ghosts_tree(BlockTree& tree,
         for (int d = 0; d < NFACES; ++d) {
             int ni = nd.neighbours[d];
             const FaceSpec& sp = specs[d];
+            auto ci_ax = [&](int ax, int a, int b) {
+                if (sp.axis == 0) return cell_idx(ax, a, b);
+                if (sp.axis == 1) return cell_idx(a, ax, b);
+                return               cell_idx(a, b, ax);
+            };
 
             if (ni >= 0 && tree.nodes[ni].is_leaf()) {
                 const auto& nnd = tree.nodes[ni];
@@ -68,30 +73,12 @@ void bn_fill_ghosts_tree(BlockTree& tree,
                     for (int g = 0; g < NG; ++g) {
                         int g_coord = (sp.hi) ? (NB + NG + g) : (NG - 1 - g);
                         int s_coord = (sp.hi) ? (NG + g)       : (NB + NG - 1 - g);
-                        if (sp.axis == 0) {
-                            for (int k = 0; k < NB2; ++k)
-                            for (int j = 0; j < NB2; ++j) {
-                                int df = cell_idx(g_coord, j, k);
-                                int sf = cell_idx(s_coord, j, k);
-                                for (int v = 0; v < NVAR_BN; ++v)
-                                    blk.Q[v][df] = src.Q[v][sf];
-                            }
-                        } else if (sp.axis == 1) {
-                            for (int k = 0; k < NB2; ++k)
-                            for (int i = 0; i < NB2; ++i) {
-                                int df = cell_idx(i, g_coord, k);
-                                int sf = cell_idx(i, s_coord, k);
-                                for (int v = 0; v < NVAR_BN; ++v)
-                                    blk.Q[v][df] = src.Q[v][sf];
-                            }
-                        } else {
-                            for (int j = 0; j < NB2; ++j)
-                            for (int i = 0; i < NB2; ++i) {
-                                int df = cell_idx(i, j, g_coord);
-                                int sf = cell_idx(i, j, s_coord);
-                                for (int v = 0; v < NVAR_BN; ++v)
-                                    blk.Q[v][df] = src.Q[v][sf];
-                            }
+                        for (int a = 0; a < NB2; ++a)
+                        for (int b = 0; b < NB2; ++b) {
+                            int df = ci_ax(g_coord, a, b);
+                            int sf = ci_ax(s_coord, a, b);
+                            for (int v = 0; v < NVAR_BN; ++v)
+                                blk.Q[v][df] = src.Q[v][sf];
                         }
                     }
                     continue;
@@ -116,39 +103,20 @@ void bn_fill_ghosts_tree(BlockTree& tree,
 
                     // Piecewise-constant: both NG layers read the same coarse cell.
                     const int s_norm = sp.hi ? ilo() : ihi();
+                    // oct_a: octant offset along first transverse (a); oct_b: along second (b)
+                    const int oct_a = (sp.axis == 0) ? iy : ix;
+                    const int oct_b = (sp.axis == 2) ? iy : iz;
 
                     for (int g = 0; g < NG; ++g) {
                         int g_coord = sp.hi ? (NB+NG+g) : (NG-1-g);
-                        if (sp.axis == 0) {
-                            for (int k = 0; k < NB2; ++k)
-                            for (int j = 0; j < NB2; ++j) {
-                                int cj = NG + iy*(NB/2) + local(j)/2;
-                                int ck = NG + iz*(NB/2) + local(k)/2;
-                                int df = cell_idx(g_coord, j, k);
-                                int sf = cell_idx(s_norm, cj, ck);
-                                for (int v = 0; v < NVAR_BN; ++v)
-                                    blk.Q[v][df] = csrc.Q[v][sf];
-                            }
-                        } else if (sp.axis == 1) {
-                            for (int k = 0; k < NB2; ++k)
-                            for (int i = 0; i < NB2; ++i) {
-                                int ci = NG + ix*(NB/2) + local(i)/2;
-                                int ck = NG + iz*(NB/2) + local(k)/2;
-                                int df = cell_idx(i, g_coord, k);
-                                int sf = cell_idx(ci, s_norm, ck);
-                                for (int v = 0; v < NVAR_BN; ++v)
-                                    blk.Q[v][df] = csrc.Q[v][sf];
-                            }
-                        } else {
-                            for (int j = 0; j < NB2; ++j)
-                            for (int i = 0; i < NB2; ++i) {
-                                int ci = NG + ix*(NB/2) + local(i)/2;
-                                int cj = NG + iy*(NB/2) + local(j)/2;
-                                int df = cell_idx(i, j, g_coord);
-                                int sf = cell_idx(ci, cj, s_norm);
-                                for (int v = 0; v < NVAR_BN; ++v)
-                                    blk.Q[v][df] = csrc.Q[v][sf];
-                            }
+                        for (int a = 0; a < NB2; ++a)
+                        for (int b = 0; b < NB2; ++b) {
+                            int ca = NG + oct_a*(NB/2) + local(a)/2;
+                            int cb = NG + oct_b*(NB/2) + local(b)/2;
+                            int df = ci_ax(g_coord, a, b);
+                            int sf = ci_ax(s_norm, ca, cb);
+                            for (int v = 0; v < NVAR_BN; ++v)
+                                blk.Q[v][df] = csrc.Q[v][sf];
                         }
                     }
                     continue;
@@ -270,30 +238,12 @@ void bn_fill_ghosts_tree(BlockTree& tree,
                         // Self-wrap: remap to opposite interior.
                         s_coord = (sp.hi) ? (NG + g) : (NB + NG - 1 - g);
                     }
-                    if (sp.axis == 0) {
-                        for (int k = 0; k < NB2; ++k)
-                        for (int j = 0; j < NB2; ++j) {
-                            int df = cell_idx(g_coord, j, k);
-                            int sf = cell_idx(s_coord, j, k);
-                            for (int v = 0; v < NVAR_BN; ++v)
-                                blk.Q[v][df] = src_blk->Q[v][sf];
-                        }
-                    } else if (sp.axis == 1) {
-                        for (int k = 0; k < NB2; ++k)
-                        for (int i = 0; i < NB2; ++i) {
-                            int df = cell_idx(i, g_coord, k);
-                            int sf = cell_idx(i, s_coord, k);
-                            for (int v = 0; v < NVAR_BN; ++v)
-                                blk.Q[v][df] = src_blk->Q[v][sf];
-                        }
-                    } else {
-                        for (int j = 0; j < NB2; ++j)
-                        for (int i = 0; i < NB2; ++i) {
-                            int df = cell_idx(i, j, g_coord);
-                            int sf = cell_idx(i, j, s_coord);
-                            for (int v = 0; v < NVAR_BN; ++v)
-                                blk.Q[v][df] = src_blk->Q[v][sf];
-                        }
+                    for (int a = 0; a < NB2; ++a)
+                    for (int b = 0; b < NB2; ++b) {
+                        int df = ci_ax(g_coord, a, b);
+                        int sf = ci_ax(s_coord, a, b);
+                        for (int v = 0; v < NVAR_BN; ++v)
+                            blk.Q[v][df] = src_blk->Q[v][sf];
                     }
                 }
             } else {
@@ -303,33 +253,13 @@ void bn_fill_ghosts_tree(BlockTree& tree,
                 for (int g = 0; g < NG; ++g) {
                     int g_coord = (sp.hi) ? (NB + NG + g) : (NG - 1 - g);
                     int s_coord = (sp.hi) ? (NB + NG - 1 - g) : (NG + g);
-                    if (sp.axis == 0) {
-                        for (int k = 0; k < NB2; ++k)
-                        for (int j = 0; j < NB2; ++j) {
-                            int df = cell_idx(g_coord, j, k);
-                            int sf = cell_idx(s_coord, j, k);
-                            for (int v = 0; v < NVAR_BN; ++v)
-                                blk.Q[v][df] = blk.Q[v][sf];
-                            blk.Q[nv][df] = -blk.Q[nv][sf];
-                        }
-                    } else if (sp.axis == 1) {
-                        for (int k = 0; k < NB2; ++k)
-                        for (int i = 0; i < NB2; ++i) {
-                            int df = cell_idx(i, g_coord, k);
-                            int sf = cell_idx(i, s_coord, k);
-                            for (int v = 0; v < NVAR_BN; ++v)
-                                blk.Q[v][df] = blk.Q[v][sf];
-                            blk.Q[nv][df] = -blk.Q[nv][sf];
-                        }
-                    } else {
-                        for (int j = 0; j < NB2; ++j)
-                        for (int i = 0; i < NB2; ++i) {
-                            int df = cell_idx(i, j, g_coord);
-                            int sf = cell_idx(i, j, s_coord);
-                            for (int v = 0; v < NVAR_BN; ++v)
-                                blk.Q[v][df] = blk.Q[v][sf];
-                            blk.Q[nv][df] = -blk.Q[nv][sf];
-                        }
+                    for (int a = 0; a < NB2; ++a)
+                    for (int b = 0; b < NB2; ++b) {
+                        int df = ci_ax(g_coord, a, b);
+                        int sf = ci_ax(s_coord, a, b);
+                        for (int v = 0; v < NVAR_BN; ++v)
+                            blk.Q[v][df] = blk.Q[v][sf];
+                        blk.Q[nv][df] = -blk.Q[nv][sf];
                     }
                 }
             }
