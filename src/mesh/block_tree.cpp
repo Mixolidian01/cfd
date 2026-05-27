@@ -563,6 +563,38 @@ int BlockTree::balance() {
 static inline int fd_axis(int d) { return d >> 1; }  // 0→x, 2→y, 4→z
 static inline int fd_side(int d) { return d & 1;  }  // 0→minus, 1→plus
 
+// Periodic wrap lookup: find the source block at the wrapped Morton position.
+// Returns nullptr when the domain is a single root block (level==0).
+struct PeriodicSrc { const CellBlock* blk; int level_rel; };
+static PeriodicSrc periodic_src_lookup(
+    const std::vector<BlockNode>& nodes,
+    const std::unordered_map<uint64_t,int>& lm_map,
+    const BlockNode& nd, int d) noexcept
+{
+    static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
+    static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
+    const int axis = face_axis[d], delta = face_delta[d], lev = nd.level;
+    if (lev == 0) return {nullptr, 0};
+    uint32_t mx, my, mz;
+    morton_decode(nd.morton, mx, my, mz);
+    const uint32_t max_coord = (1u << lev) - 1u;
+    if      (axis == 0) mx = (delta > 0) ? 0 : max_coord;
+    else if (axis == 1) my = (delta > 0) ? 0 : max_coord;
+    else                mz = (delta > 0) ? 0 : max_coord;
+    const uint64_t key = ((uint64_t)lev << 32) | morton_encode(mx, my, mz);
+    auto it = lm_map.find(key);
+    if (it != lm_map.end() && nodes[it->second].has_block())
+        return {nodes[it->second].block.get(), 0};
+    if (lev > 1) {
+        const uint32_t pc = morton_encode(mx, my, mz) >> 3;
+        const uint64_t pk = ((uint64_t)(lev-1) << 32) | pc;
+        auto it2 = lm_map.find(pk);
+        if (it2 != lm_map.end() && nodes[it2->second].has_block())
+            return {nodes[it2->second].block.get(), -1};
+    }
+    return {nullptr, 0};
+}
+
 // Compute characteristic ghost Prim for one open-boundary cell.
 // axis: 0/1/2 = x/y/z; outward_sign: +1 for + faces, -1 for - faces.
 // Returns zero-gradient state when open_bc_p == 0 or supersonic outflow.
@@ -763,36 +795,8 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
         lm_map[((uint64_t)nd_tmp.level << 32) | nd_tmp.morton] = li;
     }
 
-    // Helper: find periodic-wrap block for face d of node nd when ni==-1.
-    // Returns {block pointer, neighbor_level - nd.level}; pointer is nullptr if
-    // not found (caller falls back to self-copy / zero-gradient).
-    struct PeriodicSrc { const CellBlock* blk; int level_rel; };
     auto periodic_src = [&](const BlockNode& nd, int d) -> PeriodicSrc {
-        static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
-        static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
-        int axis  = face_axis[d];
-        int delta = face_delta[d];
-        int lev   = nd.level;
-        if (lev == 0) return {nullptr, 0};  // single-block root → wrap to self
-        uint32_t mx, my, mz;
-        morton_decode(nd.morton, mx, my, mz);
-        uint32_t max_coord = (1u << lev) - 1u;
-        if (axis == 0) mx = (delta > 0) ? 0 : max_coord;
-        else if (axis == 1) my = (delta > 0) ? 0 : max_coord;
-        else               mz = (delta > 0) ? 0 : max_coord;
-        uint64_t key = ((uint64_t)lev << 32) | morton_encode(mx, my, mz);
-        auto it = lm_map.find(key);
-        if (it != lm_map.end() && nodes[it->second].has_block())
-            return {nodes[it->second].block.get(), 0};
-        // Coarser periodic neighbor (2:1 balance): check level-1
-        if (lev > 1) {
-            uint32_t pc = morton_encode(mx, my, mz) >> 3;
-            uint64_t pk = ((uint64_t)(lev-1) << 32) | pc;
-            auto it2 = lm_map.find(pk);
-            if (it2 != lm_map.end() && nodes[it2->second].has_block())
-                return {nodes[it2->second].block.get(), -1};
-        }
-        return {nullptr, 0};
+        return periodic_src_lookup(nodes, lm_map, nd, d);
     };
 
     for (int li : leaves) {
@@ -978,32 +982,8 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
         }
     }
 
-    struct PeriodicSrc { const CellBlock* blk; int level_rel; };
     auto periodic_src = [&](const BlockNode& nd, int d) -> PeriodicSrc {
-        static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
-        static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
-        int axis  = face_axis[d];
-        int delta = face_delta[d];
-        int lev   = nd.level;
-        if (lev == 0) return {nullptr, 0};
-        uint32_t mx, my, mz;
-        morton_decode(nd.morton, mx, my, mz);
-        uint32_t max_coord = (1u << lev) - 1u;
-        if      (axis == 0) mx = (delta > 0) ? 0 : max_coord;
-        else if (axis == 1) my = (delta > 0) ? 0 : max_coord;
-        else                mz = (delta > 0) ? 0 : max_coord;
-        uint64_t key = ((uint64_t)lev << 32) | morton_encode(mx, my, mz);
-        auto it = lm_map.find(key);
-        if (it != lm_map.end() && nodes[it->second].has_block())
-            return {nodes[it->second].block.get(), 0};
-        if (lev > 1) {
-            uint32_t pc = morton_encode(mx, my, mz) >> 3;
-            uint64_t pk = ((uint64_t)(lev-1) << 32) | pc;
-            auto it2 = lm_map.find(pk);
-            if (it2 != lm_map.end() && nodes[it2->second].has_block())
-                return {nodes[it2->second].block.get(), -1};
-        }
-        return {nullptr, 0};
+        return periodic_src_lookup(nodes, lm_map, nd, d);
     };
 
     struct FaceSpec { int axis, side; };
