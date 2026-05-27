@@ -113,41 +113,11 @@ static double total_mass(const BlockTree& tree) {
 static void test_a71() {
     printf("\n-- A71  TENO7-A mass conservation over 4 steps  (tol 1e-8) --\n");
     const double cfl = 0.3;
-    const int NSTEP  = 4;
-
-    BlockTree tree0; tree0.init(1.0); tree0.set_periodic(true);
-    {
-        CellBlock& blk = *tree0.nodes[0].block;
-        for (int k = 0; k < NB2; ++k)
-        for (int j = 0; j < NB2; ++j)
-        for (int i = 0; i < NB2; ++i) {
-            double x = (i - NG + 0.5) * blk.h;
-            Prim p = sod_ic(x, 0.0, 0.0, 0);
-            int flat = cell_idx(i, j, k);
-            blk.Q[0][flat] = p.rho;
-            blk.Q[1][flat] = p.rho * p.u;
-            blk.Q[2][flat] = p.rho * p.v;
-            blk.Q[3][flat] = p.rho * p.w;
-            blk.Q[4][flat] = p.p / (GAMMA - 1.0)
-                           + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
-        }
-    }
-    upload_all(tree0);
-    const double m0 = total_mass(tree0);
-
-    GpuGraphSolver solver;
-    solver.rhs_list.scheme = GpuReconScheme::TENO7A;
-    solver.build(tree0, pool);
-    for (int s = 0; s < NSTEP; ++s)
-        solver.advance(tree0, cfl);
-    solver.download_q(tree0);
-
-    const double mf  = total_mass(tree0);
-    const double rel = std::fabs(mf - m0) / std::fabs(m0);
+    const double m0  = total_mass(run_scheme(0, cfl, 0, GpuReconScheme::TENO7A));
+    BlockTree    tF  = run_scheme(4, cfl, 0, GpuReconScheme::TENO7A);
+    const double rel = std::fabs(total_mass(tF) - m0) / std::fabs(m0);
     printf("   TENO7-A mass rel error over 4 steps = %.3e  (tol 1e-8)\n", rel);
     check(rel < 1.0e-8, "A71", "TENO7-A mass conserved over 4 steps (tol 1e-8)", rel);
-
-    free_all(tree0);
 }
 
 // =============================================================================

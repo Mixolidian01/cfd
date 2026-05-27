@@ -49,6 +49,24 @@ static Prim sod_ic(double x, double /*y*/, double /*z*/) {
 // ── Per-block helpers ─────────────────────────────────────────────────────────
 static GpuPool pool;
 
+static BlockTree make_sod_tree() {
+    BlockTree tree; tree.init(1.0); tree.set_periodic(true);
+    CellBlock& blk = *tree.nodes[0].block;
+    for (int k = 0; k < NB2; ++k)
+    for (int j = 0; j < NB2; ++j)
+    for (int i = 0; i < NB2; ++i) {
+        double x = (i - NG + 0.5) * blk.h;
+        Prim p = sod_ic(x, 0.0, 0.0);
+        int flat = cell_idx(i,j,k);
+        blk.Q[0][flat] = p.rho;
+        blk.Q[1][flat] = p.rho * p.u;
+        blk.Q[2][flat] = p.rho * p.v;
+        blk.Q[3][flat] = p.rho * p.w;
+        blk.Q[4][flat] = p.p / (GAMMA - 1.0) + 0.5*p.rho*(p.u*p.u+p.v*p.v+p.w*p.w);
+    }
+    return tree;
+}
+
 static void upload_all(BlockTree& tree) {
     for (int li : tree.leaf_indices()) {
         CellBlock* blk = tree.nodes[li].block.get();
@@ -134,23 +152,7 @@ static QSnap run_cpu(int nstep, double cfl, std::vector<double>* dts = nullptr) 
 // run_gpu: N steps via GpuGraphSolver
 // =============================================================================
 static QSnap run_gpu(int nstep, double cfl, std::vector<double>* dts = nullptr) {
-    BlockTree tree; tree.init(1.0); tree.set_periodic(true);
-    // IC
-    {
-        CellBlock& blk = *tree.nodes[0].block;
-        for (int k = 0; k < NB2; ++k)
-        for (int j = 0; j < NB2; ++j)
-        for (int i = 0; i < NB2; ++i) {
-            double x = (i - NG + 0.5) * blk.h;
-            Prim p = sod_ic(x, 0.0, 0.0);
-            int flat = cell_idx(i,j,k);
-            blk.Q[0][flat] = p.rho;
-            blk.Q[1][flat] = p.rho * p.u;
-            blk.Q[2][flat] = p.rho * p.v;
-            blk.Q[3][flat] = p.rho * p.w;
-            blk.Q[4][flat] = p.p / (GAMMA - 1.0) + 0.5*p.rho*(p.u*p.u+p.v*p.v+p.w*p.w);
-        }
-    }
+    BlockTree tree = make_sod_tree();
     upload_all(tree);
 
     GpuGraphSolver solver;
@@ -221,22 +223,7 @@ static void test_n4() {
     const double cfl   = 0.3;
     const int    NSTEP = 20;
 
-    BlockTree tree; tree.init(1.0); tree.set_periodic(true);
-    {
-        CellBlock& blk = *tree.nodes[0].block;
-        for (int k = 0; k < NB2; ++k)
-        for (int j = 0; j < NB2; ++j)
-        for (int i = 0; i < NB2; ++i) {
-            double x = (i - NG + 0.5) * blk.h;
-            Prim p = sod_ic(x, 0.0, 0.0);
-            int flat = cell_idx(i,j,k);
-            blk.Q[0][flat] = p.rho;
-            blk.Q[1][flat] = p.rho * p.u;
-            blk.Q[2][flat] = p.rho * p.v;
-            blk.Q[3][flat] = p.rho * p.w;
-            blk.Q[4][flat] = p.p / (GAMMA - 1.0) + 0.5*p.rho*(p.u*p.u+p.v*p.v+p.w*p.w);
-        }
-    }
+    BlockTree tree = make_sod_tree();
     upload_all(tree);
     const double m0 = total_mass(tree);
 
