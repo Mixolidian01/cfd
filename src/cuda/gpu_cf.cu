@@ -52,19 +52,14 @@ static void cf_face_cells(int face_dir, int a, int b,
     const int ga    = GPU_NG + a;
     const int gb    = GPU_NG + b;
 
-    int ci, cj, ck, gi, gj, gk;
-    if (axis == 0) {
-        ci=bound; cj=ga; ck=gb;  gi=bound+delta; gj=ga; gk=gb;
-        flat_bound_ij = gpu_cell_idx(bound, ga, gb);
-    } else if (axis == 1) {
-        ci=ga; cj=bound; ck=gb;  gi=ga; gj=bound+delta; gk=gb;
-        flat_bound_ij = gpu_cell_idx(ga, bound, gb);
-    } else {
-        ci=ga; cj=gb; ck=bound;  gi=ga; gj=gb; gk=bound+delta;
-        flat_bound_ij = gpu_cell_idx(ga, gb, bound);
-    }
-    flat_int   = gpu_cell_idx(ci, cj, ck);
-    flat_ghost = gpu_cell_idx(gi, gj, gk);
+    flat_bound_ij = flat_int =
+        (axis == 0) ? gpu_cell_idx(bound,       ga, gb) :
+        (axis == 1) ? gpu_cell_idx(ga, bound,       gb) :
+                      gpu_cell_idx(ga, gb, bound      );
+    flat_ghost =
+        (axis == 0) ? gpu_cell_idx(bound+delta, ga, gb) :
+        (axis == 1) ? gpu_cell_idx(ga, bound+delta, gb) :
+                      gpu_cell_idx(ga, gb, bound+delta);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -145,14 +140,8 @@ void k_cf_accum(const GpuCfFineMeta* __restrict__ metas, double stage_weight) {
     //   axis=X: jc from off1 + a/2,  ic from off2 + b/2
     //   axis=Y/Z: jc from off1 + b/2, ic from off2 + a/2
     constexpr int HALF = GPU_NB / 2;
-    int jc, ic;
-    if (axis == 0) {
-        jc = (int)m.off1 * HALF + a / 2;
-        ic = (int)m.off2 * HALF + b / 2;
-    } else {
-        jc = (int)m.off1 * HALF + b / 2;
-        ic = (int)m.off2 * HALF + a / 2;
-    }
+    const int jc = (int)m.off1 * HALF + ((axis == 0) ? a : b) / 2;
+    const int ic = (int)m.off2 * HALF + ((axis == 0) ? b : a) / 2;
 
     // area_ratio = 0.25: fine face area = (h/2)² = h²/4; divide by coarse h².
     for (int v = 0; v < GPU_NVAR; ++v)
@@ -181,17 +170,11 @@ void k_cf_apply(const GpuCfCoarseMeta* __restrict__ metas, double dt) {
     const int    g     = (side == 0) ? GPU_NG : (GPU_NG + GPU_NB - 1);
     const double ih_c  = 1.0 / m.h_coarse;
 
-    // Physical cell index on coarse boundary face.
-    // axis=0 (X): ci=g, cj=ilo+jc, ck=ilo+ic
-    // axis=1 (Y): ci=ilo+ic, cj=g, ck=ilo+jc
-    // axis=2 (Z): ci=ilo+ic, cj=ilo+jc, ck=g
-    int flat;
-    if (axis == 0)
-        flat = gpu_cell_idx(g, GPU_NG+jc, GPU_NG+ic);
-    else if (axis == 1)
-        flat = gpu_cell_idx(GPU_NG+ic, g, GPU_NG+jc);
-    else
-        flat = gpu_cell_idx(GPU_NG+ic, GPU_NG+jc, g);
+    // axis=0: (g, ilo+jc, ilo+ic)  axis=1: (ilo+ic, g, ilo+jc)  axis=2: (ilo+ic, ilo+jc, g)
+    const int flat =
+        (axis == 0) ? gpu_cell_idx(g,         GPU_NG+jc, GPU_NG+ic) :
+        (axis == 1) ? gpu_cell_idx(GPU_NG+ic, g,         GPU_NG+jc) :
+                      gpu_cell_idx(GPU_NG+ic, GPU_NG+jc, g        );
 
     for (int v = 0; v < GPU_NVAR; ++v) {
         double corr = sign * dt * ih_c * m.d_reg[v * GPU_NB * GPU_NB + jc * GPU_NB + ic];
@@ -305,10 +288,8 @@ void GpuCfList::build(const BlockTree& tree, const GpuPool& pool,
 
             // Octant offsets: which quadrant of the NB×NB coarse face this fine covers
             const int axis = d >> 1;
-            int off1, off2;
-            if      (axis == 0) { off1 = o_iy; off2 = o_iz; }
-            else if (axis == 1) { off1 = o_iz; off2 = o_ix; }
-            else                { off1 = o_iy; off2 = o_ix; }
+            const int off1 = (axis == 1) ? o_iz : o_iy;
+            const int off2 = (axis == 0) ? o_iz : o_ix;
 
             GpuCfFineMeta m{};
             m.d_scratch = scratch_ptr(li);
