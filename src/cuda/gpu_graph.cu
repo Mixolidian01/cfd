@@ -311,29 +311,18 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
 
     k_save_qn<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
 
-    // Stage 1
-    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
-    mpi_halo_.exchange(s);   // no-op for single-rank
-    ghost_list.exec(s);
-    rhs_list.exec(s, /*zero_rhs=*/false);
-    k_rk3s1<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
-    k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
-
-    // Stage 2
-    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
-    mpi_halo_.exchange(s);
-    ghost_list.exec(s);
-    rhs_list.exec(s, /*zero_rhs=*/false);
-    k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, 0.75, 0.25);
-    k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
-
-    // Stage 3
-    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
-    mpi_halo_.exchange(s);
-    ghost_list.exec(s);
-    rhs_list.exec(s, /*zero_rhs=*/false);
-    k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
-    k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
+    auto stage = [&](bool s1, double a, double b) {
+        CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
+        mpi_halo_.exchange(s);
+        ghost_list.exec(s);
+        rhs_list.exec(s, false);
+        if (s1) k_rk3s1 <<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
+        else    k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, a, b);
+        k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
+    };
+    stage(true,  0.0,     0.0   );
+    stage(false, 0.75,    0.25  );
+    stage(false, 1.0/3.0, 2.0/3.0);
 }
 
 // Capture three per-stage sub-graphs.  Each captures (ghost fill + prim_duc +
@@ -404,36 +393,21 @@ double GpuGraphSolver::_advance_amr(double cfl) {
     // Zero flux registers once before stage 1 (accumulate across all 3 stages).
     cf_list.zero_regs(stream);
 
-    // Stage 1  — weight 1/6
-    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
-    k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
-    mpi_halo_.exchange(stream);
-    ghost_list.exec(stream);
-    rhs_list.exec(stream, /*zero_rhs=*/false);
-    cf_list.undo_coarse_flux(stream);
-    cf_list.accum_fine_flux(stream, 1.0/6.0);
-    k_rk3s1<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt);
-    k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
-
-    // Stage 2  — weight 1/6
-    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
-    mpi_halo_.exchange(stream);
-    ghost_list.exec(stream);
-    rhs_list.exec(stream, /*zero_rhs=*/false);
-    cf_list.undo_coarse_flux(stream);
-    cf_list.accum_fine_flux(stream, 1.0/6.0);
-    k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 0.75, 0.25);
-    k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
-
-    // Stage 3  — weight 2/3
-    CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
-    mpi_halo_.exchange(stream);
-    ghost_list.exec(stream);
-    rhs_list.exec(stream, /*zero_rhs=*/false);
-    cf_list.undo_coarse_flux(stream);
-    cf_list.accum_fine_flux(stream, 2.0/3.0);
-    k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
-    k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+    auto stage = [&](bool save_qn, double cf_wt, bool s1, double a, double b) {
+        CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
+        if (save_qn) k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+        mpi_halo_.exchange(stream);
+        ghost_list.exec(stream);
+        rhs_list.exec(stream, false);
+        cf_list.undo_coarse_flux(stream);
+        cf_list.accum_fine_flux(stream, cf_wt);
+        if (s1) k_rk3s1 <<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt);
+        else    k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, a, b);
+        k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+    };
+    stage(true,  1.0/6.0, true,  0.0,     0.0   );   // Stage 1 — weight 1/6
+    stage(false, 1.0/6.0, false, 0.75,    0.25  );   // Stage 2 — weight 1/6
+    stage(false, 2.0/3.0, false, 1.0/3.0, 2.0/3.0); // Stage 3 — weight 2/3
 
     // Apply Berger-Colella correction to coarse Q (once, after all 3 stages).
     cf_list.apply_correction(stream, dt);

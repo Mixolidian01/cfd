@@ -94,39 +94,6 @@ static BlockTree run_scheme(int nstep, double cfl, int axis, GpuReconScheme sche
     return tree;
 }
 
-// Run N steps with TENO7-A on an axis-Sod IC.  Downloads Q to CPU after run.
-static BlockTree run_teno7a(int nstep, double cfl, int axis) {
-    BlockTree tree; tree.init(1.0); tree.set_periodic(true);
-    {
-        CellBlock& blk = *tree.nodes[0].block;
-        for (int k = 0; k < NB2; ++k)
-        for (int j = 0; j < NB2; ++j)
-        for (int i = 0; i < NB2; ++i) {
-            double x = (i - NG + 0.5) * blk.h;
-            double y = (j - NG + 0.5) * blk.h;
-            double z = (k - NG + 0.5) * blk.h;
-            Prim p = sod_ic(x, y, z, axis);
-            int flat = cell_idx(i, j, k);
-            blk.Q[0][flat] = p.rho;
-            blk.Q[1][flat] = p.rho * p.u;
-            blk.Q[2][flat] = p.rho * p.v;
-            blk.Q[3][flat] = p.rho * p.w;
-            blk.Q[4][flat] = p.p / (GAMMA - 1.0)
-                           + 0.5*p.rho*(p.u*p.u + p.v*p.v + p.w*p.w);
-        }
-    }
-    upload_all(tree);
-
-    GpuGraphSolver solver;
-    solver.rhs_list.scheme = GpuReconScheme::TENO7A;
-    solver.build(tree, pool);
-    for (int s = 0; s < nstep; ++s)
-        solver.advance(tree, cfl);
-    solver.download_q(tree);
-    free_all(tree);
-    return tree;
-}
-
 static double total_mass(const BlockTree& tree) {
     double m = 0.0;
     for (int li : tree.leaf_indices()) {
@@ -231,7 +198,7 @@ static void test_a72() {
     const double cfl = 0.3;
     const int NSTEP  = 4;
 
-    BlockTree tree = run_teno7a(NSTEP, cfl, 0);  // X-Sod
+    BlockTree tree = run_scheme(NSTEP, cfl, 0, GpuReconScheme::TENO7A);  // X-Sod
     const CellBlock& blk = *tree.nodes[0].block;
 
     double max_spread = 0.0;
@@ -271,9 +238,9 @@ static void test_a73() {
         return mx;
     };
 
-    BlockTree tx = run_teno7a(NSTEP, cfl, 0);
-    BlockTree ty = run_teno7a(NSTEP, cfl, 1);
-    BlockTree tz = run_teno7a(NSTEP, cfl, 2);
+    BlockTree tx = run_scheme(NSTEP, cfl, 0, GpuReconScheme::TENO7A);
+    BlockTree ty = run_scheme(NSTEP, cfl, 1, GpuReconScheme::TENO7A);
+    BlockTree tz = run_scheme(NSTEP, cfl, 2, GpuReconScheme::TENO7A);
 
     const double rx = max_rho(tx);
     const double ry = max_rho(ty);
