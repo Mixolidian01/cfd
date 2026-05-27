@@ -44,6 +44,11 @@ __device__ __forceinline__ int loclamp(int x) {
 }
 
 // ── CF fine←coarse: fill one ghost cell for variable v ───────────────────────
+// bit_a: which cf_oct bit selects the first transverse sub-offset (a-direction)
+// bit_b: which cf_oct bit selects the second (b-direction)
+// axis=0: transverse dims are j(bit1=iy) and k(bit2=iz)
+// axis=1: transverse dims are i(bit0=ix) and k(bit2=iz)
+// axis=2: transverse dims are i(bit0=ix) and j(bit1=iy)
 __device__ double cf_fine_from_coarse(
     const double* __restrict__ d_coarse,
     int v, int axis, int side, int gl,
@@ -51,48 +56,14 @@ __device__ double cf_fine_from_coarse(
     int cf_oct
 ) {
     const double* Lc = (gl == 0) ? kLp : kLm;
-    const int ix = cf_oct & 1;
-    const int iy = (cf_oct >> 1) & 1;
-    const int iz = (cf_oct >> 2) & 1;
+    const int bit_a = (axis == 0) ? 1 : 0;
+    const int bit_b = (axis == 2) ? 1 : 2;
+    const int c1 = NG + ((cf_oct >> bit_a) & 1) * (NB / 2) + loclamp(a) / 2;
+    const int c2 = NG + ((cf_oct >> bit_b) & 1) * (NB / 2) + loclamp(b) / 2;
+    const int n0 = (side == 0) ? (NG + NB - 5) : NG;
     double val = 0.0;
-
-    if (axis == 0) {
-        int cj = NG + iy * (NB / 2) + loclamp(a) / 2;
-        int ck = NG + iz * (NB / 2) + loclamp(b) / 2;
-        if (side == 0) {
-            int i0 = NG + NB - 1;
-            for (int k = 0; k < 5; ++k)
-                val += Lc[k] * d_coarse[v * NCELL + cidx(i0 - 4 + k, cj, ck)];
-        } else {
-            int i0 = NG;
-            for (int k = 0; k < 5; ++k)
-                val += Lc[4 - k] * d_coarse[v * NCELL + cidx(i0 + k, cj, ck)];
-        }
-    } else if (axis == 1) {
-        int ci = NG + ix * (NB / 2) + loclamp(a) / 2;
-        int ck = NG + iz * (NB / 2) + loclamp(b) / 2;
-        if (side == 0) {
-            int j0 = NG + NB - 1;
-            for (int k = 0; k < 5; ++k)
-                val += Lc[k] * d_coarse[v * NCELL + cidx(ci, j0 - 4 + k, ck)];
-        } else {
-            int j0 = NG;
-            for (int k = 0; k < 5; ++k)
-                val += Lc[4 - k] * d_coarse[v * NCELL + cidx(ci, j0 + k, ck)];
-        }
-    } else {
-        int ci = NG + ix * (NB / 2) + loclamp(a) / 2;
-        int cj = NG + iy * (NB / 2) + loclamp(b) / 2;
-        if (side == 0) {
-            int k0 = NG + NB - 1;
-            for (int k = 0; k < 5; ++k)
-                val += Lc[k] * d_coarse[v * NCELL + cidx(ci, cj, k0 - 4 + k)];
-        } else {
-            int k0 = NG;
-            for (int k = 0; k < 5; ++k)
-                val += Lc[4 - k] * d_coarse[v * NCELL + cidx(ci, cj, k0 + k)];
-        }
-    }
+    for (int k = 0; k < 5; ++k)
+        val += Lc[(side == 0) ? k : 4 - k] * d_coarse[v * NCELL + cidx_axis(axis, n0 + k, c1, c2)];
     return val;
 }
 

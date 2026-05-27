@@ -235,34 +235,17 @@ void ghost_exchange_cluster_z_kernel(
 // =============================================================================
 // Global-memory fallback kernels (sm_86 and below)
 // Functionally identical to the TBC kernels; used on pre-H100 hardware.
+// AXIS=0: threads cover (j,k); AXIS=1: (i,k); AXIS=2: (i,j)
 // =============================================================================
-__global__ void ghost_exchange_global_x_kernel(
-    double* __restrict__    Q,
-    const int* __restrict__ pairs,
-    int                     n_blocks)
-{
-    // One CUDA block per pair; threads handle (j,k) cells cooperatively.
-    const int pair_idx = blockIdx.x;
-    const int b0 = pairs[pair_idx * 2 + 0];  // left block
-    const int b1 = pairs[pair_idx * 2 + 1];  // right block
-    const int j = threadIdx.x;
-    const int k = threadIdx.y;
-
-    for (int v = 0; v < GPU_NVAR; ++v) {
-        double* Q0 = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b0 * GPU_NCELL;
-        double* Q1 = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b1 * GPU_NCELL;
-        for (int g = 0; g < GPU_NG; ++g) {
-            // b0 right ghost ← b1 left interior face
-            double b1_left = Q1[gpu_cell_idx(GPU_NG + g, j, k)];
-            Q0[gpu_cell_idx(GPU_NB + GPU_NG + g, j, k)] = b1_left;
-            // b1 left ghost ← b0 right interior face
-            double b0_right = Q0[gpu_cell_idx(GPU_NB + g, j, k)];
-            Q1[gpu_cell_idx(GPU_NG - 1 - g, j, k)] = b0_right;
-        }
-    }
+template<int AXIS>
+__device__ __forceinline__ int gx_flat(int ax, int ta, int tb) {
+    if constexpr (AXIS == 0) return gpu_cell_idx(ax, ta, tb);
+    if constexpr (AXIS == 1) return gpu_cell_idx(ta, ax, tb);
+    return                          gpu_cell_idx(ta, tb, ax);
 }
 
-__global__ void ghost_exchange_global_y_kernel(
+template<int AXIS>
+__global__ void ghost_exchange_global_kernel(
     double* __restrict__    Q,
     const int* __restrict__ pairs,
     int                     n_blocks)
@@ -270,40 +253,16 @@ __global__ void ghost_exchange_global_y_kernel(
     const int pair_idx = blockIdx.x;
     const int b0 = pairs[pair_idx * 2 + 0];
     const int b1 = pairs[pair_idx * 2 + 1];
-    const int i = threadIdx.x;
-    const int k = threadIdx.y;
-
+    const int ta = threadIdx.x;
+    const int tb = threadIdx.y;
     for (int v = 0; v < GPU_NVAR; ++v) {
         double* Q0 = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b0 * GPU_NCELL;
         double* Q1 = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b1 * GPU_NCELL;
         for (int g = 0; g < GPU_NG; ++g) {
-            double b1_left = Q1[gpu_cell_idx(i, GPU_NG + g, k)];
-            Q0[gpu_cell_idx(i, GPU_NB + GPU_NG + g, k)] = b1_left;
-            double b0_right = Q0[gpu_cell_idx(i, GPU_NB + g, k)];
-            Q1[gpu_cell_idx(i, GPU_NG - 1 - g, k)] = b0_right;
-        }
-    }
-}
-
-__global__ void ghost_exchange_global_z_kernel(
-    double* __restrict__    Q,
-    const int* __restrict__ pairs,
-    int                     n_blocks)
-{
-    const int pair_idx = blockIdx.x;
-    const int b0 = pairs[pair_idx * 2 + 0];
-    const int b1 = pairs[pair_idx * 2 + 1];
-    const int i = threadIdx.x;
-    const int j = threadIdx.y;
-
-    for (int v = 0; v < GPU_NVAR; ++v) {
-        double* Q0 = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b0 * GPU_NCELL;
-        double* Q1 = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b1 * GPU_NCELL;
-        for (int g = 0; g < GPU_NG; ++g) {
-            double b1_left = Q1[gpu_cell_idx(i, j, GPU_NG + g)];
-            Q0[gpu_cell_idx(i, j, GPU_NB + GPU_NG + g)] = b1_left;
-            double b0_right = Q0[gpu_cell_idx(i, j, GPU_NB + g)];
-            Q1[gpu_cell_idx(i, j, GPU_NG - 1 - g)] = b0_right;
+            double b1_left  = Q1[gx_flat<AXIS>(GPU_NG + g, ta, tb)];
+            Q0[gx_flat<AXIS>(GPU_NB + GPU_NG + g, ta, tb)] = b1_left;
+            double b0_right = Q0[gx_flat<AXIS>(GPU_NB + g, ta, tb)];
+            Q1[gx_flat<AXIS>(GPU_NG - 1 - g, ta, tb)] = b0_right;
         }
     }
 }
@@ -341,8 +300,7 @@ void gpu_ghost_exchange_x(double* Q,
 #endif
     // Fallback: global-memory exchange (sm_86 and below)
     dim3 grid(n_pairs, 1, 1);
-    ghost_exchange_global_x_kernel<<<grid, blk, 0, stream>>>(
-        Q, d_pairs, n_blocks);
+    ghost_exchange_global_kernel<0><<<grid, blk, 0, stream>>>(Q, d_pairs, n_blocks);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -354,8 +312,7 @@ void gpu_ghost_exchange_y(double* Q,
     if (n_pairs == 0) return;
     dim3 blk(GPU_NB2, GPU_NB2, 1);
     dim3 grid(n_pairs, 1, 1);
-    ghost_exchange_global_y_kernel<<<grid, blk, 0, stream>>>(
-        Q, d_pairs, n_blocks);
+    ghost_exchange_global_kernel<1><<<grid, blk, 0, stream>>>(Q, d_pairs, n_blocks);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -367,7 +324,6 @@ void gpu_ghost_exchange_z(double* Q,
     if (n_pairs == 0) return;
     dim3 blk(GPU_NB2, GPU_NB2, 1);
     dim3 grid(n_pairs, 1, 1);
-    ghost_exchange_global_z_kernel<<<grid, blk, 0, stream>>>(
-        Q, d_pairs, n_blocks);
+    ghost_exchange_global_kernel<2><<<grid, blk, 0, stream>>>(Q, d_pairs, n_blocks);
     CUDA_CHECK(cudaGetLastError());
 }
