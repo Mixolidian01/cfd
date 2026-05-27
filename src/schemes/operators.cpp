@@ -526,97 +526,17 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
 }
 
 // =============================================================================
-// tree_rhs
+// Shared Morton-sort + leaf-loop core used by tree_rhs and tree_rhs_typed
 // =============================================================================
-void tree_rhs(BlockTree& tree,
-              std::vector<CellBlock>& rhs_blocks,
-              const BCVariant& bc,
-              double stage_weight,
-              int    level_filter,
-              bool   cf_coarse_zero_grad,
-              const DucrosConfig& ducros) noexcept
-{
-    PROFILE_SCOPE("tree_rhs");
-
-    // ── 1. Ghost fill — always global (C/F fills need the full tree) ─────────
-    { PROFILE_SCOPE("tree_rhs/ghost_fill");
-      GhostFiller::fill_all(tree, bc, cf_coarse_zero_grad);
-    }
-
-    const auto& leaves  = tree.leaf_indices();
-    const int   n_leaves = (int)leaves.size();
-    assert((int)rhs_blocks.size() == n_leaves);
-
-    // ── 2. Build Morton-sorted slot order for L3 cache locality ──────────────
-    // Morton-sorted node indices (cached — avoids re-sort each RK3 stage)
-    const auto& ml = tree.morton_leaf_indices();  // node indices in Morton order
-
-    // Build reverse map: node_idx → slot li  (slot = position in leaf_indices())
-    std::vector<int> node_to_slot(tree.nodes.size(), -1);
-    for (int li = 0; li < n_leaves; ++li)
-        node_to_slot[leaves[li]] = li;
-
-    std::vector<int> order;
-    order.reserve(n_leaves);
-    for (int node_idx : ml) {
-        int li = node_to_slot[node_idx];
-        if (li < 0) continue;
-        if (level_filter >= 0 && tree.nodes[node_idx].level != level_filter) continue;
-        order.push_back(li);
-    }
-    const int n_active = (int)order.size();
-
-    // ── 3. Per-leaf RHS — parallel (fully independent per slot) ──────────────
-    // P15.2: build same-level neighbor mask per leaf for MUSCL at block boundaries.
-    auto leaf_has_nbr = [&](int nidx) -> uint8_t {
-        const auto& nd = tree.nodes[nidx];
-        uint8_t m = 0;
-        for (int d = 0; d < 6; ++d) {
-            int ni = nd.neighbours[d];
-            if (ni >= 0 && tree.nodes[ni].level == nd.level)
-                m |= uint8_t(1) << d;
-        }
-        return m;
-    };
-
-    { PROFILE_SCOPE("tree_rhs/compute");
-#pragma omp parallel for schedule(dynamic,4)
-      for (int oi = 0; oi < n_active; ++oi) {
-          const int li       = order[oi];
-          const int node_idx = leaves[li];
-          if (!tree.nodes[node_idx].has_block()) continue;  // P7.1: remote leaf
-          compute_rhs(*tree.nodes[node_idx].block, rhs_blocks[li], ducros,
-                      leaf_has_nbr(node_idx));
-          undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
-          if (cf_coarse_zero_grad)
-              undo_cf_viscous_energy(tree, node_idx, rhs_blocks[li]);
-      }
-    }
-
-    // ── 4. Flux register accumulation — serial (shared CF register writes) ───
-    { PROFILE_SCOPE("tree_rhs/flux_accum");
-      accumulate_cf_fine_fluxes(tree, stage_weight, level_filter);
-    }
-}
-
-// =============================================================================
-// R10-T6 — tree_rhs_typed: typed dispatch to compute_rhs_typed<Flux,Recon,EOS>
-// =============================================================================
-template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
-    requires RiemannFlux<Flux<Axis::X>>
-          && SpatialReconstruction<Recon<Axis::X>>
-          && EquationOfState<EOS>
-void tree_rhs_typed(BlockTree& tree,
-                    std::vector<CellBlock>& rhs_blocks,
-                    const BCVariant& bc,
-                    double stage_weight,
-                    int    level_filter,
-                    bool   cf_coarse_zero_grad,
-                    const DucrosConfig& ducros,
-                    EOS    /*eos*/) noexcept
-{
-    PROFILE_SCOPE("tree_rhs_typed");
-
+template<class ComputeFn>
+static void tree_rhs_impl(BlockTree& tree,
+                           std::vector<CellBlock>& rhs_blocks,
+                           const BCVariant& bc,
+                           double stage_weight,
+                           int    level_filter,
+                           bool   cf_coarse_zero_grad,
+                           const DucrosConfig& ducros,
+                           ComputeFn compute_fn) noexcept {
     GhostFiller::fill_all(tree, bc, cf_coarse_zero_grad);
 
     const auto& leaves   = tree.leaf_indices();
@@ -638,7 +558,7 @@ void tree_rhs_typed(BlockTree& tree,
     }
     const int n_active = (int)order.size();
 
-    auto leaf_has_nbr_t = [&](int nidx) -> uint8_t {
+    auto leaf_has_nbr = [&](int nidx) -> uint8_t {
         const auto& nd = tree.nodes[nidx];
         uint8_t m = 0;
         for (int d = 0; d < 6; ++d) {
@@ -653,16 +573,53 @@ void tree_rhs_typed(BlockTree& tree,
     for (int oi = 0; oi < n_active; ++oi) {
         const int li       = order[oi];
         const int node_idx = leaves[li];
-        if (!tree.nodes[node_idx].has_block()) continue;
-        compute_rhs_typed<Flux, Recon, EOS>(
-            *tree.nodes[node_idx].block, rhs_blocks[li], ducros,
-            leaf_has_nbr_t(node_idx));
+        if (!tree.nodes[node_idx].has_block()) continue;  // P7.1: remote leaf
+        compute_fn(*tree.nodes[node_idx].block, rhs_blocks[li], ducros,
+                   leaf_has_nbr(node_idx));
         undo_cf_face_flux(tree, node_idx, rhs_blocks[li]);
         if (cf_coarse_zero_grad)
             undo_cf_viscous_energy(tree, node_idx, rhs_blocks[li]);
     }
 
     accumulate_cf_fine_fluxes(tree, stage_weight, level_filter);
+}
+
+void tree_rhs(BlockTree& tree,
+              std::vector<CellBlock>& rhs_blocks,
+              const BCVariant& bc,
+              double stage_weight,
+              int    level_filter,
+              bool   cf_coarse_zero_grad,
+              const DucrosConfig& ducros) noexcept
+{
+    PROFILE_SCOPE("tree_rhs");
+    tree_rhs_impl(tree, rhs_blocks, bc, stage_weight, level_filter, cf_coarse_zero_grad, ducros,
+        [&](const CellBlock& blk, CellBlock& rhs, const DucrosConfig& dc, uint8_t hn) {
+            compute_rhs(blk, rhs, dc, hn);
+        });
+}
+
+// =============================================================================
+// R10-T6 — tree_rhs_typed: typed dispatch to compute_rhs_typed<Flux,Recon,EOS>
+// =============================================================================
+template<template<Axis> class Flux, template<Axis> class Recon, class EOS>
+    requires RiemannFlux<Flux<Axis::X>>
+          && SpatialReconstruction<Recon<Axis::X>>
+          && EquationOfState<EOS>
+void tree_rhs_typed(BlockTree& tree,
+                    std::vector<CellBlock>& rhs_blocks,
+                    const BCVariant& bc,
+                    double stage_weight,
+                    int    level_filter,
+                    bool   cf_coarse_zero_grad,
+                    const DucrosConfig& ducros,
+                    EOS    /*eos*/) noexcept
+{
+    PROFILE_SCOPE("tree_rhs_typed");
+    tree_rhs_impl(tree, rhs_blocks, bc, stage_weight, level_filter, cf_coarse_zero_grad, ducros,
+        [&](const CellBlock& blk, CellBlock& rhs, const DucrosConfig& dc, uint8_t hn) {
+            compute_rhs_typed<Flux, Recon, EOS>(blk, rhs, dc, hn);
+        });
 }
 
 // D3: Teno5Recon instantiations (default scheme)
