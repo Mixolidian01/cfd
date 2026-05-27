@@ -451,16 +451,9 @@ void BlockTree::rebuild_neighbours() {
         uint32_t mx, my, mz;
         morton_decode(code, mx, my, mz);
         uint32_t max_coord = (1u << level) - 1u;
-        if (axis == 0) {
-            if (delta > 0) { if (mx == max_coord) return UINT32_MAX; mx++; }
-            else           { if (mx == 0)          return UINT32_MAX; mx--; }
-        } else if (axis == 1) {
-            if (delta > 0) { if (my == max_coord) return UINT32_MAX; my++; }
-            else           { if (my == 0)          return UINT32_MAX; my--; }
-        } else {
-            if (delta > 0) { if (mz == max_coord) return UINT32_MAX; mz++; }
-            else           { if (mz == 0)          return UINT32_MAX; mz--; }
-        }
+        uint32_t& mc = (axis == 0) ? mx : (axis == 1) ? my : mz;
+        if (delta > 0) { if (mc == max_coord) return UINT32_MAX; mc++; }
+        else           { if (mc == 0)          return UINT32_MAX; mc--; }
         return morton_encode(mx, my, mz);
     };
 
@@ -844,18 +837,11 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
             for (int gl = 0; gl < NG; ++gl) {
                 const int g_idx   = (sp.side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
                 const int src_idx = (sp.side == 0) ? (ihi() - gl)  : (ilo() + gl);
-                if (sp.axis == 0) {
-                    for (int k=ilo();k<=ihi();++k)
-                    for (int j=ilo();j<=ihi();++j)
-                        copy_cell(g_idx,j,k, src_idx,j,k, src);
-                } else if (sp.axis == 1) {
-                    for (int k=ilo();k<=ihi();++k)
-                    for (int i=ilo();i<=ihi();++i)
-                        copy_cell(i,g_idx,k, i,src_idx,k, src);
-                } else {
-                    for (int j=ilo();j<=ihi();++j)
-                    for (int i=ilo();i<=ihi();++i)
-                        copy_cell(i,j,g_idx, i,j,src_idx, src);
+                for (int a = ilo(); a <= ihi(); ++a)
+                for (int b = ilo(); b <= ihi(); ++b) {
+                    const int gi=(sp.axis==0)?g_idx:a,   gj=(sp.axis==1)?g_idx:(sp.axis==0)?a:b,   gk=(sp.axis==2)?g_idx:b;
+                    const int si=(sp.axis==0)?src_idx:a, sj=(sp.axis==1)?src_idx:(sp.axis==0)?a:b, sk=(sp.axis==2)?src_idx:b;
+                    copy_cell(gi, gj, gk, si, sj, sk, src);
                 }
             }
         }
