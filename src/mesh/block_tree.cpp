@@ -79,30 +79,18 @@ void morton_decode(uint32_t code, uint32_t& x, uint32_t& y, uint32_t& z) noexcep
 // =============================================================================
 // CellBlock methods
 // =============================================================================
-double CellBlock::total_mass() const noexcept {
+template<class Fn>
+static double interior_sum(const CellBlock& b, Fn get) noexcept {
     double s = 0.0;
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i)
-        s += rho(i,j,k);
-    return s * h*h*h;
+        s += get(i, j, k);
+    return s * b.h * b.h * b.h;
 }
-double CellBlock::total_energy() const noexcept {
-    double s = 0.0;
-    for (int k = ilo(); k <= ihi(); ++k)
-    for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i)
-        s += E(i,j,k);
-    return s * h*h*h;
-}
-double CellBlock::total_momentum_x() const noexcept {
-    double s = 0.0;
-    for (int k = ilo(); k <= ihi(); ++k)
-    for (int j = ilo(); j <= ihi(); ++j)
-    for (int i = ilo(); i <= ihi(); ++i)
-        s += rhou(i,j,k);
-    return s * h*h*h;
-}
+double CellBlock::total_mass()       const noexcept { return interior_sum(*this, [&](int i,int j,int k){ return rho (i,j,k); }); }
+double CellBlock::total_energy()     const noexcept { return interior_sum(*this, [&](int i,int j,int k){ return E   (i,j,k); }); }
+double CellBlock::total_momentum_x() const noexcept { return interior_sum(*this, [&](int i,int j,int k){ return rhou(i,j,k); }); }
 double CellBlock::cfl_dt(double cfl) const noexcept {
     // Convective CFL stability: dt_conv = cfl * h / max(|u|+c)
     // Viscous  CFL stability:  dt_visc = h² / (2 * C_visc * max(µ/ρ))
