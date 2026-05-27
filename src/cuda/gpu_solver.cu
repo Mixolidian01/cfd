@@ -48,33 +48,20 @@
 // =============================================================================
 // Ghost-fill kernels (B6: blockIdx.z = CFD block index)
 // =============================================================================
-// Ghost fill for NG layers on each side (periodic).
-// Pattern for each layer g = 0..GPU_NG-1:
-//   left  ghost GPU_NG-1-g  ←  interior GPU_NB+GPU_NG-1-g  (inward from right)
-//   right ghost GPU_NB+GPU_NG+g  ←  interior GPU_NG+g      (outward from left)
-// Correctly handles any GPU_NG (1 or 2).
-__global__ void gpu_ghost_x(double* __restrict__ Q, int n_blocks) {
-    int v = blockIdx.x, j = threadIdx.x, k = blockIdx.y, b = blockIdx.z;
+// AXIS: 0=X, 1=Y, 2=Z normal.  threadIdx.x and blockIdx.y cover the two
+// transverse dimensions; the ghost dimension uses the loop variable g.
+template<int AXIS>
+__global__ void gpu_ghost(double* __restrict__ Q, int n_blocks) {
+    const int v = blockIdx.x, a = threadIdx.x, bt = blockIdx.y, b = blockIdx.z;
     double* Qv = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b * GPU_NCELL;
+    auto cell = [&](int g, int p, int q) -> int {
+        if constexpr (AXIS == 0) return gpu_cell_idx(g, p, q);
+        if constexpr (AXIS == 1) return gpu_cell_idx(p, g, q);
+        return                          gpu_cell_idx(p, q, g);
+    };
     for (int g = 0; g < GPU_NG; ++g) {
-        Qv[gpu_cell_idx(GPU_NG-1-g,       j, k)] = Qv[gpu_cell_idx(GPU_NB+GPU_NG-1-g, j, k)];
-        Qv[gpu_cell_idx(GPU_NB+GPU_NG+g,  j, k)] = Qv[gpu_cell_idx(GPU_NG+g,          j, k)];
-    }
-}
-__global__ void gpu_ghost_y(double* __restrict__ Q, int n_blocks) {
-    int v = blockIdx.x, i = threadIdx.x, k = blockIdx.y, b = blockIdx.z;
-    double* Qv = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b * GPU_NCELL;
-    for (int g = 0; g < GPU_NG; ++g) {
-        Qv[gpu_cell_idx(i, GPU_NG-1-g,      k)] = Qv[gpu_cell_idx(i, GPU_NB+GPU_NG-1-g, k)];
-        Qv[gpu_cell_idx(i, GPU_NB+GPU_NG+g, k)] = Qv[gpu_cell_idx(i, GPU_NG+g,          k)];
-    }
-}
-__global__ void gpu_ghost_z(double* __restrict__ Q, int n_blocks) {
-    int v = blockIdx.x, i = threadIdx.x, j = blockIdx.y, b = blockIdx.z;
-    double* Qv = Q + (size_t)v * n_blocks * GPU_NCELL + (size_t)b * GPU_NCELL;
-    for (int g = 0; g < GPU_NG; ++g) {
-        Qv[gpu_cell_idx(i, j, GPU_NG-1-g     )] = Qv[gpu_cell_idx(i, j, GPU_NB+GPU_NG-1-g)];
-        Qv[gpu_cell_idx(i, j, GPU_NB+GPU_NG+g)] = Qv[gpu_cell_idx(i, j, GPU_NG+g         )];
+        Qv[cell(GPU_NG-1-g,      a, bt)] = Qv[cell(GPU_NB+GPU_NG-1-g, a, bt)];
+        Qv[cell(GPU_NB+GPU_NG+g, a, bt)] = Qv[cell(GPU_NG+g,          a, bt)];
     }
 }
 
@@ -82,9 +69,9 @@ __global__ void gpu_ghost_z(double* __restrict__ Q, int n_blocks) {
 static void fill_ghosts_device(double* d_Q, int n_blocks, cudaStream_t stream = nullptr) {
     dim3 grid(GPU_NVAR, GPU_NB2, n_blocks);
     dim3 blk (GPU_NB2,  1,       1);
-    gpu_ghost_x<<<grid, blk, 0, stream>>>(d_Q, n_blocks); CUDA_CHECK(cudaGetLastError());
-    gpu_ghost_y<<<grid, blk, 0, stream>>>(d_Q, n_blocks); CUDA_CHECK(cudaGetLastError());
-    gpu_ghost_z<<<grid, blk, 0, stream>>>(d_Q, n_blocks); CUDA_CHECK(cudaGetLastError());
+    gpu_ghost<0><<<grid, blk, 0, stream>>>(d_Q, n_blocks); CUDA_CHECK(cudaGetLastError());
+    gpu_ghost<1><<<grid, blk, 0, stream>>>(d_Q, n_blocks); CUDA_CHECK(cudaGetLastError());
+    gpu_ghost<2><<<grid, blk, 0, stream>>>(d_Q, n_blocks); CUDA_CHECK(cudaGetLastError());
 }
 
 // =============================================================================
@@ -162,50 +149,30 @@ static double gpu_compute_dt(const double* d_Q, int n_blocks, double h, double c
 // =============================================================================
 // SSP-RK3 stage kernels — value-dt variants (used for first/fallback step)
 // =============================================================================
+// USE_PTR_DT=false: dt passed by value; true: dt read from device pointer d_dt.
+// P2.6: the pointer variant allows CUDA Graph to dereference a live device dt.
+template<bool USE_PTR_DT>
 __global__
 void gpu_rk3_stage1(const double* __restrict__ Qn,
                           double* __restrict__ Qs,
                     const double* __restrict__ rhs,
-                    double dt, int total) {
+                    double dt_val, const double* __restrict__ d_dt, int total) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= total) return;
+    const double dt = USE_PTR_DT ? *d_dt : dt_val;
     Qs[tid] = Qn[tid] + dt * rhs[tid];
 }
 
+template<bool USE_PTR_DT>
 __global__
 void gpu_rk3_stage23(const double* __restrict__ Qn,
                            double* __restrict__ Qs,
                      const double* __restrict__ rhs,
-                     double alpha, double beta, double dt, int total) {
+                     double dt_val, const double* __restrict__ d_dt,
+                     double alpha, double beta, int total) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= total) return;
-    Qs[tid] = alpha * Qn[tid] + beta * (Qs[tid] + dt * rhs[tid]);
-}
-
-// =============================================================================
-// P2.6: pointer-dt variants — read dt from device memory so the captured
-// CUDA Graph uses the live d_dt value updated before each replay.
-// =============================================================================
-__global__
-void gpu_rk3_stage1_ptr(const double* __restrict__ Qn,
-                               double* __restrict__ Qs,
-                         const double* __restrict__ rhs,
-                         const double* __restrict__ d_dt, int total) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= total) return;
-    double dt = *d_dt;
-    Qs[tid] = Qn[tid] + dt * rhs[tid];
-}
-
-__global__
-void gpu_rk3_stage23_ptr(const double* __restrict__ Qn,
-                                double* __restrict__ Qs,
-                          const double* __restrict__ rhs,
-                          const double* __restrict__ d_dt,
-                          double alpha, double beta, int total) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= total) return;
-    double dt = *d_dt;
+    const double dt = USE_PTR_DT ? *d_dt : dt_val;
     Qs[tid] = alpha * Qn[tid] + beta * (Qs[tid] + dt * rhs[tid]);
 }
 
@@ -315,17 +282,17 @@ static void gpu_capture_rk3_graph(GPUSolver* s)
 
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)
     gpu_rhs_kernel<<<rhs_grd, rhs_blk, smem, s->stream_>>>(s->d_Q, s->d_rhs, NL, 1.0/s->h);
-    gpu_rk3_stage1_ptr<<<grk, trk, 0, s->stream_>>>(s->d_Qn, s->d_Q, s->d_rhs, s->d_dt, total);
+    gpu_rk3_stage1<true><<<grk, trk, 0, s->stream_>>>(s->d_Qn, s->d_Q, s->d_rhs, 0.0, s->d_dt, total);
     fill_ghosts_device(s->d_Q, NL, s->stream_);
 
     // Stage 2: Q^(2) = 3/4·Q^n + 1/4·(Q^(1) + dt·L(Q^(1)))
     gpu_rhs_kernel<<<rhs_grd, rhs_blk, smem, s->stream_>>>(s->d_Q, s->d_rhs, NL, 1.0/s->h);
-    gpu_rk3_stage23_ptr<<<grk, trk, 0, s->stream_>>>(s->d_Qn, s->d_Q, s->d_rhs, s->d_dt, 0.75, 0.25, total);
+    gpu_rk3_stage23<true><<<grk, trk, 0, s->stream_>>>(s->d_Qn, s->d_Q, s->d_rhs, 0.0, s->d_dt, 0.75, 0.25, total);
     fill_ghosts_device(s->d_Q, NL, s->stream_);
 
     // Stage 3: Q^{n+1} = 1/3·Q^n + 2/3·(Q^(2) + dt·L(Q^(2)))
     gpu_rhs_kernel<<<rhs_grd, rhs_blk, smem, s->stream_>>>(s->d_Q, s->d_rhs, NL, 1.0/s->h);
-    gpu_rk3_stage23_ptr<<<grk, trk, 0, s->stream_>>>(s->d_Qn, s->d_Q, s->d_rhs, s->d_dt, 1.0/3.0, 2.0/3.0, total);
+    gpu_rk3_stage23<true><<<grk, trk, 0, s->stream_>>>(s->d_Qn, s->d_Q, s->d_rhs, 0.0, s->d_dt, 1.0/3.0, 2.0/3.0, total);
     fill_ghosts_device(s->d_Q, NL, s->stream_);
 
     CUDA_CHECK(cudaStreamEndCapture(s->stream_, &s->graph_));
@@ -371,15 +338,15 @@ double gpu_solver_step(GPUSolver* s, double cfl, double* htmp)
 
         // Stage 1
         gpu_rhs_kernel<<<rhs_grd,rhs_blk,smem,s->stream_>>>(s->d_Q,s->d_rhs,NL,1.0/s->h);
-        gpu_rk3_stage1<<<grk,trk,0,s->stream_>>>(s->d_Qn,s->d_Q,s->d_rhs,dt,total);
+        gpu_rk3_stage1<false><<<grk,trk,0,s->stream_>>>(s->d_Qn,s->d_Q,s->d_rhs,dt,nullptr,total);
         fill_ghosts_device(s->d_Q, NL, s->stream_);
         // Stage 2
         gpu_rhs_kernel<<<rhs_grd,rhs_blk,smem,s->stream_>>>(s->d_Q,s->d_rhs,NL,1.0/s->h);
-        gpu_rk3_stage23<<<grk,trk,0,s->stream_>>>(s->d_Qn,s->d_Q,s->d_rhs,0.75,0.25,dt,total);
+        gpu_rk3_stage23<false><<<grk,trk,0,s->stream_>>>(s->d_Qn,s->d_Q,s->d_rhs,dt,nullptr,0.75,0.25,total);
         fill_ghosts_device(s->d_Q, NL, s->stream_);
         // Stage 3
         gpu_rhs_kernel<<<rhs_grd,rhs_blk,smem,s->stream_>>>(s->d_Q,s->d_rhs,NL,1.0/s->h);
-        gpu_rk3_stage23<<<grk,trk,0,s->stream_>>>(s->d_Qn,s->d_Q,s->d_rhs,1.0/3.0,2.0/3.0,dt,total);
+        gpu_rk3_stage23<false><<<grk,trk,0,s->stream_>>>(s->d_Qn,s->d_Q,s->d_rhs,dt,nullptr,1.0/3.0,2.0/3.0,total);
         fill_ghosts_device(s->d_Q, NL, s->stream_);
         CUDA_CHECK(cudaStreamSynchronize(s->stream_));
 
