@@ -257,20 +257,24 @@ GPrim gpu_safe_prim_f(const double Qc[GPU_NVAR], const GPrim& fb) noexcept
     return q;
 }
 
-// WENO5 face reconstruction with Roe characteristic decomposition.
-// Reads prim from d_scratch (comp-major: sp[comp*NCELL + flat]).
-// (i,j,k) = left cell of face; axis = normal direction.
-// Requires NG=2: stencil offset d ∈ {-2,-1,0,+1,+2,+3} all in-bounds.
+// 6-point Roe characteristic face reconstruction — WENO5Z (WRAP=false) or TENO5A (WRAP=true).
+// WRAP=true: periodic index wrapping for boundary blocks (needed by TENO5A/TENO7A fallback).
+template<bool WRAP, bool USE_TENO5>
 __device__ __forceinline__
-void gpu_weno5_face(const double* __restrict__ sp,
-                    int i, int j, int k, int axis,
-                    GPrim& qL_out, GPrim& qR_out) noexcept {
+void gpu_face6(const double* __restrict__ sp,
+               int i, int j, int k, int axis,
+               GPrim& qL_out, GPrim& qR_out) noexcept {
     auto sidx = [&](int d) -> int {
-        if (axis == 0) return gpu_cell_idx(i+d, j, k);
-        if (axis == 1) return gpu_cell_idx(i, j+d, k);
-        return                gpu_cell_idx(i, j, k+d);
+        if constexpr (WRAP) {
+            if (axis == 0) { int ii=i+d; if(ii<0)ii+=GPU_NB; else if(ii>=GPU_NB2)ii-=GPU_NB; return gpu_cell_idx(ii,j,k); }
+            if (axis == 1) { int jj=j+d; if(jj<0)jj+=GPU_NB; else if(jj>=GPU_NB2)jj-=GPU_NB; return gpu_cell_idx(i,jj,k); }
+            int kk=k+d; if(kk<0)kk+=GPU_NB; else if(kk>=GPU_NB2)kk-=GPU_NB; return gpu_cell_idx(i,j,kk);
+        } else {
+            if (axis == 0) return gpu_cell_idx(i+d, j, k);
+            if (axis == 1) return gpu_cell_idx(i, j+d, k);
+            return                gpu_cell_idx(i, j, k+d);
+        }
     };
-
     const int fL = sidx(0), fR = sidx(1);
     const double rL = sp[0*GPU_NCELL+fL], uL = sp[1*GPU_NCELL+fL];
     const double vL = sp[2*GPU_NCELL+fL], wL = sp[3*GPU_NCELL+fL];
@@ -279,7 +283,6 @@ void gpu_weno5_face(const double* __restrict__ sp,
     const double vR = sp[2*GPU_NCELL+fR], wR = sp[3*GPU_NCELL+fR];
     const double pR = sp[4*GPU_NCELL+fR], TR = sp[5*GPU_NCELL+fR], cR = sp[6*GPU_NCELL+fR];
     const GpuRoeState rs = gpu_roe_from_prim(rL,uL,vL,wL,pL, rR,uR,vR,wR,pR, axis);
-
     double Q[6][GPU_NVAR];
     for (int m = 0; m < 6; ++m) {
         const int flat = sidx(m-2);
@@ -289,14 +292,15 @@ void gpu_weno5_face(const double* __restrict__ sp,
         Q[m][0] = rho; Q[m][1] = rho*u; Q[m][2] = rho*v; Q[m][3] = rho*w;
         Q[m][4] = p/(GPU_GAMMA-1.0) + 0.5*rho*(u*u+v*v+w*w);
     }
-
     double W[5][6];
     for (int m = 0; m < 6; ++m) { double Wm[5]; gpu_char_proj(Q[m], rs, Wm); for (int c=0;c<5;++c) W[c][m]=Wm[c]; }
-
     double wL_w[5], wR_w[5];
-    for (int kk = 0; kk < 5; ++kk)
-        gpu_weno5z_scalar(W[kk][0],W[kk][1],W[kk][2],W[kk][3],W[kk][4],W[kk][5], wL_w[kk], wR_w[kk]);
-
+    for (int kk = 0; kk < 5; ++kk) {
+        if constexpr (USE_TENO5)
+            physics_teno5_scalar(W[kk][0],W[kk][1],W[kk][2],W[kk][3],W[kk][4],W[kk][5], wL_w[kk], wR_w[kk]);
+        else
+            gpu_weno5z_scalar(W[kk][0],W[kk][1],W[kk][2],W[kk][3],W[kk][4],W[kk][5], wL_w[kk], wR_w[kk]);
+    }
     double QL[GPU_NVAR], QR[GPU_NVAR];
     gpu_back_proj(wL_w, rs, QL);
     gpu_back_proj(wR_w, rs, QR);
@@ -305,52 +309,13 @@ void gpu_weno5_face(const double* __restrict__ sp,
     qL_out = gpu_safe_prim_f(QL, fbL);
     qR_out = gpu_safe_prim_f(QR, fbR);
 }
-
-// D3: TENO5-A face reconstruction — same Roe decomposition as gpu_weno5_face;
-// scalar kernel replaced by gpu_teno5_scalar (hard cutoff, q=6 exponent).
 __device__ __forceinline__
-void gpu_teno5_face(const double* __restrict__ sp,
-                    int i, int j, int k, int axis,
-                    GPrim& qL_out, GPrim& qR_out) noexcept {
-    auto sidx = [&](int d) -> int {
-        if (axis == 0) { int ii=i+d; if(ii<0)ii+=GPU_NB; else if(ii>=GPU_NB2)ii-=GPU_NB; return gpu_cell_idx(ii,j,k); }
-        if (axis == 1) { int jj=j+d; if(jj<0)jj+=GPU_NB; else if(jj>=GPU_NB2)jj-=GPU_NB; return gpu_cell_idx(i,jj,k); }
-        int kk=k+d; if(kk<0)kk+=GPU_NB; else if(kk>=GPU_NB2)kk-=GPU_NB; return gpu_cell_idx(i,j,kk);
-    };
-
-    const int fL = sidx(0), fR = sidx(1);
-    const double rL = sp[0*GPU_NCELL+fL], uL = sp[1*GPU_NCELL+fL];
-    const double vL = sp[2*GPU_NCELL+fL], wL = sp[3*GPU_NCELL+fL];
-    const double pL = sp[4*GPU_NCELL+fL], TL = sp[5*GPU_NCELL+fL], cL = sp[6*GPU_NCELL+fL];
-    const double rR = sp[0*GPU_NCELL+fR], uR = sp[1*GPU_NCELL+fR];
-    const double vR = sp[2*GPU_NCELL+fR], wR = sp[3*GPU_NCELL+fR];
-    const double pR = sp[4*GPU_NCELL+fR], TR = sp[5*GPU_NCELL+fR], cR = sp[6*GPU_NCELL+fR];
-    const GpuRoeState rs = gpu_roe_from_prim(rL,uL,vL,wL,pL, rR,uR,vR,wR,pR, axis);
-
-    double Q[6][GPU_NVAR];
-    for (int m = 0; m < 6; ++m) {
-        const int flat = sidx(m-2);
-        const double rho = sp[0*GPU_NCELL+flat], u = sp[1*GPU_NCELL+flat];
-        const double v   = sp[2*GPU_NCELL+flat], w = sp[3*GPU_NCELL+flat];
-        const double p   = sp[4*GPU_NCELL+flat];
-        Q[m][0] = rho; Q[m][1] = rho*u; Q[m][2] = rho*v; Q[m][3] = rho*w;
-        Q[m][4] = p/(GPU_GAMMA-1.0) + 0.5*rho*(u*u+v*v+w*w);
-    }
-
-    double W[5][6];
-    for (int m = 0; m < 6; ++m) { double Wm[5]; gpu_char_proj(Q[m], rs, Wm); for (int c=0;c<5;++c) W[c][m]=Wm[c]; }
-
-    double wL_w[5], wR_w[5];
-    for (int kk = 0; kk < 5; ++kk)
-        physics_teno5_scalar(W[kk][0],W[kk][1],W[kk][2],W[kk][3],W[kk][4],W[kk][5], wL_w[kk], wR_w[kk]);
-
-    double QL[GPU_NVAR], QR[GPU_NVAR];
-    gpu_back_proj(wL_w, rs, QL);
-    gpu_back_proj(wR_w, rs, QR);
-    GPrim fbL; fbL.rho=rL; fbL.u=uL; fbL.v=vL; fbL.w=wL; fbL.p=pL; fbL.T=TL; fbL.c=cL;
-    GPrim fbR; fbR.rho=rR; fbR.u=uR; fbR.v=vR; fbR.w=wR; fbR.p=pR; fbR.T=TR; fbR.c=cR;
-    qL_out = gpu_safe_prim_f(QL, fbL);
-    qR_out = gpu_safe_prim_f(QR, fbR);
+void gpu_weno5_face(const double* sp, int i, int j, int k, int axis, GPrim& qL, GPrim& qR) noexcept {
+    gpu_face6<false,false>(sp, i, j, k, axis, qL, qR);
+}
+__device__ __forceinline__
+void gpu_teno5_face(const double* sp, int i, int j, int k, int axis, GPrim& qL, GPrim& qR) noexcept {
+    gpu_face6<true,true>(sp, i, j, k, axis, qL, qR);
 }
 
 // D3: TENO7-A face reconstruction — 7-point stencil with Roe decomposition.
