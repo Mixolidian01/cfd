@@ -694,14 +694,9 @@ static void fill_coarse_ghost_from_fine(
             int ib_blk = b_local / half;
 
             // A05-fix4: use `side` directly — no -1 sentinel
-            int oix, oiy, oiz;
-            if (axis == 0) {
-                oix = side;     oiy = ia_blk;  oiz = ib_blk;
-            } else if (axis == 1) {
-                oix = ia_blk;   oiy = side;    oiz = ib_blk;
-            } else {
-                oix = ia_blk;   oiy = ib_blk;  oiz = side;
-            }
+            const int oix = (axis == 0) ? side   : ia_blk;
+            const int oiy = (axis == 1) ? side   : (axis == 0) ? ia_blk : ib_blk;
+            const int oiz = (axis == 2) ? side   : ib_blk;
             int fine_oct = oct_from_xyz(oix, oiy, oiz);
             int fi = first_child + fine_oct;
 
@@ -712,41 +707,27 @@ static void fill_coarse_ghost_from_fine(
             int fa_start = NG + 2 * (a_local % half);
             int fb_start = NG + 2 * (b_local % half);
 
-            int gi, gj, gk;
-            if (axis == 0) { gi=g; gj=a; gk=b; }
-            else if (axis==1) { gi=a; gj=g; gk=b; }
-            else              { gi=a; gj=b; gk=g; }
+            const int gi = (axis == 0) ? g : a;
+            const int gj = (axis == 1) ? g : (axis == 0) ? a : b;
+            const int gk = (axis == 2) ? g : b;
 
-            for (int v = 0; v < NVAR; ++v) {
-                double avg = 0.0;
-                for (int da = 0; da < 2; ++da)
-                for (int db = 0; db < 2; ++db) {
-                    int fa = fa_start + da;
-                    int fb = fb_start + db;
-                    int ci, cj, ck;
-                    if (axis == 0) { ci=face_i; cj=fa; ck=fb; }
-                    else if (axis==1) { ci=fa; cj=face_i; ck=fb; }
-                    else              { ci=fa; cj=fb; ck=face_i; }
-                    avg += fsrc.Q[v][cell_idx(ci, cj, ck)];
-                }
-                coarse_blk.Q[v][cell_idx(gi, gj, gk)] = avg * 0.25;
+            double avg[NVAR] = {};
+            double phi_avg = 0.0;
+            for (int da = 0; da < 2; ++da)
+            for (int db = 0; db < 2; ++db) {
+                const int fa   = fa_start + da;
+                const int fb   = fb_start + db;
+                const int ci   = (axis == 0) ? face_i : fa;
+                const int cj   = (axis == 1) ? face_i : (axis == 0) ? fa : fb;
+                const int ck   = (axis == 2) ? face_i : fb;
+                const int flat = cell_idx(ci, cj, ck);
+                for (int v = 0; v < NVAR; ++v) avg[v] += fsrc.Q[v][flat];
+                phi_avg += fsrc.phi_data_[flat];
             }
-
-            // P14.1: phi — same 2×2 cell average
-            {
-                double phi_avg = 0.0;
-                for (int da = 0; da < 2; ++da)
-                for (int db = 0; db < 2; ++db) {
-                    int fa = fa_start + da;
-                    int fb = fb_start + db;
-                    int ci, cj, ck;
-                    if (axis == 0) { ci=face_i; cj=fa; ck=fb; }
-                    else if (axis==1) { ci=fa; cj=face_i; ck=fb; }
-                    else              { ci=fa; cj=fb; ck=face_i; }
-                    phi_avg += fsrc.phi_data_[cell_idx(ci, cj, ck)];
-                }
-                coarse_blk.phi_data_[cell_idx(gi, gj, gk)] = phi_avg * 0.25;
-            }
+            const int gdst = cell_idx(gi, gj, gk);
+            for (int v = 0; v < NVAR; ++v)
+                coarse_blk.Q[v][gdst] = avg[v] * 0.25;
+            coarse_blk.phi_data_[gdst] = phi_avg * 0.25;  // P14.1
         }
     }
 }
@@ -1268,15 +1249,14 @@ void BlockTree::apply_flux_correction(double dt) {
             const double sign = (fd_side(d) == 1) ? -1.0 : +1.0;
             int g = (fd_side(d) == 0) ? ilo() : ihi();
 
-            for (int v = 0; v < NVAR; ++v)
             for (int jc = 0; jc < NB; ++jc)
             for (int ic = 0; ic < NB; ++ic) {
-                double corr = sign * (dt / h_c) * reg[v*NB*NB + jc*NB + ic];
-                int ci, cj, ck;
-                if      (axis == 0) { ci = g;         cj = ilo()+jc; ck = ilo()+ic; }
-                else if (axis == 1) { ci = ilo()+ic;  cj = g;        ck = ilo()+jc; }
-                else                { ci = ilo()+ic;  cj = ilo()+jc; ck = g;        }
-                blk.Q[v][cell_idx(ci,cj,ck)] += corr;
+                const int flat = (axis == 0) ? cell_idx(g,        ilo()+jc, ilo()+ic) :
+                                 (axis == 1) ? cell_idx(ilo()+ic, g,        ilo()+jc) :
+                                               cell_idx(ilo()+ic, ilo()+jc, g       );
+                const double k = sign * (dt / h_c);
+                for (int v = 0; v < NVAR; ++v)
+                    blk.Q[v][flat] += k * reg[v*NB*NB + jc*NB + ic];
             }
         }
     }

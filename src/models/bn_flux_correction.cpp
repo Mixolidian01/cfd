@@ -109,10 +109,8 @@ void bn_accumulate_cf_correction_fluxes(
             const int bound_c = (delta_c > 0) ? ihi() : ilo();
 
             // Offset of this fine block in the coarse face plane.
-            int off1, off2;
-            if      (axis == 0) { off1 = o_iy; off2 = o_iz; }
-            else if (axis == 1) { off1 = o_iz; off2 = o_ix; }
-            else                { off1 = o_iy; off2 = o_ix; }
+            const int off1 = (axis == 1) ? o_iz : o_iy;
+            const int off2 = (axis == 0) ? o_iz : o_ix;
 
             // Register on the coarse block's face toward the fine block.
             auto& reg = regs[coarse_slot][d ^ 1];
@@ -121,18 +119,14 @@ void bn_accumulate_cf_correction_fluxes(
 
             for (int b = ilo(); b <= ihi(); ++b)
             for (int a = ilo(); a <= ihi(); ++a) {
-                // Fine face cell indices.
-                int ci, cj, ck, gi, gj, gk;
-                if (axis == 0) {
-                    ci=bound; cj=a; ck=b; gi=bound+delta; gj=a; gk=b;
-                } else if (axis == 1) {
-                    ci=a; cj=bound; ck=b; gi=a; gj=bound+delta; gk=b;
-                } else {
-                    ci=a; cj=b; ck=bound; gi=a; gj=b; gk=bound+delta;
-                }
-
-                const int fi_int = cell_idx(ci, cj, ck);
-                const int fi_gst = cell_idx(gi, gj, gk);
+                // Fine face cell indices via normal-axis dispatch.
+                auto ci_ax = [&](int ax) {
+                    if (axis == 0) return cell_idx(ax, a, b);
+                    if (axis == 1) return cell_idx(a, ax, b);
+                    return               cell_idx(a, b, ax);
+                };
+                const int fi_int = ci_ax(bound);
+                const int fi_gst = ci_ax(bound + delta);
 
                 auto prim_fine = [&](int flat) {
                     return bn_cons_to_prim(blk.Q[0][flat], blk.Q[1][flat],
@@ -148,29 +142,17 @@ void bn_accumulate_cf_correction_fluxes(
                 // Coarse face position (jc, ic) in the register.
                 const int a_local = a - ilo();
                 const int b_local = b - ilo();
-                int jc, ic;
-                if (axis == 0) {
-                    jc = off1 * HALF + a_local / 2;
-                    ic = off2 * HALF + b_local / 2;
-                } else {
-                    jc = off1 * HALF + b_local / 2;
-                    ic = off2 * HALF + a_local / 2;
-                }
+                const int jc = off1 * HALF + ((axis == 0) ? a_local : b_local) / 2;
+                const int ic = off2 * HALF + ((axis == 0) ? b_local : a_local) / 2;
 
                 // Coarse cell at (jc, ic) — interior and ghost for coarse face d^1.
-                int ci_c, cj_c, ck_c, gi_c, gj_c, gk_c;
-                if (axis == 0) {
-                    ci_c=bound_c;   cj_c=ilo()+jc; ck_c=ilo()+ic;
-                    gi_c=ci_c+delta_c; gj_c=cj_c;    gk_c=ck_c;
-                } else if (axis == 1) {
-                    ci_c=ilo()+ic; cj_c=bound_c;   ck_c=ilo()+jc;
-                    gi_c=ci_c;     gj_c=cj_c+delta_c; gk_c=ck_c;
-                } else {
-                    ci_c=ilo()+ic; cj_c=ilo()+jc; ck_c=bound_c;
-                    gi_c=ci_c;     gj_c=cj_c;     gk_c=ck_c+delta_c;
-                }
-                const int coarse_int = cell_idx(ci_c, cj_c, ck_c);
-                const int coarse_gst = cell_idx(gi_c, gj_c, gk_c);
+                auto ci_ax_c = [&](int ax) {
+                    if (axis == 0) return cell_idx(ax,       ilo()+jc, ilo()+ic);
+                    if (axis == 1) return cell_idx(ilo()+ic, ax,       ilo()+jc);
+                    return               cell_idx(ilo()+ic, ilo()+jc, ax      );
+                };
+                const int coarse_int = ci_ax_c(bound_c);
+                const int coarse_gst = ci_ax_c(bound_c + delta_c);
 
                 auto prim_coarse = [&](int flat) {
                     return bn_cons_to_prim(cblk.Q[0][flat], cblk.Q[1][flat],
@@ -230,15 +212,13 @@ void bn_apply_flux_correction(
             const int    g    = (side == 0) ? ilo() : ihi();
             const double fac  = sign * (dt / h_c) * 0.25;
 
-            for (int v = 0; v < NVAR_BN_CONS; ++v)
             for (int jc = 0; jc < NB; ++jc)
             for (int ic = 0; ic < NB; ++ic) {
-                double corr = fac * reg[v*NB*NB + jc*NB + ic];
-                int ci, cj, ck;
-                if      (axis == 0) { ci = g;        cj = ilo()+jc; ck = ilo()+ic; }
-                else if (axis == 1) { ci = ilo()+ic; cj = g;        ck = ilo()+jc; }
-                else                { ci = ilo()+ic; cj = ilo()+jc; ck = g;        }
-                Q[ii].Q[v][cell_idx(ci,cj,ck)] += corr;
+                const int flat = (axis == 0) ? cell_idx(g,        ilo()+jc, ilo()+ic) :
+                                 (axis == 1) ? cell_idx(ilo()+ic, g,        ilo()+jc) :
+                                               cell_idx(ilo()+ic, ilo()+jc, g       );
+                for (int v = 0; v < NVAR_BN_CONS; ++v)
+                    Q[ii].Q[v][flat] += fac * reg[v*NB*NB + jc*NB + ic];
             }
         }
     }

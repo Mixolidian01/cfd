@@ -509,10 +509,8 @@ static void accumulate_cf_fine_fluxes(BlockTree& tree,
             const int delta = face_delta[d];
             const int bound = (delta > 0) ? ihi() : ilo();
 
-            int off1, off2;
-            if      (axis == 0) { off1 = o_iy; off2 = o_iz; }
-            else if (axis == 1) { off1 = o_iz; off2 = o_ix; }
-            else                { off1 = o_iy; off2 = o_ix; }
+            const int off1 = (axis == 1) ? o_iz : o_iy;
+            const int off2 = (axis == 0) ? o_iz : o_ix;
 
             std::vector<double> face_flux(NVAR * NB * NB, 0.0);
             switch (axis) {

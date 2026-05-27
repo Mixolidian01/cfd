@@ -158,10 +158,9 @@ void bn_fill_ghosts_tree(BlockTree& tree,
                             int ia_blk  = a_local / half;
                             int ib_blk  = b_local / half;
 
-                            int oix, oiy, oiz;
-                            if (axis == 0)      { oix=side; oiy=ia_blk; oiz=ib_blk; }
-                            else if (axis == 1) { oix=ia_blk; oiy=side; oiz=ib_blk; }
-                            else                { oix=ia_blk; oiy=ib_blk; oiz=side; }
+                            const int oix = (axis == 0) ? side   : ia_blk;
+                            const int oiy = (axis == 1) ? side   : (axis == 0) ? ia_blk : ib_blk;
+                            const int oiz = (axis == 2) ? side   : ib_blk;
                             int fi_node = first_child + oct_from_xyz(oix, oiy, oiz);
 
                             if (fi_node < 0 || fi_node >= (int)tree.nodes.size())
@@ -176,28 +175,12 @@ void bn_fill_ghosts_tree(BlockTree& tree,
                             int fa_start = NG + 2*(a_local % half);
                             int fb_start = NG + 2*(b_local % half);
 
-                            int gi, gj, gk;
-                            if (axis == 0)      { gi=g_coord; gj=a; gk=b; }
-                            else if (axis == 1) { gi=a; gj=g_coord; gk=b; }
-                            else                { gi=a; gj=b; gk=g_coord; }
-
                             for (int v = 0; v < NVAR_BN; ++v) {
                                 double avg = 0.0;
                                 for (int da = 0; da < 2; ++da)
-                                for (int db = 0; db < 2; ++db) {
-                                    int fa = fa_start + da;
-                                    int fb = fb_start + db;
-                                    int ci, cj, ck;
-                                    if (axis == 0) {
-                                        ci=face_i; cj=fa; ck=fb;
-                                    } else if (axis == 1) {
-                                        ci=fa; cj=face_i; ck=fb;
-                                    } else {
-                                        ci=fa; cj=fb; ck=face_i;
-                                    }
-                                    avg += fsrc.Q[v][cell_idx(ci,cj,ck)];
-                                }
-                                blk.Q[v][cell_idx(gi,gj,gk)] = avg * 0.25;
+                                for (int db = 0; db < 2; ++db)
+                                    avg += fsrc.Q[v][ci_ax(face_i, fa_start+da, fb_start+db)];
+                                blk.Q[v][ci_ax(g_coord, a, b)] = avg * 0.25;
                             }
                         }
                     }
