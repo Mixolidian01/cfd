@@ -216,11 +216,9 @@ void tree_sat_penalty(BlockTree& tree,
             const int oiy = oct_iy(oct);
             const int oiz = oct_iz(oct);
 
-            const int half = NB / 2;
-            int ta_off, tb_off;
-            if (axis == 0) { ta_off = oiy * half; tb_off = oiz * half; }
-            else if (axis == 1) { ta_off = oix * half; tb_off = oiz * half; }
-            else               { ta_off = oix * half; tb_off = oiy * half; }
+            const int half   = NB / 2;
+            const int ta_off = (axis == 0) ? oiy * half : oix * half;
+            const int tb_off = (axis == 2) ? oiy * half : oiz * half;
 
             const int c_face_i = (side == 0) ? ihi() : ilo();
 
@@ -229,26 +227,17 @@ void tree_sat_penalty(BlockTree& tree,
 
             for (int a = ilo(); a <= ihi(); ++a)
             for (int b = ilo(); b <= ihi(); ++b) {
-                int fi, fj, fk, gi, gj, gk;
-                if (axis == 0) {
-                    fi=face_i; fj=a; fk=b;
-                    gi=ghost_i; gj=a; gk=b;
-                } else if (axis == 1) {
-                    fi=a; fj=face_i; fk=b;
-                    gi=a; gj=ghost_i; gk=b;
-                } else {
-                    fi=a; fj=b; fk=face_i;
-                    gi=a; gj=b; gk=ghost_i;
-                }
-                const int a_local = a - ilo();
-                const int b_local = b - ilo();
-                const int ca = a_local / 2;
-                const int cb = b_local / 2;
-
+                auto ci_ax = [&](int ax) {
+                    if (axis == 0) return cell_idx(ax, a, b);
+                    if (axis == 1) return cell_idx(a, ax, b);
+                    return               cell_idx(a, b, ax);
+                };
+                const int ca = (a - ilo()) / 2;
+                const int cb = (b - ilo()) / 2;
                 for (int v = 0; v < NVAR; ++v) {
-                    const double jump = blk.Q[v][cell_idx(gi,gj,gk)]
-                                      - blk.Q[v][cell_idx(fi,fj,fk)];
-                    rhs_f.Q[v][cell_idx(fi,fj,fk)] += sigma_f * jump;
+                    const double jump = blk.Q[v][ci_ax(ghost_i)]
+                                      - blk.Q[v][ci_ax(face_i)];
+                    rhs_f.Q[v][ci_ax(face_i)] += sigma_f * jump;
                     coarse_acc[ca][cb][v] += jump;
                 }
             }
@@ -259,12 +248,11 @@ void tree_sat_penalty(BlockTree& tree,
                 for (int cb = 0; cb < half; ++cb) {
                     const int ca_c = NG + ta_off + ca;
                     const int cb_c = NG + tb_off + cb;
-                    int ci, cj, ck;
-                    if (axis == 0) { ci=c_face_i; cj=ca_c; ck=cb_c; }
-                    else if (axis == 1) { ci=ca_c; cj=c_face_i; ck=cb_c; }
-                    else               { ci=ca_c; cj=cb_c; ck=c_face_i; }
+                    const int flat_c = (axis == 0) ? cell_idx(c_face_i, ca_c, cb_c) :
+                                       (axis == 1) ? cell_idx(ca_c, c_face_i, cb_c) :
+                                                     cell_idx(ca_c, cb_c, c_face_i);
                     for (int v = 0; v < NVAR; ++v)
-                        rhs_c->Q[v][cell_idx(ci,cj,ck)] -= sigma_c * inv4 * coarse_acc[ca][cb][v];
+                        rhs_c->Q[v][flat_c] -= sigma_c * inv4 * coarse_acc[ca][cb][v];
                 }
             }
         }
