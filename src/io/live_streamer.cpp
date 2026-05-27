@@ -33,6 +33,77 @@
 
 
 // =============================================================================
+// P6.6 — shared scalar helpers (used by both build_volume and build_frame)
+// =============================================================================
+
+static double ls_vel_at(const CellBlock& blk, int comp, int i, int j, int k) {
+    switch (comp) {
+        case 0: return blk.rhou(i,j,k) / blk.rho(i,j,k);
+        case 1: return blk.rhov(i,j,k) / blk.rho(i,j,k);
+        default: return blk.rhow(i,j,k) / blk.rho(i,j,k);
+    }
+}
+
+static float ls_cell_val(const CellBlock& blk, StreamVar svar, int i, int j, int k) {
+    switch (svar) {
+        case StreamVar::RHO:   return static_cast<float>(blk.rho (i,j,k));
+        case StreamVar::RHOU:  return static_cast<float>(blk.rhou(i,j,k));
+        case StreamVar::RHOV:  return static_cast<float>(blk.rhov(i,j,k));
+        case StreamVar::RHOW:  return static_cast<float>(blk.rhow(i,j,k));
+        case StreamVar::ETOT:  return static_cast<float>(blk.E   (i,j,k));
+        default: break;
+    }
+    Prim q = blk.prim(i, j, k);
+    switch (svar) {
+        case StreamVar::PRESS: return static_cast<float>(q.p);
+        case StreamVar::TEMP:  return static_cast<float>(q.T);
+        case StreamVar::UMAG:  return static_cast<float>(
+                                   std::sqrt(q.u*q.u + q.v*q.v + q.w*q.w));
+        case StreamVar::MACH: {
+            const double c = std::sqrt(GAMMA * q.p / q.rho);
+            return static_cast<float>(std::sqrt(q.u*q.u+q.v*q.v+q.w*q.w) / c);
+        }
+        case StreamVar::VORT: {
+            const double ih2 = 1.0 / (2.0 * blk.h);
+            const double wx = (ls_vel_at(blk,2,i,j+1,k)-ls_vel_at(blk,2,i,j-1,k))*ih2
+                            - (ls_vel_at(blk,1,i,j,k+1)-ls_vel_at(blk,1,i,j,k-1))*ih2;
+            const double wy = (ls_vel_at(blk,0,i,j,k+1)-ls_vel_at(blk,0,i,j,k-1))*ih2
+                            - (ls_vel_at(blk,2,i+1,j,k)-ls_vel_at(blk,2,i-1,j,k))*ih2;
+            const double wz = (ls_vel_at(blk,1,i+1,j,k)-ls_vel_at(blk,1,i-1,j,k))*ih2
+                            - (ls_vel_at(blk,0,i,j+1,k)-ls_vel_at(blk,0,i,j-1,k))*ih2;
+            return static_cast<float>(std::sqrt(wx*wx+wy*wy+wz*wz));
+        }
+        case StreamVar::QCRIT: {
+            const double ih2 = 1.0 / (2.0 * blk.h);
+            const double A[3][3] = {
+                {(ls_vel_at(blk,0,i+1,j,k)-ls_vel_at(blk,0,i-1,j,k))*ih2,
+                 (ls_vel_at(blk,0,i,j+1,k)-ls_vel_at(blk,0,i,j-1,k))*ih2,
+                 (ls_vel_at(blk,0,i,j,k+1)-ls_vel_at(blk,0,i,j,k-1))*ih2},
+                {(ls_vel_at(blk,1,i+1,j,k)-ls_vel_at(blk,1,i-1,j,k))*ih2,
+                 (ls_vel_at(blk,1,i,j+1,k)-ls_vel_at(blk,1,i,j-1,k))*ih2,
+                 (ls_vel_at(blk,1,i,j,k+1)-ls_vel_at(blk,1,i,j,k-1))*ih2},
+                {(ls_vel_at(blk,2,i+1,j,k)-ls_vel_at(blk,2,i-1,j,k))*ih2,
+                 (ls_vel_at(blk,2,i,j+1,k)-ls_vel_at(blk,2,i,j-1,k))*ih2,
+                 (ls_vel_at(blk,2,i,j,k+1)-ls_vel_at(blk,2,i,j,k-1))*ih2}
+            };
+            double Q = 0.0;
+            for (int c = 0; c < 3; ++c)
+                for (int d = 0; d < 3; ++d)
+                    Q -= 0.5 * A[c][d] * A[d][c];
+            return static_cast<float>(Q);
+        }
+        case StreamVar::SCHLIEREN: {
+            const double ih2 = 1.0 / (2.0 * blk.h);
+            const double drx = (blk.rho(i+1,j,k)-blk.rho(i-1,j,k))*ih2;
+            const double dry = (blk.rho(i,j+1,k)-blk.rho(i,j-1,k))*ih2;
+            const double drz = (blk.rho(i,j,k+1)-blk.rho(i,j,k-1))*ih2;
+            return static_cast<float>(std::sqrt(drx*drx+dry*dry+drz*drz));
+        }
+        default: return 0.f;
+    }
+}
+
+// =============================================================================
 // P6.6 — 3-D volume helpers
 // =============================================================================
 
@@ -61,73 +132,6 @@ void LiveStreamer::build_volume(const BlockTree& tree, int step, double t,
     float g_vmin = std::numeric_limits<float>::max();
     float g_vmax = std::numeric_limits<float>::lowest();
 
-    auto vel_at = [](const CellBlock& blk, int comp, int i, int j, int k) -> double {
-        switch (comp) {
-            case 0: return blk.rhou(i,j,k) / blk.rho(i,j,k);
-            case 1: return blk.rhov(i,j,k) / blk.rho(i,j,k);
-            default: return blk.rhow(i,j,k) / blk.rho(i,j,k);
-        }
-    };
-
-    auto cell_val = [&](const CellBlock& blk, int i, int j, int k) -> float {
-        switch (svar) {
-            case StreamVar::RHO:   return static_cast<float>(blk.rho (i,j,k));
-            case StreamVar::RHOU:  return static_cast<float>(blk.rhou(i,j,k));
-            case StreamVar::RHOV:  return static_cast<float>(blk.rhov(i,j,k));
-            case StreamVar::RHOW:  return static_cast<float>(blk.rhow(i,j,k));
-            case StreamVar::ETOT:  return static_cast<float>(blk.E   (i,j,k));
-            default: break;
-        }
-        Prim q = blk.prim(i, j, k);
-        switch (svar) {
-            case StreamVar::PRESS: return static_cast<float>(q.p);
-            case StreamVar::TEMP:  return static_cast<float>(q.T);
-            case StreamVar::UMAG:  return static_cast<float>(
-                                       std::sqrt(q.u*q.u + q.v*q.v + q.w*q.w));
-            case StreamVar::MACH: {
-                const double c = std::sqrt(GAMMA * q.p / q.rho);
-                return static_cast<float>(std::sqrt(q.u*q.u+q.v*q.v+q.w*q.w) / c);
-            }
-            case StreamVar::VORT: {
-                const double ih2 = 1.0 / (2.0 * blk.h);
-                const double wx = (vel_at(blk,2,i,j+1,k)-vel_at(blk,2,i,j-1,k))*ih2
-                                - (vel_at(blk,1,i,j,k+1)-vel_at(blk,1,i,j,k-1))*ih2;
-                const double wy = (vel_at(blk,0,i,j,k+1)-vel_at(blk,0,i,j,k-1))*ih2
-                                - (vel_at(blk,2,i+1,j,k)-vel_at(blk,2,i-1,j,k))*ih2;
-                const double wz = (vel_at(blk,1,i+1,j,k)-vel_at(blk,1,i-1,j,k))*ih2
-                                - (vel_at(blk,0,i,j+1,k)-vel_at(blk,0,i,j-1,k))*ih2;
-                return static_cast<float>(std::sqrt(wx*wx+wy*wy+wz*wz));
-            }
-            case StreamVar::QCRIT: {
-                const double ih2 = 1.0 / (2.0 * blk.h);
-                const double A[3][3] = {
-                    {(vel_at(blk,0,i+1,j,k)-vel_at(blk,0,i-1,j,k))*ih2,
-                     (vel_at(blk,0,i,j+1,k)-vel_at(blk,0,i,j-1,k))*ih2,
-                     (vel_at(blk,0,i,j,k+1)-vel_at(blk,0,i,j,k-1))*ih2},
-                    {(vel_at(blk,1,i+1,j,k)-vel_at(blk,1,i-1,j,k))*ih2,
-                     (vel_at(blk,1,i,j+1,k)-vel_at(blk,1,i,j-1,k))*ih2,
-                     (vel_at(blk,1,i,j,k+1)-vel_at(blk,1,i,j,k-1))*ih2},
-                    {(vel_at(blk,2,i+1,j,k)-vel_at(blk,2,i-1,j,k))*ih2,
-                     (vel_at(blk,2,i,j+1,k)-vel_at(blk,2,i,j-1,k))*ih2,
-                     (vel_at(blk,2,i,j,k+1)-vel_at(blk,2,i,j,k-1))*ih2}
-                };
-                double Q = 0.0;
-                for (int c = 0; c < 3; ++c)
-                    for (int d = 0; d < 3; ++d)
-                        Q -= 0.5 * A[c][d] * A[d][c];
-                return static_cast<float>(Q);
-            }
-            case StreamVar::SCHLIEREN: {
-                const double ih2 = 1.0 / (2.0 * blk.h);
-                const double drx = (blk.rho(i+1,j,k)-blk.rho(i-1,j,k))*ih2;
-                const double dry = (blk.rho(i,j+1,k)-blk.rho(i,j-1,k))*ih2;
-                const double drz = (blk.rho(i,j,k+1)-blk.rho(i,j,k-1))*ih2;
-                return static_cast<float>(std::sqrt(drx*drx+dry*dry+drz*drz));
-            }
-            default: return 0.f;
-        }
-    };
-
     // Sort leaves coarse→fine so fine blocks overwrite coarse in shared voxels.
     auto leaves = tree.leaf_indices();
     std::sort(leaves.begin(), leaves.end(), [&](int a, int b) {
@@ -154,7 +158,7 @@ void LiveStreamer::build_volume(const BlockTree& tree, int step, double t,
             const int vk0 = static_cast<int>((cz - 0.5*h) / L * N);
             const int vk1 = static_cast<int>((cz + 0.5*h) / L * N);
 
-            const float val = cell_val(blk, NG+ii, NG+jj, NG+kk);
+            const float val = ls_cell_val(blk, svar, NG+ii, NG+jj, NG+kk);
 
             const int vi_lo = std::max(0, vi0);
             const int vi_hi = std::min(N-1, vi1);
@@ -394,79 +398,6 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
     float g_vmin = std::numeric_limits<float>::max();
     float g_vmax = std::numeric_limits<float>::lowest();
 
-    // Helper: velocity component at (i,j,k) — comp 0=u,1=v,2=w.
-    auto vel_at = [](const CellBlock& blk, int comp, int i, int j, int k) -> double {
-        switch (comp) {
-            case 0: return blk.rhou(i,j,k) / blk.rho(i,j,k);
-            case 1: return blk.rhov(i,j,k) / blk.rho(i,j,k);
-            default: return blk.rhow(i,j,k) / blk.rho(i,j,k);
-        }
-    };
-
-    // Lambda: extract scalar value at interior cell (i,j,k).
-    // Ghost cells (index NG-1, NG+NB) are valid for gradient stencils.
-    auto cell_val = [&](const CellBlock& blk, int i, int j, int k) -> float {
-        switch (svar) {
-            case StreamVar::RHO:   return static_cast<float>(blk.rho (i,j,k));
-            case StreamVar::RHOU:  return static_cast<float>(blk.rhou(i,j,k));
-            case StreamVar::RHOV:  return static_cast<float>(blk.rhov(i,j,k));
-            case StreamVar::RHOW:  return static_cast<float>(blk.rhow(i,j,k));
-            case StreamVar::ETOT:  return static_cast<float>(blk.E   (i,j,k));
-            default: break;
-        }
-        Prim q = blk.prim(i, j, k);
-        switch (svar) {
-            case StreamVar::PRESS: return static_cast<float>(q.p);
-            case StreamVar::TEMP:  return static_cast<float>(q.T);
-            case StreamVar::UMAG:  return static_cast<float>(
-                                       std::sqrt(q.u*q.u + q.v*q.v + q.w*q.w));
-            case StreamVar::MACH: {
-                const double c = std::sqrt(GAMMA * q.p / q.rho);
-                return static_cast<float>(std::sqrt(q.u*q.u+q.v*q.v+q.w*q.w) / c);
-            }
-            case StreamVar::VORT: {
-                // ω = ∇×u, |ω|² = ωx²+ωy²+ωz²; central differences, h = blk.h
-                const double ih2 = 1.0 / (2.0 * blk.h);
-                const double wx = (vel_at(blk,2,i,j+1,k)-vel_at(blk,2,i,j-1,k))*ih2
-                                - (vel_at(blk,1,i,j,k+1)-vel_at(blk,1,i,j,k-1))*ih2;
-                const double wy = (vel_at(blk,0,i,j,k+1)-vel_at(blk,0,i,j,k-1))*ih2
-                                - (vel_at(blk,2,i+1,j,k)-vel_at(blk,2,i-1,j,k))*ih2;
-                const double wz = (vel_at(blk,1,i+1,j,k)-vel_at(blk,1,i-1,j,k))*ih2
-                                - (vel_at(blk,0,i,j+1,k)-vel_at(blk,0,i,j-1,k))*ih2;
-                return static_cast<float>(std::sqrt(wx*wx+wy*wy+wz*wz));
-            }
-            case StreamVar::QCRIT: {
-                // Q = -½ Σ_{c,d} A_cd * A_dc,  A_cd = ∂u_c/∂x_d
-                const double ih2 = 1.0 / (2.0 * blk.h);
-                // A[row][col]: row=velocity comp (0=u,1=v,2=w), col=spatial axis (0=x,1=y,2=z)
-                const double A[3][3] = {
-                    {(vel_at(blk,0,i+1,j,k)-vel_at(blk,0,i-1,j,k))*ih2,
-                     (vel_at(blk,0,i,j+1,k)-vel_at(blk,0,i,j-1,k))*ih2,
-                     (vel_at(blk,0,i,j,k+1)-vel_at(blk,0,i,j,k-1))*ih2},
-                    {(vel_at(blk,1,i+1,j,k)-vel_at(blk,1,i-1,j,k))*ih2,
-                     (vel_at(blk,1,i,j+1,k)-vel_at(blk,1,i,j-1,k))*ih2,
-                     (vel_at(blk,1,i,j,k+1)-vel_at(blk,1,i,j,k-1))*ih2},
-                    {(vel_at(blk,2,i+1,j,k)-vel_at(blk,2,i-1,j,k))*ih2,
-                     (vel_at(blk,2,i,j+1,k)-vel_at(blk,2,i,j-1,k))*ih2,
-                     (vel_at(blk,2,i,j,k+1)-vel_at(blk,2,i,j,k-1))*ih2}
-                };
-                double Q = 0.0;
-                for (int c = 0; c < 3; ++c)
-                    for (int d = 0; d < 3; ++d)
-                        Q -= 0.5 * A[c][d] * A[d][c];
-                return static_cast<float>(Q);
-            }
-            case StreamVar::SCHLIEREN: {
-                const double ih2 = 1.0 / (2.0 * blk.h);
-                const double drx = (blk.rho(i+1,j,k)-blk.rho(i-1,j,k))*ih2;
-                const double dry = (blk.rho(i,j+1,k)-blk.rho(i,j-1,k))*ih2;
-                const double drz = (blk.rho(i,j,k+1)-blk.rho(i,j,k-1))*ih2;
-                return static_cast<float>(std::sqrt(drx*drx+dry*dry+drz*drz));
-            }
-            default: return 0.f;
-        }
-    };
-
     for (int li : tree.leaf_indices()) {
         const BlockNode& node = tree.nodes[li];
         const CellBlock& blk  = *node.block;
@@ -503,7 +434,7 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
             if      (axis == 0) { ci = s;  cj = ia; ck = ib; }
             else if (axis == 1) { ci = ia; cj = s;  ck = ib; }
             else                { ci = ia; cj = ib; ck = s;  }
-            float v = cell_val(blk, ci, cj, ck);
+            float v = ls_cell_val(blk, svar, ci, cj, ck);
             fb.data.push_back(v);
             g_vmin = std::min(g_vmin, v);
             g_vmax = std::max(g_vmax, v);

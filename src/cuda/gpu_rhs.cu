@@ -516,6 +516,28 @@ void gpu_recon_shmem(const double* __restrict__ s,
     qR_out = gpu_safe_prim_f(QR, fbR);
 }
 
+// Load 7 prim components from the flat scratch array (layout: comp * GPU_NCELL + flat).
+__device__ __forceinline__
+GPrim gpu_sp_load_prim(const double* __restrict__ sp, int flat) noexcept {
+    GPrim q;
+    q.rho = sp[0*GPU_NCELL+flat]; q.u = sp[1*GPU_NCELL+flat];
+    q.v   = sp[2*GPU_NCELL+flat]; q.w = sp[3*GPU_NCELL+flat];
+    q.p   = sp[4*GPU_NCELL+flat]; q.T = sp[5*GPU_NCELL+flat];
+    q.c   = sp[6*GPU_NCELL+flat];
+    return q;
+}
+
+// True when ghost cells indicate a wall BC: pressure equal, momenta antisymmetric.
+__device__ __forceinline__
+bool gpu_is_wall_bc(const GPrim& pL, const GPrim& pR) noexcept {
+    auto antisym = [](double a, double b) {
+        return fabs(a+b) < 1.0e-8*(fabs(a)+fabs(b)+1.0e-300);
+    };
+    return (pL.p == pR.p) && antisym(pL.u,pR.u)
+                           && antisym(pL.v,pR.v)
+                           && antisym(pL.w,pR.w);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // k_rhs_conv_teno<SCHEME>: hybrid KEP/HLLC-ES face-centred convective flux
 //   SCHEME 0 = WENO5-Z  (is_bnd = domain boundary)
@@ -537,13 +559,6 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
     constexpr int NF   = GPU_NB + 1;
     constexpr int FPA  = NF * GPU_NB * GPU_NB;
     constexpr int FTOT = 3 * FPA;
-
-    auto load_prim = [&](int flat, GPrim& q) {
-        q.rho = sp[0*GPU_NCELL+flat]; q.u = sp[1*GPU_NCELL+flat];
-        q.v   = sp[2*GPU_NCELL+flat]; q.w = sp[3*GPU_NCELL+flat];
-        q.p   = sp[4*GPU_NCELL+flat]; q.T = sp[5*GPU_NCELL+flat];
-        q.c   = sp[6*GPU_NCELL+flat];
-    };
 
     for (int fid = threadIdx.x; fid < FTOT; fid += blockDim.x) {
         const int axis  = fid / FPA;
@@ -572,12 +587,10 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
         const bool bR = (fn+1 <= ihi);
         if (!bL && !bR) continue;
 
-        GPrim pL, pR;
-        load_prim(idxL, pL); load_prim(idxR, pR);
+        GPrim pL = gpu_sp_load_prim(sp, idxL);
+        GPrim pR = gpu_sp_load_prim(sp, idxR);
 
-        const double ducL = sp[8*GPU_NCELL+idxL];
-        const double ducR = sp[8*GPU_NCELL+idxR];
-        const double theta = fmax(ducL, ducR);
+        const double theta = fmax(sp[8*GPU_NCELL+idxL], sp[8*GPU_NCELL+idxR]);
         const bool at_bnd = (fn < ilo || fn+1 > ihi);
         const bool is_bnd = (SCHEME == 2) ? (!m.is_periodic && at_bnd) : at_bnd;
 
@@ -591,12 +604,7 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
             double Fs[GPU_NVAR];
             bool wall = is_bnd;
             if (wall) {
-                auto antisym = [](double a, double b) -> bool {
-                    return fabs(a+b) < 1.0e-8*(fabs(a)+fabs(b)+1.0e-300);
-                };
-                wall = (pL.p == pR.p) && antisym(pL.u,pR.u)
-                                       && antisym(pL.v,pR.v)
-                                       && antisym(pL.w,pR.w);
+                wall = gpu_is_wall_bc(pL, pR);
             }
             if (wall) {
                 for (int v = 0; v < GPU_NVAR; ++v) Fs[v] = Fk[v];
@@ -713,15 +721,7 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
             for (int v = 0; v < GPU_NVAR; ++v) F[v] = Fk[v];
         } else {
             double Fs[GPU_NVAR];
-            bool wall = is_bnd;
-            if (wall) {
-                auto antisym = [](double a, double b) {
-                    return fabs(a+b) < 1.0e-8*(fabs(a)+fabs(b)+1.0e-300);
-                };
-                wall = (pL.p == pR.p) && antisym(pL.u,pR.u)
-                                       && antisym(pL.v,pR.v)
-                                       && antisym(pL.w,pR.w);
-            }
+            bool wall = is_bnd && gpu_is_wall_bc(pL, pR);
             if (wall) {
                 for (int v = 0; v < GPU_NVAR; ++v) Fs[v] = Fk[v];
             } else if (!is_bnd) {
@@ -792,12 +792,6 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
 
     // ── X-faces: global memory, stride-1 (4 iters/thread) ───────────────────
     constexpr int FX = NF * GPU_NB * GPU_NB;  // 576
-    auto gload = [&](int flat, GPrim& q) {
-        q.rho = sp[0*GPU_NCELL+flat]; q.u = sp[1*GPU_NCELL+flat];
-        q.v   = sp[2*GPU_NCELL+flat]; q.w = sp[3*GPU_NCELL+flat];
-        q.p   = sp[4*GPU_NCELL+flat]; q.T = sp[5*GPU_NCELL+flat];
-        q.c   = sp[6*GPU_NCELL+flat];
-    };
     for (int fid = tid; fid < FX; fid += blockDim.x) {
         const int fn_rel = fid % NF;
         const int fa     = (fid / NF) % GPU_NB;
@@ -811,8 +805,8 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
         const bool bL  = (fn   >= ilo);
         const bool bR  = (fn+1 <= ihi);
 
-        GPrim pL, pR;
-        gload(idxL, pL); gload(idxR, pR);
+        GPrim pL = gpu_sp_load_prim(sp, idxL);
+        GPrim pR = gpu_sp_load_prim(sp, idxR);
 
         const double theta = fmax(sp[8*GPU_NCELL+idxL], sp[8*GPU_NCELL+idxR]);
         const bool is_bnd  = (fn < ilo || fn+1 > ihi);
@@ -825,15 +819,7 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
             for (int v = 0; v < GPU_NVAR; ++v) F[v] = Fk[v];
         } else {
             double Fs[GPU_NVAR];
-            bool wall = is_bnd;
-            if (wall) {
-                auto antisym = [](double a, double b) {
-                    return fabs(a+b) < 1.0e-8*(fabs(a)+fabs(b)+1.0e-300);
-                };
-                wall = (pL.p == pR.p) && antisym(pL.u,pR.u)
-                                       && antisym(pL.v,pR.v)
-                                       && antisym(pL.w,pR.w);
-            }
+            bool wall = is_bnd && gpu_is_wall_bc(pL, pR);
             if (wall) {
                 for (int v = 0; v < GPU_NVAR; ++v) Fs[v] = Fk[v];
             } else if (!is_bnd) {
