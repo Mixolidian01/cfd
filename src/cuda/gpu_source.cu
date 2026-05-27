@@ -36,38 +36,16 @@ __global__ static void k_fill_y_ghosts(const GpuSourceLeafMeta* __restrict__ met
         int si = i, sj = j, sk = k;
         const double* src = d_Y;
 
-        // Resolve each ghost dimension against its face's neighbour.
-        // Priority x → y → z for edge/corner cells.
-        if (gx) {
-            int face = (i < NG) ? 0 : 1;
-            if (m.d_Ynb[face]) {
-                src = m.d_Ynb[face];
-                si  = (i < NG) ? (i + NB) : (i - NB);
-            } else {
-                si = (m.bc_int == 0) ? ((i < NG) ? (i + NB) : (i - NB))
-                                     : ((i < NG) ? NG : (NG + NB - 1));
-            }
-        }
-        if (gy) {
-            int face = (j < NG) ? 2 : 3;
-            if (m.d_Ynb[face]) {
-                src = m.d_Ynb[face];
-                sj  = (j < NG) ? (j + NB) : (j - NB);
-            } else {
-                sj = (m.bc_int == 0) ? ((j < NG) ? (j + NB) : (j - NB))
-                                     : ((j < NG) ? NG : (NG + NB - 1));
-            }
-        }
-        if (gz) {
-            int face = (k < NG) ? 4 : 5;
-            if (m.d_Ynb[face]) {
-                src = m.d_Ynb[face];
-                sk  = (k < NG) ? (k + NB) : (k - NB);
-            } else {
-                sk = (m.bc_int == 0) ? ((k < NG) ? (k + NB) : (k - NB))
-                                     : ((k < NG) ? NG : (NG + NB - 1));
-            }
-        }
+        // Resolve each ghost dimension against its face's neighbour (x→y→z priority).
+        auto resolve = [&](bool g, int coord, int face_base, int& s) noexcept {
+            if (!g) return;
+            const int face = face_base + (coord >= NG ? 1 : 0);
+            if (m.d_Ynb[face]) { src = m.d_Ynb[face]; s = (coord < NG) ? coord+NB : coord-NB; }
+            else { s = (m.bc_int == 0) ? ((coord < NG) ? coord+NB : coord-NB) : ((coord < NG) ? NG : NG+NB-1); }
+        };
+        resolve(gx, i, 0, si);
+        resolve(gy, j, 2, sj);
+        resolve(gz, k, 4, sk);
         d_Y[flat] = src[cell_idx(si, sj, sk)];
     }
 }

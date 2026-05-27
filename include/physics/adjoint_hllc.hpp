@@ -301,34 +301,18 @@ void adj_chandrashekar_ec(const Prim& L, const Prim& R,
     l_pL[0] += 0.5 * d_rho_a;
     l_pR[0] += 0.5 * d_rho_a;
 
-    // beta_a = 0.5*(betaL+betaR)  with betaX = rhoX/(2*pX)
-    // d_beta_a → d_betaL = 0.5*d_beta_a, d_betaR = 0.5*d_beta_a
-    // betaL = rhoL/(2*pL) → d_rhoL += d_betaL/(2*pL);  d_pL -= d_betaL*rhoL/(2*pL^2)
-    const double d_betaL = 0.5 * d_beta_a;
-    const double d_betaR = 0.5 * d_beta_a;
-
-    l_pL[0] += d_betaL / (2.0 * L.p);
-    l_pL[4] -= d_betaL * L.rho / (2.0 * L.p * L.p);
-    l_pR[0] += d_betaR / (2.0 * R.p);
-    l_pR[4] -= d_betaR * R.rho / (2.0 * R.p * R.p);
-
+    // betaX = rhoX/(2*pX): accumulate d_betaL, d_betaR into prim adjoints
+    auto acc_dbeta = [&](double dL, double dR) noexcept {
+        l_pL[0]+=dL/(2.0*L.p); l_pL[4]-=dL*L.rho/(2.0*L.p*L.p);
+        l_pR[0]+=dR/(2.0*R.p); l_pR[4]-=dR*R.rho/(2.0*R.p*R.p);
+    };
+    // beta_a = 0.5*(betaL+betaR)
+    acc_dbeta(0.5*d_beta_a, 0.5*d_beta_a);
     // rho_ln = log_mean(rhoL, rhoR)
-    // d_rhoL += d_rho_ln * d_log_mean_da(rhoL, rhoR)
-    // d_rhoR += d_rho_ln * d_log_mean_da(rhoR, rhoL)
     l_pL[0] += d_rho_ln * d_log_mean_da(L.rho, R.rho);
     l_pR[0] += d_rho_ln * d_log_mean_da(R.rho, L.rho);
-
     // beta_ln = log_mean(betaL, betaR)
-    // d_betaL_lm += d_beta_ln * d_log_mean_da(betaL, betaR)
-    // d_betaR_lm += d_beta_ln * d_log_mean_da(betaR, betaL)
-    // then chain through betaX = rhoX/(2*pX)
-    const double d_betaL_lm = d_beta_ln * d_log_mean_da(beta_L, beta_R);
-    const double d_betaR_lm = d_beta_ln * d_log_mean_da(beta_R, beta_L);
-
-    l_pL[0] += d_betaL_lm / (2.0 * L.p);
-    l_pL[4] -= d_betaL_lm * L.rho / (2.0 * L.p * L.p);
-    l_pR[0] += d_betaR_lm / (2.0 * R.p);
-    l_pR[4] -= d_betaR_lm * R.rho / (2.0 * R.p * R.p);
+    acc_dbeta(d_beta_ln*d_log_mean_da(beta_L, beta_R), d_beta_ln*d_log_mean_da(beta_R, beta_L));
 }
 
 // ── adjoint_hllces_flux ────────────────────────────────────────────────────────

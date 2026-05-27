@@ -461,78 +461,52 @@ void LiveStreamer::serialize_frame(const FrameBuffer& fb, std::vector<uint8_t>& 
     ::serialize_frame(fb, out);
 }
 
-// =============================================================================
-// LiveStreamer::run_stream — stream thread
-// =============================================================================
-
-void LiveStreamer::run_stream() {
+// ── Shared stream loop ────────────────────────────────────────────────────────
+// Waits on cv for a fresh frame, swaps buffers, serializes, and sends one HTTP
+// chunk. On send failure clears the fd with CAS (accept thread sets a new one).
+template<class SwapFn, class SerFn>
+static void run_stream_impl(
+    bool& shutdown_ref,
+    std::mutex& mtx, std::condition_variable& cv, bool& fresh_flag,
+    SwapFn swap_fn, SerFn serialize_fn, std::atomic<int>& fd_atomic)
+{
     std::vector<uint8_t> frame_bytes;
-
     while (true) {
-        // Wait for next frame
         {
-            std::unique_lock<std::mutex> lk(swap_mtx_);
-            swap_cv_.wait(lk, [&]{ return front_fresh_ || shutdown_; });
-            if (shutdown_) break;
-            std::swap(work_, front_);
-            front_fresh_ = false;
+            std::unique_lock<std::mutex> lk(mtx);
+            cv.wait(lk, [&]{ return fresh_flag || shutdown_ref; });
+            if (shutdown_ref) break;
+            swap_fn();
+            fresh_flag = false;
         }
-
-        serialize_frame(work_, frame_bytes);
-
-        int fd = stream_fd_.load(std::memory_order_acquire);
+        serialize_fn(frame_bytes);
+        int fd = fd_atomic.load(std::memory_order_acquire);
         if (fd < 0) continue;
-
-        // Send as one HTTP chunk: <hex-size>\r\n<data>\r\n
         char hdr[24];
         int  hlen = std::snprintf(hdr, sizeof(hdr), "%zx\r\n", frame_bytes.size());
-
         if (!http_safe_send(fd, hdr, static_cast<size_t>(hlen)) ||
             !http_safe_send(fd, frame_bytes.data(), frame_bytes.size()) ||
             !http_safe_send(fd, "\r\n", 2))
         {
-            // Client disconnected — clear socket; accept thread will set a new one
             int expected = fd;
-            stream_fd_.compare_exchange_strong(expected, -1,
-                                               std::memory_order_acq_rel);
+            fd_atomic.compare_exchange_strong(expected, -1, std::memory_order_acq_rel);
             ::close(fd);
         }
     }
 }
 
-// =============================================================================
-// LiveStreamer::run_stream3d — 3-D volume stream thread (P6.6)
-// =============================================================================
+void LiveStreamer::run_stream() {
+    run_stream_impl(shutdown_, swap_mtx_, swap_cv_, front_fresh_,
+        [this]{ std::swap(work_, front_); },
+        [this](std::vector<uint8_t>& b){ serialize_frame(work_, b); },
+        stream_fd_);
+}
 
 void LiveStreamer::run_stream3d() {
-    std::vector<uint8_t> frame_bytes;
-
-    while (true) {
-        {
-            std::unique_lock<std::mutex> lk(swap3d_mtx_);
-            swap3d_cv_.wait(lk, [&]{ return front3d_fresh_ || shutdown_; });
-            if (shutdown_) break;
-            std::swap(work3d_, front3d_);
-            front3d_fresh_ = false;
-        }
-
-        serialize_volume(work3d_, frame_bytes);
-
-        int fd = vol_stream_fd_.load(std::memory_order_acquire);
-        if (fd < 0) continue;
-
-        char hdr[24];
-        int  hlen = std::snprintf(hdr, sizeof(hdr), "%zx\r\n", frame_bytes.size());
-        if (!http_safe_send(fd, hdr, static_cast<size_t>(hlen)) ||
-            !http_safe_send(fd, frame_bytes.data(), frame_bytes.size()) ||
-            !http_safe_send(fd, "\r\n", 2))
-        {
-            int expected = fd;
-            vol_stream_fd_.compare_exchange_strong(expected, -1,
-                                                   std::memory_order_acq_rel);
-            ::close(fd);
-        }
-    }
+    run_stream_impl(shutdown_, swap3d_mtx_, swap3d_cv_, front3d_fresh_,
+        [this]{ std::swap(work3d_, front3d_); },
+        [this](std::vector<uint8_t>& b){ serialize_volume(work3d_, b); },
+        vol_stream_fd_);
 }
 
 // =============================================================================
@@ -640,41 +614,29 @@ void LiveStreamer::handle_get_root(int cfd) {
     http_safe_send(cfd, html.c_str(), html.size());
 }
 
-void LiveStreamer::handle_get_stream(int cfd) {
-    const char* hdr =
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/octet-stream\r\n"
-        "Transfer-Encoding: chunked\r\n"
-        "Cache-Control: no-cache\r\n"
-        "Connection: keep-alive\r\n\r\n";
-
-    if (!http_safe_send(cfd, hdr, std::strlen(hdr))) {
-        ::close(cfd);
-        return;
-    }
-
-    // Replace any previous stream socket
-    int old = stream_fd_.exchange(cfd, std::memory_order_acq_rel);
-    if (old >= 0 && old != cfd) ::close(old);
-}
-
-void LiveStreamer::handle_get_volume(int cfd) {
-    // Redirect to the combined viewer which has both 2D and 3D modes.
-    const char* r = "HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\n\r\n";
-    http_safe_send(cfd, r, std::strlen(r));
-}
-
-void LiveStreamer::handle_get_vol_stream(int cfd) {
-    const char* hdr =
+static void accept_stream_client(int cfd, std::atomic<int>& fd_atomic) {
+    static constexpr const char* hdr =
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: application/octet-stream\r\n"
         "Transfer-Encoding: chunked\r\n"
         "Cache-Control: no-cache\r\n"
         "Connection: keep-alive\r\n\r\n";
     if (!http_safe_send(cfd, hdr, std::strlen(hdr))) { ::close(cfd); return; }
-
-    int old = vol_stream_fd_.exchange(cfd, std::memory_order_acq_rel);
+    int old = fd_atomic.exchange(cfd, std::memory_order_acq_rel);
     if (old >= 0 && old != cfd) ::close(old);
+}
+
+void LiveStreamer::handle_get_stream(int cfd) {
+    accept_stream_client(cfd, stream_fd_);
+}
+
+void LiveStreamer::handle_get_volume(int cfd) {
+    const char* r = "HTTP/1.1 302 Found\r\nLocation: /\r\nContent-Length: 0\r\n\r\n";
+    http_safe_send(cfd, r, std::strlen(r));
+}
+
+void LiveStreamer::handle_get_vol_stream(int cfd) {
+    accept_stream_client(cfd, vol_stream_fd_);
     // Ownership transferred to stream3d_thread_; do not close here.
 }
 

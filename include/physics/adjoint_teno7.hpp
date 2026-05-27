@@ -132,66 +132,22 @@ void teno7_one_sided_adj(const Teno7ScalarFwd& fw,
                          double la[7]) noexcept
 {
     constexpr double i12 = 1.0/12.0;
-
-    if (fw.ws > 0.0) {
-        // Smooth path: output = (w0*s0 + w1*s1 + w2*s2 + w3*s3) / ws
-        const double l_s0 = l_out * fw.w[0] / fw.ws;
-        const double l_s1 = l_out * fw.w[1] / fw.ws;
-        const double l_s2 = l_out * fw.w[2] / fw.ws;
-        const double l_s3 = l_out * fw.w[3] / fw.ws;
-
-        // s0 = i12*(-3a + 13b - 23c + 25d)
-        la[0] += l_s0 * (-3.0*i12);
-        la[1] += l_s0 * (13.0*i12);
-        la[2] += l_s0 * (-23.0*i12);
-        la[3] += l_s0 * (25.0*i12);
-
-        // s1 = i12*(b - 5c + 13d + 3e)
-        la[1] += l_s1 * (i12);
-        la[2] += l_s1 * (-5.0*i12);
-        la[3] += l_s1 * (13.0*i12);
-        la[4] += l_s1 * (3.0*i12);
-
-        // s2 = i12*(-c + 7d + 7e - f)
-        la[2] += l_s2 * (-i12);
-        la[3] += l_s2 * (7.0*i12);
-        la[4] += l_s2 * (7.0*i12);
-        la[5] += l_s2 * (-i12);
-
-        // s3 = i12*(25d - 23e + 13f - 3g)
-        la[3] += l_s3 * (25.0*i12);
-        la[4] += l_s3 * (-23.0*i12);
-        la[5] += l_s3 * (13.0*i12);
-        la[6] += l_s3 * (-3.0*i12);
-    } else {
-        // ENO fallback: output = s[eno_k] with frozen substencil selection
-        // Adjoint of the selected polynomial only
-        switch (fw.eno_k) {
-            case 0:  // s0 = i12*(-3a+13b-23c+25d)
-                la[0] += l_out * (-3.0*i12);
-                la[1] += l_out * (13.0*i12);
-                la[2] += l_out * (-23.0*i12);
-                la[3] += l_out * (25.0*i12);
-                break;
-            case 1:  // s1 = i12*(b-5c+13d+3e)
-                la[1] += l_out * (i12);
-                la[2] += l_out * (-5.0*i12);
-                la[3] += l_out * (13.0*i12);
-                la[4] += l_out * (3.0*i12);
-                break;
-            case 2:  // s2 = i12*(-c+7d+7e-f)
-                la[2] += l_out * (-i12);
-                la[3] += l_out * (7.0*i12);
-                la[4] += l_out * (7.0*i12);
-                la[5] += l_out * (-i12);
-                break;
-            default: // s3 = i12*(25d-23e+13f-3g)
-                la[3] += l_out * (25.0*i12);
-                la[4] += l_out * (-23.0*i12);
-                la[5] += l_out * (13.0*i12);
-                la[6] += l_out * (-3.0*i12);
-                break;
+    auto acc_sk = [&](int k, double ls) noexcept {
+        switch (k) {
+            case 0: la[0]+=ls*(-3.0*i12); la[1]+=ls*(13.0*i12); la[2]+=ls*(-23.0*i12); la[3]+=ls*(25.0*i12); break;
+            case 1: la[1]+=ls*(i12); la[2]+=ls*(-5.0*i12); la[3]+=ls*(13.0*i12); la[4]+=ls*(3.0*i12); break;
+            case 2: la[2]+=ls*(-i12); la[3]+=ls*(7.0*i12); la[4]+=ls*(7.0*i12); la[5]+=ls*(-i12); break;
+            default: la[3]+=ls*(25.0*i12); la[4]+=ls*(-23.0*i12); la[5]+=ls*(13.0*i12); la[6]+=ls*(-3.0*i12); break;
         }
+    };
+    if (fw.ws > 0.0) {
+        const double iws = 1.0 / fw.ws;
+        acc_sk(0, l_out * fw.w[0] * iws);
+        acc_sk(1, l_out * fw.w[1] * iws);
+        acc_sk(2, l_out * fw.w[2] * iws);
+        acc_sk(3, l_out * fw.w[3] * iws);
+    } else {
+        acc_sk(fw.eno_k, l_out);
     }
 }
 
@@ -257,41 +213,20 @@ void teno5_one_sided_adj(const Teno5ScalarFwd& fw,
                          double la[5]) noexcept
 {
     constexpr double i6 = 1.0/6.0;
-
-    if (fw.ws > 0.0) {
-        const double l_s0 = l_out * fw.w[0] / fw.ws;
-        const double l_s1 = l_out * fw.w[1] / fw.ws;
-        const double l_s2 = l_out * fw.w[2] / fw.ws;
-        // s0 = ( 2a -  7b + 11c)/6
-        la[0] += l_s0 * ( 2.0*i6);
-        la[1] += l_s0 * (-7.0*i6);
-        la[2] += l_s0 * (11.0*i6);
-        // s1 = (   -b +  5c +  2d)/6
-        la[1] += l_s1 * (-i6);
-        la[2] += l_s1 * ( 5.0*i6);
-        la[3] += l_s1 * ( 2.0*i6);
-        // s2 = ( 2c +  5d -   e)/6
-        la[2] += l_s2 * ( 2.0*i6);
-        la[3] += l_s2 * ( 5.0*i6);
-        la[4] += l_s2 * (-i6);
-    } else {
-        switch (fw.eno_k) {
-            case 0:  // s0 = (2a-7b+11c)/6
-                la[0] += l_out * ( 2.0*i6);
-                la[1] += l_out * (-7.0*i6);
-                la[2] += l_out * (11.0*i6);
-                break;
-            case 1:  // s1 = (-b+5c+2d)/6
-                la[1] += l_out * (-i6);
-                la[2] += l_out * ( 5.0*i6);
-                la[3] += l_out * ( 2.0*i6);
-                break;
-            default: // s2 = (2c+5d-e)/6
-                la[2] += l_out * ( 2.0*i6);
-                la[3] += l_out * ( 5.0*i6);
-                la[4] += l_out * (-i6);
-                break;
+    auto acc_sk5 = [&](int k, double ls) noexcept {
+        switch (k) {
+            case 0: la[0]+=ls*(2.0*i6); la[1]+=ls*(-7.0*i6); la[2]+=ls*(11.0*i6); break;
+            case 1: la[1]+=ls*(-i6); la[2]+=ls*(5.0*i6); la[3]+=ls*(2.0*i6); break;
+            default: la[2]+=ls*(2.0*i6); la[3]+=ls*(5.0*i6); la[4]+=ls*(-i6); break;
         }
+    };
+    if (fw.ws > 0.0) {
+        const double iws = 1.0 / fw.ws;
+        acc_sk5(0, l_out * fw.w[0] * iws);
+        acc_sk5(1, l_out * fw.w[1] * iws);
+        acc_sk5(2, l_out * fw.w[2] * iws);
+    } else {
+        acc_sk5(fw.eno_k, l_out);
     }
 }
 
@@ -678,6 +613,11 @@ inline void teno7_recon_apply_frozen(
     const Prim& fbL = pc_pert[idx_at(0)];
     const Prim& fbR = pc_pert[idx_at(1)];
     const int   ni  = cf.n_idx, ti1 = cf.t1_idx, ti2 = cf.t2_idx;
+    auto finish = [&](const double wL_[5], const double wR_[5]) noexcept {
+        double QL_[NVAR], QR_[NVAR];
+        teno7_back_project(cf, wL_, QL_); teno7_back_project(cf, wR_, QR_);
+        qL_out = safe_prim(QL_, fbL); qR_out = safe_prim(QR_, fbR);
+    };
 
     if (cf.is_teno5) {
         double Q5[6][NVAR];
@@ -702,12 +642,7 @@ inline void teno7_recon_apply_frozen(
             wR[kk] = teno5_one_sided_frozen(cf.fwd5_R[kk],
                 W5[kk][5], W5[kk][4], W5[kk][3], W5[kk][2], W5[kk][1]);
         }
-        double QL[NVAR], QR[NVAR];
-        teno7_back_project(cf, wL, QL);
-        teno7_back_project(cf, wR, QR);
-        qL_out = safe_prim(QL, fbL);
-        qR_out = safe_prim(QR, fbR);
-        return;
+        finish(wL, wR); return;
     }
 
     double Q[7][NVAR];
@@ -732,9 +667,5 @@ inline void teno7_recon_apply_frozen(
         wR[kk] = teno7_one_sided_frozen(cf.fwd_R[kk],
             W[kk][6], W[kk][5], W[kk][4], W[kk][3], W[kk][2], W[kk][1], W[kk][0]);
     }
-    double QL[NVAR], QR[NVAR];
-    teno7_back_project(cf, wL, QL);
-    teno7_back_project(cf, wR, QR);
-    qL_out = safe_prim(QL, fbL);
-    qR_out = safe_prim(QR, fbR);
+    finish(wL, wR);
 }
