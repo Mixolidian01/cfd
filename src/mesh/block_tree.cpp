@@ -479,9 +479,8 @@ void BlockTree::rebuild_neighbours() {
                 uint32_t mx, my, mz;
                 morton_decode(a.morton, mx, my, mz);
                 uint32_t max_coord = (1u << lev) - 1u;
-                if      (axis == 0) mx = (delta > 0) ? 0u : max_coord;
-                else if (axis == 1) my = (delta > 0) ? 0u : max_coord;
-                else                mz = (delta > 0) ? 0u : max_coord;
+                uint32_t& mc = (axis == 0) ? mx : (axis == 1) ? my : mz;
+                mc = (delta > 0) ? 0u : max_coord;
                 nb_code = morton_encode(mx, my, mz);
             }
 
@@ -571,9 +570,8 @@ static PeriodicSrc periodic_src_lookup(
     uint32_t mx, my, mz;
     morton_decode(nd.morton, mx, my, mz);
     const uint32_t max_coord = (1u << lev) - 1u;
-    if      (axis == 0) mx = (delta > 0) ? 0 : max_coord;
-    else if (axis == 1) my = (delta > 0) ? 0 : max_coord;
-    else                mz = (delta > 0) ? 0 : max_coord;
+    uint32_t& mc = (axis == 0) ? mx : (axis == 1) ? my : mz;
+    mc = (delta > 0) ? 0 : max_coord;
     const uint64_t key = ((uint64_t)lev << 32) | morton_encode(mx, my, mz);
     auto it = lm_map.find(key);
     if (it != lm_map.end() && nodes[it->second].has_block())
