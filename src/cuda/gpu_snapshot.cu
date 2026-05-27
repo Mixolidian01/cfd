@@ -135,10 +135,8 @@ __global__ void k_extract_slice(
 
     const SnapLeafMeta& m = metas[li];
 
-    float lo, hi;
-    if      (axis == 0) { lo = m.ox; hi = m.ox + GPU_NB * m.h; }
-    else if (axis == 1) { lo = m.oy; hi = m.oy + GPU_NB * m.h; }
-    else                { lo = m.oz; hi = m.oz + GPU_NB * m.h; }
+    const float lo = (axis == 0) ? m.ox : (axis == 1) ? m.oy : m.oz;
+    const float hi = lo + GPU_NB * m.h;
 
     if (slice_phys < lo || slice_phys >= hi) {
         d_out[li * GPU_NB * GPU_NB + t] = 0.f;
@@ -150,10 +148,9 @@ __global__ void k_extract_slice(
 
     const int ia = GPU_NG + a;
     const int ib = GPU_NG + b;
-    int ci, cj, ck;
-    if      (axis == 0) { ci = s;  cj = ia; ck = ib; }
-    else if (axis == 1) { ci = ia; cj = s;  ck = ib; }
-    else                { ci = ia; cj = ib; ck = s;  }
+    const int ci = (axis == 0) ? s  : ia;
+    const int cj = (axis == 1) ? s  : (axis == 0) ? ia : ib;
+    const int ck = (axis == 2) ? s  : ib;
 
     d_out[li * GPU_NB * GPU_NB + t] = snap_scalar_val(m.d_Q, var_id, ci, cj, ck, m.h);
 }

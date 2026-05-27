@@ -114,118 +114,36 @@ void fill_cf_ghosts(CellBlock& fine, const CellBlock& coarse,
         -231*INV,  1260*INV, -2970*INV,  4620*INV,  3465*INV
     };
 
+    // side=0: stencil n_base..n_base+4, coeff Lc[k]; side=1: same range, coeff Lc[4-k]
+    const int n_base = (side == 0) ? (NG + NB - 5) : NG;
+
     for (int gl = 0; gl < NG; ++gl) {
-        // side=0: gl=0→Lp (target +1/4), gl=1→Lm (target -1/4)
-        // side=1: gl=0→Lp reversed  ,    gl=1→Lm reversed
-        const double* Lc = (gl == 0) ? Lp : Lm;
+        const double* Lc  = (gl == 0) ? Lp : Lm;
+        const int gf_n    = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
 
-    for (int v  = 0; v  < NVAR; ++v)
-    for (int a  = 0; a  < NB2; ++a)
-    for (int b  = 0; b  < NB2; ++b) {
-        int gf_i, gf_j, gf_k;
-        double val = 0.0;
+        for (int a = 0; a < NB2; ++a)
+        for (int b = 0; b < NB2; ++b) {
+            const int ct_a = NG + ((axis == 0) ? iy : ix) * (NB/2) + local(a) / 2;
+            const int ct_b = NG + ((axis == 2) ? iy : iz) * (NB/2) + local(b) / 2;
+            const int gf_i = (axis == 0) ? gf_n : a;
+            const int gf_j = (axis == 1) ? gf_n : (axis == 0) ? a : b;
+            const int gf_k = (axis == 2) ? gf_n : b;
+            const int dst  = cell_idx(gf_i, gf_j, gf_k);
 
-        if (axis == 0) {
-            gf_i = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
-            gf_j = a; gf_k = b;
-            const int cj = NG + iy*(NB/2) + local(a)/2;
-            const int ck = NG + iz*(NB/2) + local(b)/2;
-            if (side == 0) {
-                const int i0 = NG + NB - 1;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[k] * coarse.Q[v][cell_idx(i0-4+k, cj, ck)];
-            } else {
-                const int i0 = NG;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[4-k] * coarse.Q[v][cell_idx(i0+k, cj, ck)];
+            double vals[NVAR + 1] = {};  // [0..NVAR-1]=Q, [NVAR]=phi
+            for (int k = 0; k < 5; ++k) {
+                const double Lck = (side == 0) ? Lc[k] : Lc[4 - k];
+                const int sn  = n_base + k;
+                const int src = (axis == 0) ? cell_idx(sn, ct_a, ct_b) :
+                                (axis == 1) ? cell_idx(ct_a, sn, ct_b) :
+                                              cell_idx(ct_a, ct_b, sn);
+                for (int v = 0; v < NVAR; ++v) vals[v] += Lck * coarse.Q[v][src];
+                vals[NVAR] += Lck * coarse.phi_data_[src];
             }
-        } else if (axis == 1) {
-            gf_j = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
-            gf_i = a; gf_k = b;
-            const int ci = NG + ix*(NB/2) + local(a)/2;
-            const int ck = NG + iz*(NB/2) + local(b)/2;
-            if (side == 0) {
-                const int j0 = NG + NB - 1;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[k] * coarse.Q[v][cell_idx(ci, j0-4+k, ck)];
-            } else {
-                const int j0 = NG;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[4-k] * coarse.Q[v][cell_idx(ci, j0+k, ck)];
-            }
-        } else {
-            gf_k = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
-            gf_i = a; gf_j = b;
-            const int ci = NG + ix*(NB/2) + local(a)/2;
-            const int cj = NG + iy*(NB/2) + local(b)/2;
-            if (side == 0) {
-                const int k0 = NG + NB - 1;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[k] * coarse.Q[v][cell_idx(ci, cj, k0-4+k)];
-            } else {
-                const int k0 = NG;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[4-k] * coarse.Q[v][cell_idx(ci, cj, k0+k)];
-            }
+            for (int v = 0; v < NVAR; ++v) fine.Q[v][dst] = vals[v];
+            fine.phi_data_[dst] = vals[NVAR];
         }
-
-        fine.Q[v][cell_idx(gf_i, gf_j, gf_k)] = val;
     }
-
-    // P14.1: phi C/F ghost fill — same 5th-order Lagrange stencil
-    for (int a = 0; a < NB2; ++a)
-    for (int b = 0; b < NB2; ++b) {
-        int gf_i, gf_j, gf_k;
-        double val = 0.0;
-
-        if (axis == 0) {
-            gf_i = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
-            gf_j = a; gf_k = b;
-            const int cj = NG + iy*(NB/2) + local(a)/2;
-            const int ck = NG + iz*(NB/2) + local(b)/2;
-            if (side == 0) {
-                const int i0 = NG + NB - 1;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[k] * coarse.phi_data_[cell_idx(i0-4+k, cj, ck)];
-            } else {
-                const int i0 = NG;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[4-k] * coarse.phi_data_[cell_idx(i0+k, cj, ck)];
-            }
-        } else if (axis == 1) {
-            gf_j = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
-            gf_i = a; gf_k = b;
-            const int ci = NG + ix*(NB/2) + local(a)/2;
-            const int ck = NG + iz*(NB/2) + local(b)/2;
-            if (side == 0) {
-                const int j0 = NG + NB - 1;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[k] * coarse.phi_data_[cell_idx(ci, j0-4+k, ck)];
-            } else {
-                const int j0 = NG;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[4-k] * coarse.phi_data_[cell_idx(ci, j0+k, ck)];
-            }
-        } else {
-            gf_k = (side == 0) ? (NG - 1 - gl) : (NB2 - NG + gl);
-            gf_i = a; gf_j = b;
-            const int ci = NG + ix*(NB/2) + local(a)/2;
-            const int cj = NG + iy*(NB/2) + local(b)/2;
-            if (side == 0) {
-                const int k0 = NG + NB - 1;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[k] * coarse.phi_data_[cell_idx(ci, cj, k0-4+k)];
-            } else {
-                const int k0 = NG;
-                for (int k = 0; k < 5; ++k)
-                    val += Lc[4-k] * coarse.phi_data_[cell_idx(ci, cj, k0+k)];
-            }
-        }
-
-        fine.phi_data_[cell_idx(gf_i, gf_j, gf_k)] = val;
-    }
-
-    } // gl
 }
 
 // =============================================================================
