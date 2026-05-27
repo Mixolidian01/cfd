@@ -41,16 +41,10 @@ void k_pack_face(const double* __restrict__ d_Q,
     const int b = tmp % NB2;   tmp /= NB2;   // second transverse axis (k or j)
     const int p = tmp;                         // plane index [0, NG)
 
-    int i, j, k;
-    switch (face_dir) {
-    case 0: i = NG + p;           j = a;              k = b;              break; // XMINUS
-    case 1: i = NB2 - 2*NG + p;   j = a;              k = b;              break; // XPLUS
-    case 2: i = a;                 j = NG + p;         k = b;              break; // YMINUS
-    case 3: i = a;                 j = NB2 - 2*NG + p; k = b;              break; // YPLUS
-    case 4: i = a;                 j = b;              k = NG + p;         break; // ZMINUS
-    case 5: i = a;                 j = b;              k = NB2 - 2*NG + p; break; // ZPLUS
-    default: return;
-    }
+    const int ax = face_dir >> 1, side = face_dir & 1;
+    if (ax > 2) return;
+    const int base = side ? (NB2 - 2*NG + p) : (NG + p);
+    const int i = (ax==0)?base:a, j = (ax==1)?base:((ax==0)?a:b), k = (ax==2)?base:b;
     d_buf[tid] = d_Q[v * NCELL + cell_idx(i, j, k)];
 }
 
@@ -70,16 +64,10 @@ void k_unpack_face(double*       __restrict__ d_Q,
     const int b = tmp % NB2;   tmp /= NB2;
     const int p = tmp;
 
-    int i, j, k;
-    switch (face_dir) {
-    case 0: i = p;                 j = a;              k = b;              break; // XMINUS ghost
-    case 1: i = NB2 - NG + p;      j = a;              k = b;              break; // XPLUS  ghost
-    case 2: i = a;                  j = p;              k = b;              break; // YMINUS ghost
-    case 3: i = a;                  j = NB2 - NG + p;   k = b;              break; // YPLUS  ghost
-    case 4: i = a;                  j = b;              k = p;              break; // ZMINUS ghost
-    case 5: i = a;                  j = b;              k = NB2 - NG + p;   break; // ZPLUS  ghost
-    default: return;
-    }
+    const int ax = face_dir >> 1, side = face_dir & 1;
+    if (ax > 2) return;
+    const int base = side ? (NB2 - NG + p) : p;
+    const int i = (ax==0)?base:a, j = (ax==1)?base:((ax==0)?a:b), k = (ax==2)?base:b;
     d_Q[v * NCELL + cell_idx(i, j, k)] = d_buf[tid];
 }
 
