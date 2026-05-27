@@ -571,17 +571,12 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
         const int ta = ilo + fa;
         const int tb = ilo + fb;
 
-        int idxL, idxR;
-        if (axis == 0) {
-            idxL = gpu_cell_idx(fn,   ta, tb);
-            idxR = gpu_cell_idx(fn+1, ta, tb);
-        } else if (axis == 1) {
-            idxL = gpu_cell_idx(ta, fn,   tb);
-            idxR = gpu_cell_idx(ta, fn+1, tb);
-        } else {
-            idxL = gpu_cell_idx(ta, tb, fn  );
-            idxR = gpu_cell_idx(ta, tb, fn+1);
-        }
+        const int idxL = (axis == 0) ? gpu_cell_idx(fn,   ta, tb) :
+                         (axis == 1) ? gpu_cell_idx(ta, fn,   tb) :
+                                       gpu_cell_idx(ta, tb, fn  );
+        const int idxR = (axis == 0) ? gpu_cell_idx(fn+1, ta, tb) :
+                         (axis == 1) ? gpu_cell_idx(ta, fn+1, tb) :
+                                       gpu_cell_idx(ta, tb, fn+1);
 
         const bool bL = (fn   >= ilo);
         const bool bR = (fn+1 <= ihi);
@@ -610,19 +605,12 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
                 for (int v = 0; v < GPU_NVAR; ++v) Fs[v] = Fk[v];
             } else if (!is_bnd) {
                 GPrim qL, qR;
-                if constexpr (SCHEME == 2) {
-                    if (axis == 0) gpu_teno7_face(sp, fn, ta, tb, 0, qL, qR);
-                    else if (axis == 1) gpu_teno7_face(sp, ta, fn, tb, 1, qL, qR);
-                    else               gpu_teno7_face(sp, ta, tb, fn, 2, qL, qR);
-                } else if constexpr (SCHEME == 1) {
-                    if (axis == 0) gpu_teno5_face(sp, fn, ta, tb, 0, qL, qR);
-                    else if (axis == 1) gpu_teno5_face(sp, ta, fn, tb, 1, qL, qR);
-                    else               gpu_teno5_face(sp, ta, tb, fn, 2, qL, qR);
-                } else {
-                    if (axis == 0) gpu_weno5_face(sp, fn, ta, tb, 0, qL, qR);
-                    else if (axis == 1) gpu_weno5_face(sp, ta, fn, tb, 1, qL, qR);
-                    else               gpu_weno5_face(sp, ta, tb, fn, 2, qL, qR);
-                }
+                const int ri = (axis == 0) ? fn : ta;
+                const int rj = (axis == 1) ? fn : (axis == 0) ? ta : tb;
+                const int rk = (axis == 2) ? fn : tb;
+                if constexpr (SCHEME == 2)      gpu_teno7_face(sp, ri, rj, rk, axis, qL, qR);
+                else if constexpr (SCHEME == 1) gpu_teno5_face(sp, ri, rj, rk, axis, qL, qR);
+                else                            gpu_weno5_face(sp, ri, rj, rk, axis, qL, qR);
                 gpu_hllc_es_flux(qL, qR, axis, Fs);
             } else {
                 gpu_hllc_es_flux(pL, pR, axis, Fs);
