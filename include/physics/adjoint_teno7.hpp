@@ -363,6 +363,23 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
         if constexpr (DIR == Axis::Y) return cell_idx(i, j+d, k);
         return                              cell_idx(i, j, k+d);
     };
+    auto fill_cf_roe = [&](const Prim& pL, const Prim& pR, double E_L, double E_R) noexcept {
+        const double sqL = std::sqrt(pL.rho), sqR = std::sqrt(pR.rho), denom = sqL+sqR;
+        cf.u_roe  = (sqL*pL.u + sqR*pR.u) / denom;
+        cf.v_roe  = (sqL*pL.v + sqR*pR.v) / denom;
+        cf.w_roe  = (sqL*pL.w + sqR*pR.w) / denom;
+        cf.H_roe  = (sqL*(E_L+pL.p)/pL.rho + sqR*(E_R+pR.p)/pR.rho) / denom;
+        cf.KE     = 0.5*(cf.u_roe*cf.u_roe + cf.v_roe*cf.v_roe + cf.w_roe*cf.w_roe);
+        cf.gm_roe = 0.5*(pL.gamma_m + pR.gamma_m);
+        const double c2 = std::max((cf.gm_roe-1.0)*(cf.H_roe - cf.KE), 1.0e-300);
+        cf.c_roe  = std::sqrt(c2);
+        cf.un     = (DIR==Axis::X) ? cf.u_roe : (DIR==Axis::Y) ? cf.v_roe : cf.w_roe;
+        cf.ut1    = (DIR==Axis::X) ? cf.v_roe : cf.u_roe;
+        cf.ut2    = (DIR==Axis::Z) ? cf.v_roe : cf.w_roe;
+        cf.b      = (cf.gm_roe-1.0) / c2;
+        cf.b2     = cf.b * cf.KE;
+        cf.ioc    = 1.0 / cf.c_roe;
+    };
 
     const int n0 = (DIR==Axis::X) ? i : (DIR==Axis::Y) ? j : k;
     if (n0 < NG + 1) {
@@ -374,28 +391,9 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
         double Q5[6][NVAR];
         for (int m = 0; m < 6; ++m)
             prim_to_cons(pc[idx_at(m - 2)], Q5[m]);
-        // pL = d=0 (m=2), pR = d=1 (m=3)
         const Prim& pL5 = pc[idx_at(0)];
         const Prim& pR5 = pc[idx_at(1)];
-        const double sqL5   = std::sqrt(pL5.rho);
-        const double sqR5   = std::sqrt(pR5.rho);
-        const double denom5 = sqL5 + sqR5;
-        cf.u_roe = (sqL5*pL5.u + sqR5*pR5.u) / denom5;
-        cf.v_roe = (sqL5*pL5.v + sqR5*pR5.v) / denom5;
-        cf.w_roe = (sqL5*pL5.w + sqR5*pR5.w) / denom5;
-        const double HL5    = (Q5[2][4] + pL5.p) / pL5.rho;
-        const double HR5    = (Q5[3][4] + pR5.p) / pR5.rho;
-        cf.H_roe = (sqL5*HL5 + sqR5*HR5) / denom5;
-        cf.KE    = 0.5*(cf.u_roe*cf.u_roe + cf.v_roe*cf.v_roe + cf.w_roe*cf.w_roe);
-        cf.gm_roe = 0.5*(pL5.gamma_m + pR5.gamma_m);
-        const double c25    = std::max((cf.gm_roe-1.0)*(cf.H_roe - cf.KE), 1.0e-300);
-        cf.c_roe  = std::sqrt(c25);
-        cf.un  = (DIR==Axis::X) ? cf.u_roe : (DIR==Axis::Y) ? cf.v_roe : cf.w_roe;
-        cf.ut1 = (DIR==Axis::X) ? cf.v_roe : cf.u_roe;
-        cf.ut2 = (DIR==Axis::Z) ? cf.v_roe : cf.w_roe;
-        cf.b   = (cf.gm_roe-1.0) / c25;
-        cf.b2  = cf.b * cf.KE;
-        cf.ioc = 1.0 / cf.c_roe;
+        fill_cf_roe(pL5, pR5, Q5[2][4], Q5[3][4]);
 
         // Char projection of 6-point stencil
         double W5[5][6];
@@ -436,30 +434,9 @@ void teno7_recon_fwd(const Prim* pc, int i, int j, int k,
     for (int m = 0; m < 7; ++m)
         prim_to_cons(pc[idx_at(m - 3)], Q[m]);
 
-    // Roe averages (left=m=3/d=0, right=m=4/d=1)
     const Prim& pL = pc[idx_at(0)];
     const Prim& pR = pc[idx_at(1)];
-    const double sqL   = std::sqrt(pL.rho);
-    const double sqR   = std::sqrt(pR.rho);
-    const double denom = sqL + sqR;
-    cf.u_roe = (sqL*pL.u + sqR*pR.u) / denom;
-    cf.v_roe = (sqL*pL.v + sqR*pR.v) / denom;
-    cf.w_roe = (sqL*pL.w + sqR*pR.w) / denom;
-    const double HL    = (Q[3][4] + pL.p) / pL.rho;
-    const double HR    = (Q[4][4] + pR.p) / pR.rho;
-    cf.H_roe = (sqL*HL + sqR*HR) / denom;
-    cf.KE    = 0.5*(cf.u_roe*cf.u_roe + cf.v_roe*cf.v_roe + cf.w_roe*cf.w_roe);
-    cf.gm_roe = 0.5*(pL.gamma_m + pR.gamma_m);
-    const double c2    = std::max((cf.gm_roe-1.0)*(cf.H_roe - cf.KE), 1.0e-300);
-    cf.c_roe  = std::sqrt(c2);
-
-    cf.un  = (DIR==Axis::X) ? cf.u_roe : (DIR==Axis::Y) ? cf.v_roe : cf.w_roe;
-    cf.ut1 = (DIR==Axis::X) ? cf.v_roe : cf.u_roe;
-    cf.ut2 = (DIR==Axis::Z) ? cf.v_roe : cf.w_roe;
-
-    cf.b   = (cf.gm_roe-1.0) / c2;
-    cf.b2  = cf.b * cf.KE;
-    cf.ioc = 1.0 / cf.c_roe;
+    fill_cf_roe(pL, pR, Q[3][4], Q[4][4]);
 
     // Characteristic projection of 7-point stencil
     double W[5][7];
@@ -577,39 +554,34 @@ void teno7_recon_adj(const Prim* pc, int i, int j, int k,
     back_project_adj(l_qL_cons, l_wL);
     back_project_adj(l_qR_cons, l_wR);
 
+    // P^T adjoint for one stencil cell: l_W[0..4][m] → l_Q → acc_adj_prim_to_cons
+    auto proj_adj_cell = [&](double lW0, double lW1, double lW2, double lW3, double lW4, int flat_m) noexcept {
+        const double l_rho = 0.5*(cf.b2 + cf.un*cf.ioc)*lW0 + (1.0-cf.b2)*lW1
+                           + (-cf.ut1)*lW2 + (-cf.ut2)*lW3 + 0.5*(cf.b2 - cf.un*cf.ioc)*lW4;
+        const double l_qn  = 0.5*(-cf.b*cf.un - cf.ioc)*lW0 + cf.b*cf.un*lW1
+                           + 0.5*(-cf.b*cf.un + cf.ioc)*lW4;
+        const double l_qt1 = (-0.5*cf.b*cf.ut1)*lW0 + cf.b*cf.ut1*lW1 + lW2 + (-0.5*cf.b*cf.ut1)*lW4;
+        const double l_qt2 = (-0.5*cf.b*cf.ut2)*lW0 + cf.b*cf.ut2*lW1 + lW3 + (-0.5*cf.b*cf.ut2)*lW4;
+        const double l_E   = cf.b*(0.5*lW0 - lW1 + 0.5*lW4);
+        double l_Q[NVAR] = {};
+        l_Q[0] = l_rho; l_Q[n_idx_c] = l_qn;
+        l_Q[t1_idx_c] = l_qt1; l_Q[t2_idx_c] = l_qt2; l_Q[4] = l_E;
+        acc_adj_prim_to_cons(pc[flat_m], l_Q, l_pc[flat_m]);
+    };
+
     // ── TENO5 fallback adjoint (6-point stencil, m=0→d=-2, m=5→d=+3) ─────────
     if (cf.is_teno5) {
         double l_W5[5][6] = {};
         for (int kk = 0; kk < 5; ++kk) {
-            // Left state: one_sided(W[kk][0..4]) → la_fwd[r] → l_W5[kk][r]
             double la_fwd[5] = {};
             teno5_one_sided_adj(cf.fwd5_L[kk], l_wL[kk], la_fwd);
-            for (int r = 0; r < 5; ++r)
-                l_W5[kk][r] += la_fwd[r];
-            // Right state: one_sided(W[kk][5],W[kk][4],..,W[kk][1]) → la_rev[r] → l_W5[kk][5-r]
+            for (int r = 0; r < 5; ++r) l_W5[kk][r]   += la_fwd[r];
             double la_rev[5] = {};
             teno5_one_sided_adj(cf.fwd5_R[kk], l_wR[kk], la_rev);
-            for (int r = 0; r < 5; ++r)
-                l_W5[kk][5-r] += la_rev[r];
+            for (int r = 0; r < 5; ++r) l_W5[kk][5-r] += la_rev[r];
         }
-        // P^T and prim_to_cons adjoint for 6 stencil cells (d = m-2 = -2..+3)
-        const double b   = cf.b,  b2  = cf.b2,  ioc = cf.ioc;
-        const double un  = cf.un, ut1 = cf.ut1, ut2 = cf.ut2;
-        for (int m = 0; m < 6; ++m) {
-            const double lW0 = l_W5[0][m], lW1 = l_W5[1][m], lW2 = l_W5[2][m];
-            const double lW3 = l_W5[3][m], lW4 = l_W5[4][m];
-            const double l_rho = 0.5*(b2+un*ioc)*lW0 + (1.0-b2)*lW1
-                               + (-ut1)*lW2 + (-ut2)*lW3 + 0.5*(b2-un*ioc)*lW4;
-            const double l_qn  = 0.5*(-b*un-ioc)*lW0 + b*un*lW1 + 0.5*(-b*un+ioc)*lW4;
-            const double l_qt1 = (-0.5*b*ut1)*lW0 + b*ut1*lW1 + lW2 + (-0.5*b*ut1)*lW4;
-            const double l_qt2 = (-0.5*b*ut2)*lW0 + b*ut2*lW1 + lW3 + (-0.5*b*ut2)*lW4;
-            const double l_E   = b*(0.5*lW0 - lW1 + 0.5*lW4);
-            double l_Q[NVAR] = {};
-            l_Q[0] = l_rho; l_Q[n_idx_c] = l_qn;
-            l_Q[t1_idx_c] = l_qt1; l_Q[t2_idx_c] = l_qt2; l_Q[4] = l_E;
-            const int flat_m = idx_at(m - 2);  // TENO5: d = m-2
-            acc_adj_prim_to_cons(pc[flat_m], l_Q, l_pc[flat_m]);
-        }
+        for (int m = 0; m < 6; ++m)
+            proj_adj_cell(l_W5[0][m], l_W5[1][m], l_W5[2][m], l_W5[3][m], l_W5[4][m], idx_at(m-2));
         return;
     }
 
@@ -640,66 +612,9 @@ void teno7_recon_adj(const Prim* pc, int i, int j, int k,
             l_W[kk][6-r] += la_rev[r];
     }
 
-    // ── Step 3: characteristic projection adjoint (P^T) ───────────────────────
-    // Forward: W[char][m] = P * Q[m] where P maps (rho,qn,qt1,qt2,E) → 5 chars.
-    // P^T maps l_W[0..4][m] → l_Q[m] = (l_rho, l_qn, l_qt1, l_qt2, l_E)
-    //
-    // P rows (for each char field):
-    //   W[0][m] = 0.5*(b2+un*ioc)*rho + 0.5*(-b*un-ioc)*qn + (-0.5*b*ut1)*qt1 + (-0.5*b*ut2)*qt2 + 0.5*b*E
-    //   W[1][m] = (1-b2)*rho + b*un*qn + b*ut1*qt1 + b*ut2*qt2 + (-b)*E
-    //   W[2][m] = (-ut1)*rho + qt1
-    //   W[3][m] = (-ut2)*rho + qt2
-    //   W[4][m] = 0.5*(b2-un*ioc)*rho + 0.5*(-b*un+ioc)*qn + (-0.5*b*ut1)*qt1 + (-0.5*b*ut2)*qt2 + 0.5*b*E
-    //
-    // P^T:
-    //   l_rho = 0.5*(b2+un*ioc)*lW0 + (1-b2)*lW1 + (-ut1)*lW2 + (-ut2)*lW3 + 0.5*(b2-un*ioc)*lW4
-    //   l_qn  = 0.5*(-b*un-ioc)*lW0 + b*un*lW1 + 0.5*(-b*un+ioc)*lW4
-    //   l_qt1 = (-0.5*b*ut1)*lW0 + b*ut1*lW1 + 1*lW2 + (-0.5*b*ut1)*lW4
-    //   l_qt2 = (-0.5*b*ut2)*lW0 + b*ut2*lW1 + 1*lW3 + (-0.5*b*ut2)*lW4
-    //   l_E   = 0.5*b*lW0 + (-b)*lW1 + 0.5*b*lW4
-
-    const double b   = cf.b;
-    const double b2  = cf.b2;
-    const double ioc = cf.ioc;
-    const double un  = cf.un;
-    const double ut1 = cf.ut1;
-    const double ut2 = cf.ut2;
-
-    for (int m = 0; m < 7; ++m) {
-        const double lW0 = l_W[0][m];
-        const double lW1 = l_W[1][m];
-        const double lW2 = l_W[2][m];
-        const double lW3 = l_W[3][m];
-        const double lW4 = l_W[4][m];
-
-        // Adjoint in conserved space (rho, qn, qt1, qt2, E)
-        const double l_rho = 0.5*(b2 + un*ioc)*lW0 + (1.0-b2)*lW1
-                           + (-ut1)*lW2 + (-ut2)*lW3
-                           + 0.5*(b2 - un*ioc)*lW4;
-        const double l_qn  = 0.5*(-b*un - ioc)*lW0 + b*un*lW1
-                           + 0.5*(-b*un + ioc)*lW4;
-        const double l_qt1 = (-0.5*b*ut1)*lW0 + b*ut1*lW1 + lW2
-                           + (-0.5*b*ut1)*lW4;
-        const double l_qt2 = (-0.5*b*ut2)*lW0 + b*ut2*lW1 + lW3
-                           + (-0.5*b*ut2)*lW4;
-        const double l_E   = b*(0.5*lW0 - lW1 + 0.5*lW4);
-
-        // Remap from (rho, qn, qt1, qt2, E) → (rho, Q[1], Q[2], Q[3], E)
-        // n_idx_c is the conserved momentum index for the normal direction
-        double l_Q[NVAR] = {};
-        l_Q[0]        = l_rho;
-        l_Q[n_idx_c]  = l_qn;
-        l_Q[t1_idx_c] = l_qt1;
-        l_Q[t2_idx_c] = l_qt2;
-        l_Q[4]        = l_E;
-
-        // ── Step 4: prim→cons adjoint for stencil cell m ──────────────────────
-        // Q[m] = K(pc[flat_m]) maps prim → conserved.
-        // acc_adj_prim_to_cons(pc[flat_m], l_Q, l_pc[flat_m]) accumulates
-        // ∂J/∂prim into l_pc[flat_m][0..4] = [rho, u, v, w, p].
-        const int flat_m = idx_at(m - 3);
-        acc_adj_prim_to_cons(pc[flat_m], l_Q, l_pc[flat_m]);
-    }
+    // ── Step 3+4: P^T adjoint + prim→cons for each TENO7 stencil cell ────────
+    for (int m = 0; m < 7; ++m)
+        proj_adj_cell(l_W[0][m], l_W[1][m], l_W[2][m], l_W[3][m], l_W[4][m], idx_at(m-3));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1060,6 +1060,18 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
                 blk.Q[v][dst_flat] = src.Q[v][src_flat];
             blk.phi_data_[dst_flat] = src.phi_data_[src_flat];
         };
+        auto copy_strip = [&](int g_idx, int src_idx, int ax, const CellBlock& src) noexcept {
+            if (ax == 0) {
+                for (int k=ilo();k<=ihi();++k)
+                for (int j=ilo();j<=ihi();++j) copy_cell_f(g_idx,j,k, src_idx,j,k, src);
+            } else if (ax == 1) {
+                for (int k=ilo();k<=ihi();++k)
+                for (int i=ilo();i<=ihi();++i) copy_cell_f(i,g_idx,k, i,src_idx,k, src);
+            } else {
+                for (int j=ilo();j<=ihi();++j)
+                for (int i=ilo();i<=ihi();++i) copy_cell_f(i,j,g_idx, i,j,src_idx, src);
+            }
+        };
 
         bool bnd[NFACES];
         for (int d = 0; d < NFACES; ++d) bnd[d] = (nd.neighbours[d] < 0);
@@ -1085,18 +1097,8 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
                 // same-level: direct copy
                 const CellBlock& src = *nodes[ni].block;
                 for (int gl = 0; gl < NG; ++gl) {
-                    const int g_idx   = (side==0) ? (NG-1-gl)  : (NB2-NG+gl);
-                    const int src_idx = (side==0) ? (ihi()-gl) : (ilo()+gl);
-                    if (axis == 0) {
-                        for (int k=ilo();k<=ihi();++k)
-                        for (int j=ilo();j<=ihi();++j) copy_cell_f(g_idx,j,k, src_idx,j,k, src);
-                    } else if (axis == 1) {
-                        for (int k=ilo();k<=ihi();++k)
-                        for (int i=ilo();i<=ihi();++i) copy_cell_f(i,g_idx,k, i,src_idx,k, src);
-                    } else {
-                        for (int j=ilo();j<=ihi();++j)
-                        for (int i=ilo();i<=ihi();++i) copy_cell_f(i,j,g_idx, i,j,src_idx, src);
-                    }
+                    copy_strip((side==0)?(NG-1-gl):(NB2-NG+gl),
+                               (side==0)?(ihi()-gl):(ilo()+gl), axis, src);
                 }
                 continue;
             }
@@ -1110,18 +1112,8 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
                 }
                 const CellBlock& src = psrc.blk ? *psrc.blk : blk;
                 for (int gl = 0; gl < NG; ++gl) {
-                    const int g_idx   = (side==0) ? (NG-1-gl)  : (NB2-NG+gl);
-                    const int src_idx = (side==0) ? (ihi()-gl) : (ilo()+gl);
-                    if (axis == 0) {
-                        for (int k=ilo();k<=ihi();++k)
-                        for (int j=ilo();j<=ihi();++j) copy_cell_f(g_idx,j,k, src_idx,j,k, src);
-                    } else if (axis == 1) {
-                        for (int k=ilo();k<=ihi();++k)
-                        for (int i=ilo();i<=ihi();++i) copy_cell_f(i,g_idx,k, i,src_idx,k, src);
-                    } else {
-                        for (int j=ilo();j<=ihi();++j)
-                        for (int i=ilo();i<=ihi();++i) copy_cell_f(i,j,g_idx, i,j,src_idx, src);
-                    }
+                    copy_strip((side==0)?(NG-1-gl):(NB2-NG+gl),
+                               (side==0)?(ihi()-gl):(ilo()+gl), axis, src);
                 }
             } else if (std::holds_alternative<WallBC>(bcs[d]) ||
                        std::holds_alternative<ContactAngleBC>(bcs[d])) {
@@ -1162,34 +1154,10 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
                         }
                     }
                 }
-            } else if (std::holds_alternative<NscbcBC>(bcs[d])) {
-                const double nscbc_p = std::get<NscbcBC>(bcs[d]).p_inf;
-                const double outward = (side == 0) ? -1.0 : +1.0;
-                for (int gl = 0; gl < NG; ++gl) {
-                    const int ghost = (side==0) ? (NG-1-gl) : (NB2-NG+gl);
-                    const int int_r = (side==0) ? ilo()     : ihi();
-                    if (axis == 0) {
-                        for (int k=ilo();k<=ihi();++k)
-                        for (int j=ilo();j<=ihi();++j) {
-                            write_ghost(ghost,j,k, open_char_ghost(blk.prim(int_r,j,k), 0, outward, nscbc_p));
-                            blk.phi(ghost,j,k) = blk.phi(int_r,j,k);
-                        }
-                    } else if (axis == 1) {
-                        for (int k=ilo();k<=ihi();++k)
-                        for (int i=ilo();i<=ihi();++i) {
-                            write_ghost(i,ghost,k, open_char_ghost(blk.prim(i,int_r,k), 1, outward, nscbc_p));
-                            blk.phi(i,ghost,k) = blk.phi(i,int_r,k);
-                        }
-                    } else {
-                        for (int j=ilo();j<=ihi();++j)
-                        for (int i=ilo();i<=ihi();++i) {
-                            write_ghost(i,j,ghost, open_char_ghost(blk.prim(i,j,int_r), 2, outward, nscbc_p));
-                            blk.phi(i,j,ghost) = blk.phi(i,j,int_r);
-                        }
-                    }
-                }
             } else {
-                // OpenBC: characteristic ghost
+                // OpenBC / NscbcBC: characteristic transmissive ghost
+                const double p_ref  = std::holds_alternative<NscbcBC>(bcs[d])
+                                    ? std::get<NscbcBC>(bcs[d]).p_inf : open_bc_p;
                 const double outward = (side == 0) ? -1.0 : +1.0;
                 for (int gl = 0; gl < NG; ++gl) {
                     const int ghost = (side==0) ? (NG-1-gl) : (NB2-NG+gl);
@@ -1197,19 +1165,19 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
                     if (axis == 0) {
                         for (int k=ilo();k<=ihi();++k)
                         for (int j=ilo();j<=ihi();++j) {
-                            write_ghost(ghost,j,k, open_char_ghost(blk.prim(int_r,j,k), 0, outward, open_bc_p));
+                            write_ghost(ghost,j,k, open_char_ghost(blk.prim(int_r,j,k), 0, outward, p_ref));
                             blk.phi(ghost,j,k) = blk.phi(int_r,j,k);
                         }
                     } else if (axis == 1) {
                         for (int k=ilo();k<=ihi();++k)
                         for (int i=ilo();i<=ihi();++i) {
-                            write_ghost(i,ghost,k, open_char_ghost(blk.prim(i,int_r,k), 1, outward, open_bc_p));
+                            write_ghost(i,ghost,k, open_char_ghost(blk.prim(i,int_r,k), 1, outward, p_ref));
                             blk.phi(i,ghost,k) = blk.phi(i,int_r,k);
                         }
                     } else {
                         for (int j=ilo();j<=ihi();++j)
                         for (int i=ilo();i<=ihi();++i) {
-                            write_ghost(i,j,ghost, open_char_ghost(blk.prim(i,j,int_r), 2, outward, open_bc_p));
+                            write_ghost(i,j,ghost, open_char_ghost(blk.prim(i,j,int_r), 2, outward, p_ref));
                             blk.phi(i,j,ghost) = blk.phi(i,j,int_r);
                         }
                     }
