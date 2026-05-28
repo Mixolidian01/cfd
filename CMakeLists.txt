@@ -59,6 +59,7 @@ add_library(operators STATIC
     src/schemes/rhs_sensors.cpp             # R9-E3: sensors & sources (fill_ducros_cache, phi_*, tree_sat_penalty)
     src/schemes/instantiation_matrix.cpp   # R5: pre-compiled (Flux × Recon × EOS) matrix
     src/schemes/adjoint_rhs.cpp            # D10: block-level adjoint of convective RHS
+    src/schemes/adjoint_rk3.cpp            # D11-adj: adjoint_rk3_one_block (frozen-weight RK3 adjoint)
 )
 target_link_libraries(operators PUBLIC block)
 if(OpenMP_CXX_FOUND)
@@ -71,6 +72,7 @@ endif()
 add_library(ns_solver STATIC
     src/solver/ns_solver.cpp
     src/solver/cpu_rk3.cpp              # P10-A2: CpuRk3Integrator — CPU flat-tree SSP-RK3
+    src/solver/adjoint_rk3.cpp         # D11-adj: adjoint_rk3_one_block + NSSolver::adjoint_step
     src/solver/lts_integrator.cpp       # P10-A2: LtsIntegrator — Berger-Oliger LTS
     src/solver/imex_advance.cpp         # R9-B: IMEX member function (advance_imex)
     src/mesh/flux_register.cpp
@@ -130,6 +132,7 @@ add_executable(test_cell_block_accessors tests/mesh/test_cell_block_accessors.cp
 add_executable(test_ensemble      tests/solver/test_ensemble.cpp)                   # P14.5
 add_executable(test_scheme_select tests/solver/test_scheme_select.cpp)              # R5
 add_executable(test_t38_adjoint   tests/schemes/test_t38_adjoint.cpp)               # D10
+add_executable(test_t42_adjoint_rk3  tests/schemes/test_t42_adjoint_rk3.cpp)       # D11-adj
 
 target_link_libraries(test_linalg    PRIVATE linalg    m)
 target_link_libraries(test_block     PRIVATE block      m)
@@ -145,6 +148,7 @@ target_link_libraries(test_cell_block_accessors PRIVATE block m)  # R10-T1
 target_link_libraries(test_ensemble      PRIVATE ns_solver m)      # P14.5
 target_link_libraries(test_scheme_select PRIVATE ns_solver m)      # R5
 target_link_libraries(test_t38_adjoint   PRIVATE operators  m)      # D10
+target_link_libraries(test_t42_adjoint_rk3  PRIVATE operators  m)  # D11-adj
 
 add_test(NAME linalg     COMMAND test_linalg)
 add_test(NAME block      COMMAND test_block)
@@ -160,6 +164,7 @@ add_test(NAME cell_block_accessors COMMAND test_cell_block_accessors)  # R10-T1
 add_test(NAME ensemble             COMMAND test_ensemble)              # P14.5
 add_test(NAME scheme_select        COMMAND test_scheme_select)         # R5
 add_test(NAME t38_adjoint          COMMAND test_t38_adjoint)            # D10
+add_test(NAME t42_adjoint_rk3     COMMAND test_t42_adjoint_rk3)        # D11-adj
 add_custom_target(taccess DEPENDS test_cell_block_accessors
     COMMAND $<TARGET_FILE:test_cell_block_accessors>
     COMMENT "R10-T1: flat-index accessor test" USES_TERMINAL)
@@ -627,7 +632,7 @@ add_custom_target(ba
             test_config test_imex test_sat test_ghost_fill test_cell_block_accessors
             test_bn_amr test_bn_solver test_multiphase
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
-            test_ensemble test_scheme_select test_t38_adjoint
+            test_ensemble test_scheme_select test_t38_adjoint test_t42_adjoint_rk3
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
@@ -651,6 +656,7 @@ add_custom_target(timex    DEPENDS test_imex     COMMAND $<TARGET_FILE:test_imex
 add_custom_target(t145     DEPENDS test_ensemble      COMMAND $<TARGET_FILE:test_ensemble>      COMMENT "P14.5 gate: EnsembleSolver"         USES_TERMINAL)
 add_custom_target(tr5      DEPENDS test_scheme_select COMMAND $<TARGET_FILE:test_scheme_select> COMMENT "R5 gate: scheme selection"           USES_TERMINAL)
 add_custom_target(t38      DEPENDS test_t38_adjoint   COMMAND $<TARGET_FILE:test_t38_adjoint>   COMMENT "D10 gate: discrete adjoint dot-product test" USES_TERMINAL)
+add_custom_target(t42  DEPENDS test_t42_adjoint_rk3  COMMAND $<TARGET_FILE:test_t42_adjoint_rk3>  COMMENT "D11-adj: adjoint_rk3_one_block dot-product test" USES_TERMINAL)
 
 # =============================================================================
 # D11 — Python bindings (pybind11)
