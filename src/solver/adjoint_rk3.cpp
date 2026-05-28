@@ -7,8 +7,12 @@
 std::vector<CellBlock> NSSolver::adjoint_step(
     const std::vector<CellBlock>& lam_f) const
 {
+    if (gpu_solver_)
+        throw std::logic_error("adjoint_step: checkpoints not populated on GPU path");
     const auto& leaves = tree.leaf_indices();
     const int NL = (int)leaves.size();
+    if ((int)lam_f.size() != NL)
+        throw std::logic_error("adjoint_step: lam_f.size() != n_leaves");
     std::vector<CellBlock> lam_n(NL);
     for (int ii = 0; ii < NL; ++ii) {
         lam_n[ii].h = Qs0_[ii].h;

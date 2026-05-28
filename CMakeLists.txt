@@ -72,7 +72,7 @@ endif()
 add_library(ns_solver STATIC
     src/solver/ns_solver.cpp
     src/solver/cpu_rk3.cpp              # P10-A2: CpuRk3Integrator — CPU flat-tree SSP-RK3
-    src/solver/adjoint_rk3.cpp         # D11-adj: adjoint_rk3_one_block + NSSolver::adjoint_step
+    src/solver/adjoint_rk3.cpp          # D11-adj: NSSolver::adjoint_step
     src/solver/lts_integrator.cpp       # P10-A2: LtsIntegrator — Berger-Oliger LTS
     src/solver/imex_advance.cpp         # R9-B: IMEX member function (advance_imex)
     src/mesh/flux_register.cpp
