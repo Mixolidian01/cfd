@@ -138,6 +138,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     // Stage 1: Q^(1) = Q^n + dt*L(Q^n)   [RK weight 1/6]
     { PROFILE_SCOPE_COLOR("CpuRk3/stage1", 0xFFFF4040u);
       mpi_exchange_halos(tree, solver.mpi_);
+      solver.copy_tree_to_stage(solver.Qs0_);  // checkpoint Qn+ghosts
       rhs_call(1.0/6.0);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for collapse(3) schedule(static)
@@ -159,6 +160,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     // Stage 2: Q^(2) = 3/4*Q^n + 1/4*(Q^(1) + dt*L(Q^(1)))   [RK weight 1/6]
     { PROFILE_SCOPE_COLOR("CpuRk3/stage2", 0xFF40FF40u);
       mpi_exchange_halos(tree, solver.mpi_);
+      solver.copy_tree_to_stage(solver.Qs1_);  // checkpoint Q1+ghosts
       rhs_call(1.0/6.0);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for collapse(3) schedule(static)
@@ -180,6 +182,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
     // Stage 3: Q^(n+1) = 1/3*Q^n + 2/3*(Q^(2) + dt*L(Q^(2)))   [RK weight 2/3]
     { PROFILE_SCOPE_COLOR("CpuRk3/stage3", 0xFF4040FFu);
       mpi_exchange_halos(tree, solver.mpi_);
+      solver.copy_tree_to_stage(solver.Qs2_);  // checkpoint Q2+ghosts
       rhs_call(2.0/3.0);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for collapse(3) schedule(static)

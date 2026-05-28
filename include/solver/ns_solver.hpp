@@ -228,6 +228,12 @@ struct NSSolver {
     StepDiag compute_diag() const;
     void     print_diag(const StepDiag& d) const;
 
+    // D11-adj: adjoint of the last advance() step (CPU path only).
+    // lam_f: ∂J/∂Q^(n+1), one CellBlock per leaf (interior cells only).
+    // Returns ∂J/∂Q^n, same layout.
+    // Requires: advance() called at least once via CPU path since init() or last regrid.
+    std::vector<CellBlock> adjoint_step(const std::vector<CellBlock>& lam_f) const;
+
     // Phase 6: optional in-situ browser live feed.
     // Set via set_streamer() before run()/advance().  Null = disabled.
     LiveStreamer* streamer_ = nullptr;
@@ -279,6 +285,14 @@ private:
     std::vector<CellBlock> rhs_;
     std::vector<CellBlock> Qn_;
     std::vector<CellBlock> Qs_;
+
+    // D11-adj: post-ghost-fill checkpoints for adjoint_rk3_step.
+    // Qs0_ = Qn with valid ghosts (after stage-1 halos).
+    // Qs1_ = Q^(1) with valid ghosts (after stage-2 halos).
+    // Qs2_ = Q^(2) with valid ghosts (after stage-3 halos).
+    std::vector<CellBlock> Qs0_;
+    std::vector<CellBlock> Qs1_;
+    std::vector<CellBlock> Qs2_;
 
     // FIX P0.6: was a static local inside advance(); promoted to member so
     // that multiple NSSolver instances do not share state, and so that
