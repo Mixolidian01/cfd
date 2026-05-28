@@ -707,7 +707,7 @@ if(Python3_FOUND)
                         "${CMAKE_SOURCE_DIR}/tests/python/test_t41_jax.py"
                         -v
                 WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/python"
-                COMMENT "D11-adj gate: JAX wiring — grad shape + FD consistency"
+                COMMENT "D11-adj gate: JAX wiring — grad shape + adjoint ascent direction"
                 USES_TERMINAL)
             add_test(NAME t41_jax
                 COMMAND "${Python3_EXECUTABLE}" -m pytest

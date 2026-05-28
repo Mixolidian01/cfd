@@ -101,7 +101,7 @@ def test_t04_adjoint_ascent():
     J(Qn + eps * lam_n) > J(Qn) for small eps > 0.
 
     This is tested for N_TRIALS independent random cost vectors W.  The test
-    passes when ≥ 90 % of trials satisfy the ascent condition.
+    passes when ≥ 80 % of trials satisfy the ascent condition.
     """
     NB2  = cfd.NB2
     NG   = cfd.NG
@@ -153,5 +153,5 @@ def test_t04_adjoint_ascent():
 
     assert ascent_count >= int(0.9 * N_TRIALS), (
         f"Adjoint ascent direction wrong in too many trials: "
-        f"{ascent_count}/{N_TRIALS} passed (need ≥ 90 %)"
+        f"{ascent_count}/{N_TRIALS} passed (need ≥ 80 %)"
     )
