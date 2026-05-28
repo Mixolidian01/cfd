@@ -42,7 +42,8 @@ struct alignas(64) GpuLeafRhsMeta {
     double        h;            // cell size
     double        duc_p_thr;    // Ducros pressure-sensor threshold (config-driven)
     double        duc_blend_inv;// 1 / blend_width for Ducros pressure-sensor
-    uint8_t       is_periodic;  // 1 → all axes periodic; suppress is_bnd seam at domain boundary
+    uint8_t       is_periodic;  // 1 → single-block fully-periodic: sidx(±3) wrap in gpu_teno7_face is valid
+    uint8_t       cf_bnd_mask;  // bits 0..5: face dir d has a finer neighbour → force PCM for TENO7A
 };
 static_assert(sizeof(GpuLeafRhsMeta) <= 64, "GpuLeafRhsMeta too large");
 

@@ -352,17 +352,21 @@ void GpuGraphSolver::_capture_graphs() {
         k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
     });
 
-    // Sub-graphs 2 & 3: ghost fill + RHS(no zero) + k_rk3s23(a,b) + floor
-    struct { cudaGraphExec_t* exec; double a, b; } s23[2] = {
-        {&graph_s2, 0.75,    0.25    },
-        {&graph_s3, 1.0/3.0, 2.0/3.0}};
-    for (auto& e : s23)
-        capture_one(*e.exec, [&]() {
-            ghost_list.exec(stream);
-            rhs_list.exec(stream, false);
-            k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, e.a, e.b);
-            k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
-        });
+    // Sub-graph 2: ghost fill + RHS(no zero) + k_rk3s23(0.75, 0.25) + floor
+    capture_one(graph_s2, [&]() {
+        ghost_list.exec(stream);
+        rhs_list.exec(stream, /*zero_rhs=*/false);
+        k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 0.75, 0.25);
+        k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+    });
+
+    // Sub-graph 3: ghost fill + RHS(no zero) + k_rk3s23(1/3, 2/3) + floor
+    capture_one(graph_s3, [&]() {
+        ghost_list.exec(stream);
+        rhs_list.exec(stream, /*zero_rhs=*/false);
+        k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
+        k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+    });
 
     graph_valid = true;
 }
