@@ -695,6 +695,28 @@ if(Python3_FOUND)
                     "${CMAKE_SOURCE_DIR}/tests/python/test_t39_python_bindings.py" -v
             WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/python"
         )
+        # t41: JAX wiring gate (requires jax[cpu])
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" -c "import jax"
+            RESULT_VARIABLE _jax_rc
+            OUTPUT_QUIET ERROR_QUIET)
+        if(_jax_rc EQUAL 0)
+            add_custom_target(t41
+                DEPENDS cfd
+                COMMAND "${Python3_EXECUTABLE}" -m pytest
+                        "${CMAKE_SOURCE_DIR}/tests/python/test_t41_jax.py"
+                        -v
+                WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/python"
+                COMMENT "D11-adj gate: JAX wiring — grad shape + FD consistency"
+                USES_TERMINAL)
+            add_test(NAME t41_jax
+                COMMAND "${Python3_EXECUTABLE}" -m pytest
+                        "${CMAKE_SOURCE_DIR}/tests/python/test_t41_jax.py" -v
+                WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/python")
+            message(STATUS "D11-adj: JAX found — t41 gate enabled")
+        else()
+            message(STATUS "D11-adj: JAX not found (pip install jax[cpu] to enable t41)")
+        endif()
         message(STATUS "D11: pybind11 found — cfd module and t39 gate enabled")
     else()
         message(STATUS "D11: pybind11 not found (pip install pybind11 to enable t39)")
