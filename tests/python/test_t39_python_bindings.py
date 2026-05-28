@@ -131,3 +131,20 @@ def test_t05_block_arrays_match_diag():
         f"Block arrays mass mismatch: rel_err={rel_err:.3e} "
         f"(diag={mass_diag:.12e}, arrays={mass_arrays:.12e})"
     )
+
+
+# ── T06 ──────────────────────────────────────────────────────────────────────
+def test_t06_adjoint_step_shape():
+    """adjoint_step(lam_f) returns list of correct-shape arrays."""
+    s = _make_solver()
+    s.advance()  # populate checkpoints
+
+    # lam_f: same shape as get_block_arrays()
+    arrays = s.get_block_arrays()
+    lam_f = [np.ones_like(a) for a in arrays]
+
+    lam_n = s.adjoint_step(lam_f)
+
+    assert len(lam_n) == len(arrays), f"n_leaves mismatch: {len(lam_n)} vs {len(arrays)}"
+    for i, (ln, arr) in enumerate(zip(lam_n, arrays)):
+        assert ln.shape == arr.shape, f"block {i}: shape {ln.shape} != {arr.shape}"

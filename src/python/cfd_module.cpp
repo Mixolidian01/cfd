@@ -13,6 +13,7 @@
 //     .get_block_arrays() → list[np.ndarray shape=(NVAR,NCELL)]
 //     .set_block_arrays(list)
 //     .get_block_h()    → list[float]  cell size per leaf block
+//     .adjoint_step(lam_f) → list[np.ndarray]
 //     .cfl, .t_end, .max_steps, .verbose  (read-write properties)
 //     .t, .step                    (read-only)
 //   cfd.StepDiag  (read-only fields: step, t, dt, mass, momentum_x,
@@ -116,6 +117,51 @@ static std::vector<double> get_block_h(const NSSolver& solver) {
     return result;
 }
 
+// ── adjoint_step ─────────────────────────────────────────────────────────────
+// Takes list[(NVAR,NCELL)] lam_f (one per leaf block), returns list[(NVAR,NCELL)] lam_n.
+// Mirrors set_block_arrays input convention (index-based iteration over leaves).
+static std::vector<py::array_t<double>>
+py_adjoint_step(
+    NSSolver& solver,
+    const std::vector<py::array_t<double, py::array::c_style | py::array::forcecast>>& lam_f_arrs)
+{
+    const auto& leaves = solver.tree.leaf_indices();
+    if ((int)lam_f_arrs.size() != (int)leaves.size())
+        throw std::runtime_error("adjoint_step: lam_f length must equal n_leaves()");
+
+    std::vector<CellBlock> lam_f_blks;
+    lam_f_blks.reserve(leaves.size());
+    for (int k = 0; k < (int)leaves.size(); ++k) {
+        const auto& node = solver.tree.nodes[leaves[k]];
+        if (!node.has_block())
+            throw std::runtime_error("adjoint_step: leaf has no block (regrid during advance?)");
+        CellBlock blk(node.block->ox, node.block->oy, node.block->oz, node.block->h);
+        auto buf = lam_f_arrs[k].unchecked<2>();
+        for (int v = 0; v < NVAR; ++v) {
+            double flat[NCELL];
+            for (int c = 0; c < NCELL; ++c) flat[c] = buf(v, c);
+            blk.Q[v].assign_from_flat(flat);
+        }
+        lam_f_blks.push_back(std::move(blk));
+    }
+
+    auto lam_n_blks = solver.adjoint_step(lam_f_blks);
+
+    std::vector<py::array_t<double>> result;
+    result.reserve(lam_n_blks.size());
+    for (int k = 0; k < (int)lam_n_blks.size(); ++k) {
+        py::array_t<double> arr({NVAR, NCELL});
+        auto out = arr.mutable_unchecked<2>();
+        for (int v = 0; v < NVAR; ++v) {
+            double flat[NCELL];
+            lam_n_blks[k].Q[v].copy_to_flat(flat);
+            for (int c = 0; c < NCELL; ++c) out(v, c) = flat[c];
+        }
+        result.push_back(std::move(arr));
+    }
+    return result;
+}
+
 // =============================================================================
 // Module definition
 // =============================================================================
@@ -165,6 +211,8 @@ PYBIND11_MODULE(cfd, m) {
              "Write a list of (NVAR,NCELL) arrays back to the leaf blocks")
         .def("get_block_h", &get_block_h,
              "list[float] — cell size h for each leaf block (same order as get_block_arrays)")
+        .def("adjoint_step", &py_adjoint_step,
+             "Adjoint of last advance() step. lam_f: list[(NVAR,NCELL)] → list[(NVAR,NCELL)] (∂J/∂Qn)")
 
         // Time config properties
         .def_property("cfl",
