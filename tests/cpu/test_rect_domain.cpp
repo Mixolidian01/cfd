@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdio>
 
-static bool nearly_eq(double a, double b, double tol = 1e-12) {
+[[maybe_unused]] static bool nearly_eq(double a, double b, double tol = 1e-12) {
     return std::fabs(a - b) < tol;
 }
 
