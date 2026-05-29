@@ -29,6 +29,9 @@
 
 #include "solver/ns_solver.hpp"
 #include "schemes/operators.hpp"
+#include "physics/weno5_recon.hpp"
+#include "physics/hllc_flux.hpp"
+#include "physics/ideal_gas_eos.hpp"
 #include <cstdio>
 #include <cmath>
 #include <vector>
@@ -304,19 +307,24 @@ static void b8_lid_driven_cavity()
         if (t + dt > t_end) dt = t_end - t;
 
         // Stage 1: Q1 = Qn + dt*L(Qn)
+        // Use WENO5+HLLC-ES explicitly: this test was designed and verified with
+        // WENO5; TENO7 (D3 default) requires finer grid for viscous wall flows.
         copy_int(Qn, blks);
         fill_cavity_ghosts(blks, NX, NY, U_lid);
-        for (int b = 0; b < NB2_; ++b) compute_rhs(blks[b], rhs[b]);
+        for (int b = 0; b < NB2_; ++b)
+            compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(blks[b], rhs[b]);
         lc3(Q1, 1.0, Qn, 0.0, Qn, 1.0, dt, rhs);
 
         // Stage 2: Q2 = 3/4*Qn + 1/4*Q1 + 1/4*dt*L(Q1)
         fill_cavity_ghosts(Q1, NX, NY, U_lid);
-        for (int b = 0; b < NB2_; ++b) compute_rhs(Q1[b], rhs[b]);
+        for (int b = 0; b < NB2_; ++b)
+            compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(Q1[b], rhs[b]);
         lc3(Q2, 0.75, Qn, 0.25, Q1, 0.25, dt, rhs);
 
         // Stage 3: Qn+1 = 1/3*Qn + 2/3*Q2 + 2/3*dt*L(Q2)
         fill_cavity_ghosts(Q2, NX, NY, U_lid);
-        for (int b = 0; b < NB2_; ++b) compute_rhs(Q2[b], rhs[b]);
+        for (int b = 0; b < NB2_; ++b)
+            compute_rhs_typed<HllcEsFlux, Weno5Recon, IdealGasEOS>(Q2[b], rhs[b]);
         lc3(blks, 1.0/3.0, Qn, 2.0/3.0, Q2, 2.0/3.0, dt, rhs);
 
         t += dt;
