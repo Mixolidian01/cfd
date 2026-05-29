@@ -108,8 +108,9 @@ double CellBlock::cfl_dt(double cfl) const noexcept {
         double nu = sutherland(q.T) / q.rho;
         if (nu > nu_max) nu_max = nu;
     }
-    double dt_conv = (lam_max > 1e-300) ? cfl * h / lam_max : 1e300;
-    double dt_visc = (nu_max  > 1e-300) ? h * h / (2.0 * C_VISC * nu_max) : 1e300;
+    const double h_min = std::min({h, hy, hz});
+    double dt_conv = (lam_max > 1e-300) ? cfl * h_min / lam_max : 1e300;
+    double dt_visc = (nu_max  > 1e-300) ? h_min * h_min / (2.0 * C_VISC * nu_max) : 1e300;
     return std::min(dt_conv, dt_visc);
 }
 void CellBlock::zero_ghosts() noexcept {

@@ -23,9 +23,10 @@
 struct SnapLeafMeta {
     const double* d_Q;  // device flat SoA pointer [NVAR * NCELL]
     float  ox, oy, oz;  // physical block origin
-    float  h;           // cell size (h³ = h*h*h for volume integrals)
+    float  h;           // cell size along X (used for slice position lookup)
+    float  hy;          // cell size along Y
+    float  hz;          // cell size along Z
     int    level;       // AMR level (for FrameBuffer descriptor)
-    int    _pad;        // alignment
 };
 
 // ── Per-block metric accumulator (written by GPU, read by CPU) ────────────────

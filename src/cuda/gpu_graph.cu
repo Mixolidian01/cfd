@@ -228,8 +228,9 @@ void GpuGraphSolver::_upload_snap_metas(const BlockTree& tree)
         m.oy    = static_cast<float>(nd.oy);
         m.oz    = static_cast<float>(nd.oz);
         m.h     = static_cast<float>(nd.block->h);
+        m.hy    = static_cast<float>(nd.block->hy);
+        m.hz    = static_cast<float>(nd.block->hz);
         m.level = nd.level;
-        m._pad  = 0;
         // Copy to CPU mirror
         snap_buf_->h_metas[li] = m;
         ++li;

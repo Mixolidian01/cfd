@@ -27,12 +27,14 @@
 #include <cstdint>
 
 // ── Per-leaf CFL metadata ────────────────────────────────────────────────────
-struct alignas(32) GpuLeafCflMeta {
+struct alignas(64) GpuLeafCflMeta {
     const double* d_Q;   // device pointer (flat SoA: Q[v*NCELL + flat])
-    double        h;     // cell size
+    double        hx;    // cell size along X
+    double        hy;    // cell size along Y
+    double        hz;    // cell size along Z
     int32_t       _pad[2];
 };
-static_assert(sizeof(GpuLeafCflMeta) <= 32, "GpuLeafCflMeta too large");
+static_assert(sizeof(GpuLeafCflMeta) <= 64, "GpuLeafCflMeta too large");
 
 // ── CFL list ─────────────────────────────────────────────────────────────────
 struct GpuCflList {

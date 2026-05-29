@@ -60,20 +60,21 @@ void k_cfl_reduce(const GpuLeafCflMeta* __restrict__ metas,
             m.d_Q[2*GPU_NCELL+flat], m.d_Q[3*GPU_NCELL+flat],
             m.d_Q[4*GPU_NCELL+flat]);
 
-        // Convective: dt_conv = cfl * h / (|u|+c)
+        // Convective: dt_conv = cfl * h_min / (|u|+c)
+        const double h_min = fmin(m.hx, fmin(m.hy, m.hz));
         const double sp = fmax(fabs(q.u)+q.c, fmax(fabs(q.v)+q.c, fabs(q.w)+q.c));
         if (sp > 0.0) {
-            unsigned long long bits = __double_as_longlong(cfl * m.h / sp);
+            unsigned long long bits = __double_as_longlong(cfl * h_min / sp);
             if (bits < local_bits) local_bits = bits;
         }
-        // Viscous: dt_visc = h² / (2 * C_visc * µ/ρ),  C_visc = max(4/3, γ/Pr)
+        // Viscous: dt_visc = h_min² / (2 * C_visc * µ/ρ),  C_visc = max(4/3, γ/Pr)
         {
             constexpr double C_VISC = (GPU_GAMMA / GPU_PR > 4.0/3.0)
                                       ? GPU_GAMMA / GPU_PR : 4.0/3.0;
             const double nu = gpu_sutherland(q.T) / q.rho;
             if (nu > 0.0) {
                 unsigned long long bits = __double_as_longlong(
-                    m.h * m.h / (2.0 * C_VISC * nu));
+                    h_min * h_min / (2.0 * C_VISC * nu));
                 if (bits < local_bits) local_bits = bits;
             }
         }
@@ -136,7 +137,9 @@ void GpuCflList::build(const BlockTree& tree, const GpuPool& pool) {
     for (int li = 0; li < n_leaves; ++li) {
         const BlockNode& nd = tree.nodes[local[li]];
         h_metas[li].d_Q    = pool.d_Q(nd.block.get());
-        h_metas[li].h      = nd.block->h;
+        h_metas[li].hx     = nd.block->h;
+        h_metas[li].hy     = nd.block->hy;
+        h_metas[li].hz     = nd.block->hz;
         h_metas[li]._pad[0]= h_metas[li]._pad[1] = 0;
     }
 

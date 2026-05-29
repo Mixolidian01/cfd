@@ -135,15 +135,16 @@ __global__ void k_extract_slice(
 
     const SnapLeafMeta& m = metas[li];
 
-    const float lo = (axis == 0) ? m.ox : (axis == 1) ? m.oy : m.oz;
-    const float hi = lo + GPU_NB * m.h;
+    const float lo   = (axis == 0) ? m.ox : (axis == 1) ? m.oy : m.oz;
+    const float h_ax = (axis == 0) ? m.h  : (axis == 1) ? m.hy : m.hz;
+    const float hi   = lo + GPU_NB * h_ax;
 
     if (slice_phys < lo || slice_phys >= hi) {
         d_out[li * GPU_NB * GPU_NB + t] = 0.f;
         return;
     }
 
-    int s = GPU_NG + (int)((slice_phys - lo) / m.h);
+    int s = GPU_NG + (int)((slice_phys - lo) / h_ax);
     s = max(s, GPU_NG); s = min(s, GPU_NG + GPU_NB - 1);
 
     const int ia = GPU_NG + a;
@@ -168,7 +169,9 @@ __global__ void k_build_volume(
     const int li = blockIdx.x;
     if (li >= n_leaves) return;
     const SnapLeafMeta& m = metas[li];
-    const float h     = m.h;
+    const float hx    = m.h;
+    const float hy    = m.hy;
+    const float hz    = m.hz;
     const float inv_L = 1.0f / domain_L;
 
     constexpr int N_INT = GPU_NB * GPU_NB * GPU_NB;
@@ -177,19 +180,19 @@ __global__ void k_build_volume(
         const int jj = (idx / GPU_NB) % GPU_NB;
         const int ii = idx % GPU_NB;
 
-        const float cx = m.ox + (ii + 0.5f) * h;
-        const float cy = m.oy + (jj + 0.5f) * h;
-        const float cz = m.oz + (kk + 0.5f) * h;
+        const float cx = m.ox + (ii + 0.5f) * hx;
+        const float cy = m.oy + (jj + 0.5f) * hy;
+        const float cz = m.oz + (kk + 0.5f) * hz;
 
-        const int vi0 = max(0,   (int)((cx - 0.5f*h) * inv_L * N));
-        const int vi1 = min(N-1, (int)((cx + 0.5f*h) * inv_L * N));
-        const int vj0 = max(0,   (int)((cy - 0.5f*h) * inv_L * N));
-        const int vj1 = min(N-1, (int)((cy + 0.5f*h) * inv_L * N));
-        const int vk0 = max(0,   (int)((cz - 0.5f*h) * inv_L * N));
-        const int vk1 = min(N-1, (int)((cz + 0.5f*h) * inv_L * N));
+        const int vi0 = max(0,   (int)((cx - 0.5f*hx) * inv_L * N));
+        const int vi1 = min(N-1, (int)((cx + 0.5f*hx) * inv_L * N));
+        const int vj0 = max(0,   (int)((cy - 0.5f*hy) * inv_L * N));
+        const int vj1 = min(N-1, (int)((cy + 0.5f*hy) * inv_L * N));
+        const int vk0 = max(0,   (int)((cz - 0.5f*hz) * inv_L * N));
+        const int vk1 = min(N-1, (int)((cz + 0.5f*hz) * inv_L * N));
 
         const float val = snap_scalar_val(
-            m.d_Q, var_id, GPU_NG + ii, GPU_NG + jj, GPU_NG + kk, h);
+            m.d_Q, var_id, GPU_NG + ii, GPU_NG + jj, GPU_NG + kk, hx);
 
         for (int vk = vk0; vk <= vk1; ++vk)
         for (int vj = vj0; vj <= vj1; ++vj)
@@ -207,7 +210,7 @@ __global__ void k_reduce_metrics(
 {
     const int li = blockIdx.x;
     const SnapLeafMeta& m = metas[li];
-    const double h3 = (double)m.h * m.h * m.h;
+    const double h3 = (double)m.h * m.hy * m.hz;
 
     double mass = 0, ke = 0, px = 0, py = 0, pz = 0, etot = 0;
     double rho_min = 1e300, rho_max = 0;
