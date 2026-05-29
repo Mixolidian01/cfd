@@ -623,7 +623,7 @@ add_custom_target(sim
 # =============================================================================
 
 add_custom_target(b
-    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill test_cell_block_accessors test_ensemble test_rect_domain test_t42_rect_ns
+    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill test_cell_block_accessors test_ensemble test_rect_domain test_t42_rect_ns test_multi_root
     COMMENT "Build all targets (incremental)"
 )
 
@@ -633,9 +633,19 @@ add_custom_target(ba
             test_bn_amr test_bn_solver test_multiphase
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
             test_ensemble test_scheme_select test_t38_adjoint test_t42_adjoint_rk3
-            test_rect_domain test_t42_rect_ns
+            test_rect_domain test_t42_rect_ns test_multi_root
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
+    USES_TERMINAL
+)
+
+add_executable(test_multi_root tests/mesh/test_multi_root.cpp)
+target_link_libraries(test_multi_root PRIVATE ns_solver m)
+add_test(NAME multi_root COMMAND test_multi_root)
+add_custom_target(t_multi_root
+    DEPENDS test_multi_root
+    COMMAND $<TARGET_FILE:test_multi_root>
+    COMMENT "Forest of octrees: multi-root BlockTree"
     USES_TERMINAL
 )
 

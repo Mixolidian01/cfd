@@ -225,6 +225,10 @@ struct NSSolver {
     void init(double Lx, double Ly, double Lz,
               const std::function<Prim(double,double,double)>& ic,
               const std::function<double(double,double,double)>* phi_ic = nullptr);
+    // Forest of octrees: NX×NY×NZ root blocks on [0,Lx] × [0,Ly] × [0,Lz].
+    void init(double Lx, double Ly, double Lz, int NX, int NY, int NZ,
+              const std::function<Prim(double,double,double)>& ic,
+              const std::function<double(double,double,double)>* phi_ic = nullptr);
     void run();
     double advance();
     SolverResult<double> advance_result() noexcept;

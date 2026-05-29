@@ -119,6 +119,8 @@ struct BlockTree {
     // ── Construction ────────────────────────────────────────────────────
     void init(double L);
     void init(double Lx, double Ly, double Lz);
+    // Forest of octrees: NX×NY×NZ root blocks (cubic when Lx/NX==Ly/NY==Lz/NZ).
+    void init(double Lx, double Ly, double Lz, int NX, int NY, int NZ);
 
     // ── Refinement / coarsening ─────────────────────────────────────────────────
     // refine: leaf → 8 children (prolongates Q piecewise-constant)
@@ -132,9 +134,13 @@ struct BlockTree {
     int balance();
 
     // ── Accessors ──────────────────────────────────────────────────────────
-    int  n_leaves() const noexcept;
-    int  root()     const noexcept { return 0; }
-    bool valid()    const noexcept { return !nodes.empty(); }
+    int  n_leaves()  const noexcept;
+    int  n_roots()   const noexcept { return nx_roots_ * ny_roots_ * nz_roots_; }
+    int  nx_roots()  const noexcept { return nx_roots_; }
+    int  ny_roots()  const noexcept { return ny_roots_; }
+    int  nz_roots()  const noexcept { return nz_roots_; }
+    int  root()      const noexcept { return 0; }
+    bool valid()     const noexcept { return !nodes.empty(); }
 
     // P1.6: cached leaf index list; invalidated by refine/coarsen/rebuild.
     const std::vector<int>& leaf_indices() const;
@@ -244,6 +250,9 @@ private:
     double domain_L_  = 1.0;
     double domain_Ly_ = 1.0;
     double domain_Lz_ = 1.0;
+    int    nx_roots_  = 1;
+    int    ny_roots_  = 1;
+    int    nz_roots_  = 1;
 
     // P8.1: GPU lifecycle callbacks (see set_gpu_callbacks above)
     std::function<void(CellBlock*)> on_block_alloc_;

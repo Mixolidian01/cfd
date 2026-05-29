@@ -172,6 +172,49 @@ void NSSolver::init(double domain_L,
 }
 
 // =============================================================================
+// NSSolver::init (forest of octrees: NX×NY×NZ root blocks)
+// =============================================================================
+void NSSolver::init(double Lx, double Ly, double Lz, int NX, int NY, int NZ,
+                    const std::function<Prim(double,double,double)>& ic,
+                    const std::function<double(double,double,double)>* phi_ic) {
+    cfg.validate();
+    if (cfg.bc.faces) {
+        const FaceBCArray& f = *cfg.bc.faces;
+        tree.set_periodic_axes(bc_is_periodic(f[XMINUS]) || bc_is_periodic(f[XPLUS]),
+                               bc_is_periodic(f[YMINUS]) || bc_is_periodic(f[YPLUS]),
+                               bc_is_periodic(f[ZMINUS]) || bc_is_periodic(f[ZPLUS]));
+    } else {
+        tree.set_periodic(bc_is_periodic(cfg.bc.variant));
+    }
+    tree.init(Lx, Ly, Lz, NX, NY, NZ);
+    t = 0.0; step = 0;
+    history.clear();
+    ke_prev_ = -1.0;
+
+    // Apply IC to every root block (all are leaves immediately after init).
+    for (int li : tree.leaf_indices()) {
+        auto& blk = *tree.nodes[li].block;
+        for (int k = 0; k < NB2; ++k)
+        for (int j = 0; j < NB2; ++j)
+        for (int i = 0; i < NB2; ++i) {
+            double x = blk.ox + (i - NG + 0.5) * blk.h;
+            double y = blk.oy + (j - NG + 0.5) * blk.hy;
+            double z = blk.oz + (k - NG + 0.5) * blk.hz;
+            Prim p = ic(x, y, z);
+            int idx = cell_idx(i, j, k);
+            eos_prim_to_cons(p, blk.Q[0][idx], blk.Q[1][idx],
+                                blk.Q[2][idx], blk.Q[3][idx], blk.Q[4][idx]);
+            if (phi_ic && cfg.acdi.use_acdi)
+                blk.phi_data_[idx] = (*phi_ic)(x, y, z);
+        }
+    }
+
+    alloc_scratch();
+    integrator_     = std::make_unique<CpuRk3Integrator>(*this);
+    lts_integrator_ = std::make_unique<LtsIntegrator>(*this);
+}
+
+// =============================================================================
 // copy helpers
 // =============================================================================
 void NSSolver::copy_tree_to_stage(std::vector<CellBlock>& stage) {

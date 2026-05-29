@@ -224,6 +224,7 @@ int BlockTree::min_leaf_level() const noexcept {
 // init
 // =============================================================================
 void BlockTree::init(double Lx, double Ly, double Lz) {
+    nx_roots_ = 1; ny_roots_ = 1; nz_roots_ = 1;
     domain_L_  = Lx;
     domain_Ly_ = Ly;
     domain_Lz_ = Lz;
@@ -242,7 +243,46 @@ void BlockTree::init(double Lx, double Ly, double Lz) {
 }
 
 void BlockTree::init(double L) {
-    init(L, L, L);   // cubic shorthand
+    init(L, L, L);   // cubic shorthand — nx_roots_=ny_roots_=nz_roots_=1 set inside
+}
+
+void BlockTree::init(double Lx, double Ly, double Lz, int NX, int NY, int NZ) {
+    assert(NX >= 1 && NY >= 1 && NZ >= 1);
+    domain_L_  = Lx;
+    domain_Ly_ = Ly;
+    domain_Lz_ = Lz;
+    nx_roots_ = NX;
+    ny_roots_ = NY;
+    nz_roots_ = NZ;
+    nodes.clear();
+    free_list_.clear();
+    leaf_dirty_ = true;
+
+    const double cell_hx = Lx / (NX * NB);
+    const double cell_hy = Ly / (NY * NB);
+    const double cell_hz = Lz / (NZ * NB);
+    const double root_Lx = Lx / NX;
+    const double root_Ly = Ly / NY;
+    const double root_Lz = Lz / NZ;
+
+    nodes.resize(NX * NY * NZ);
+    for (int iz = 0; iz < NZ; ++iz)
+    for (int iy = 0; iy < NY; ++iy)
+    for (int ix = 0; ix < NX; ++ix) {
+        int ridx = iz * (NX * NY) + iy * NX + ix;
+        auto& nd  = nodes[ridx];
+        nd.reset();
+        nd.parent      = -1;
+        nd.first_child = -1;
+        nd.level       = 0;
+        nd.morton      = 0;
+        nd.ox = ix * root_Lx;
+        nd.oy = iy * root_Ly;
+        nd.oz = iz * root_Lz;
+        nd.block = std::make_unique<CellBlock>(nd.ox, nd.oy, nd.oz,
+                                               cell_hx, cell_hy, cell_hz);
+    }
+    rebuild_neighbours();
 }
 
 // =============================================================================
@@ -451,11 +491,23 @@ void BlockTree::rebuild_neighbours() {
     const auto& leaves = leaf_indices();
     if (leaves.empty()) return;
 
+    // For each leaf, find which level-0 root it belongs to by climbing parent links.
+    auto get_root_id = [&](int li) -> int {
+        int cur = li;
+        while (nodes[cur].level > 0) cur = nodes[cur].parent;
+        return cur;  // index of the level-0 root node (0..nx*ny*nz-1)
+    };
+
+    // Key: bits[63:35]=root_id (29 bits), bits[34:30]=level (5 bits),
+    //      bits[29:0]=morton (30 bits).  Supports up to 2^29 roots — plenty.
     std::unordered_map<uint64_t, int> lm_map;
     lm_map.reserve(leaves.size() * 2);
     for (int li : leaves) {
-        auto& nd = nodes[li];
-        uint64_t key = ((uint64_t)nd.level << 32) | nd.morton;
+        int root_id = get_root_id(li);
+        auto& nd    = nodes[li];
+        uint64_t key = ((uint64_t)root_id << 35)
+                     | ((uint64_t)nd.level << 30)
+                     | (uint64_t)nd.morton;
         lm_map[key] = li;
     }
 
@@ -470,35 +522,36 @@ void BlockTree::rebuild_neighbours() {
         return morton_encode(mx, my, mz);
     };
 
+    // Mirror the boundary axis coordinate to the far end of the adjacent root.
+    auto cross_morton = [](uint32_t code, int level, int axis, int delta) -> uint32_t {
+        uint32_t mx, my, mz;
+        morton_decode(code, mx, my, mz);
+        uint32_t max_coord = (1u << level) - 1u;
+        uint32_t& mc = (axis == 0) ? mx : (axis == 1) ? my : mz;
+        mc = (delta > 0) ? 0u : max_coord;
+        return morton_encode(mx, my, mz);
+    };
+
     static constexpr int face_axis[NFACES]  = { 0, 0, 1, 1, 2, 2 };
     static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1 };
 
     for (int ai : leaves) {
-        auto& a   = nodes[ai];
-        int   lev = a.level;
+        auto& a      = nodes[ai];
+        int   lev    = a.level;
+        int   root_a = get_root_id(ai);
+
         for (int d = 0; d < NFACES; ++d) {
             if (a.neighbours[d] >= 0) continue;
-            int   axis  = face_axis[d];
-            int   delta = face_delta[d];
+            int axis  = face_axis[d];
+            int delta = face_delta[d];
+
             uint32_t nb_code = morton_face_neighbour(a.morton, lev, axis, delta);
 
-            // P4.1-fix: periodic wrapping — when at a domain boundary and the
-            // solver uses periodic BC, wrap the coordinate so that C/F interfaces
-            // at the domain edge get proper neighbour links.  Without this,
-            // accumulate_cf_fine_fluxes and undo_cf_face_flux both skip ni<0,
-            // and the flux register correction is never applied at periodic C/F
-            // faces, breaking mass conservation in AMR+periodic configurations.
-            if (nb_code == UINT32_MAX && periodic_axis_[axis] && lev > 0) {
-                uint32_t mx, my, mz;
-                morton_decode(a.morton, mx, my, mz);
-                uint32_t max_coord = (1u << lev) - 1u;
-                uint32_t& mc = (axis == 0) ? mx : (axis == 1) ? my : mz;
-                mc = (delta > 0) ? 0u : max_coord;
-                nb_code = morton_encode(mx, my, mz);
-            }
-
             if (nb_code != UINT32_MAX) {
-                uint64_t key = ((uint64_t)lev << 32) | nb_code;
+                // ── Intra-root: same level ──────────────────────────────────────
+                uint64_t key = ((uint64_t)root_a << 35)
+                             | ((uint64_t)lev << 30)
+                             | (uint64_t)nb_code;
                 auto it = lm_map.find(key);
                 if (it != lm_map.end()) {
                     int bi = it->second;
@@ -506,23 +559,78 @@ void BlockTree::rebuild_neighbours() {
                     nodes[bi].neighbours[d ^ 1] = ai;
                     continue;
                 }
-            }
-            if (lev > 0 && nb_code != UINT32_MAX) {
-                uint32_t parent_code = nb_code >> 3;
-                uint64_t key = ((uint64_t)(lev - 1) << 32) | parent_code;
+                // ── Intra-root: one level coarser (C/F interface) ───────────────
+                if (lev > 0) {
+                    uint64_t key2 = ((uint64_t)root_a << 35)
+                                  | ((uint64_t)(lev - 1) << 30)
+                                  | (uint64_t)(nb_code >> 3);
+                    auto it2 = lm_map.find(key2);
+                    if (it2 != lm_map.end()) {
+                        int bi = it2->second;
+                        a.neighbours[d]             = bi;
+                        nodes[bi].neighbours[d ^ 1] = ai;
+                        continue;
+                    }
+                }
+            } else {
+                // ── At root boundary — cross-root or domain edge ────────────────
+                int rx = root_a % nx_roots_;
+                int ry = (root_a / nx_roots_) % ny_roots_;
+                int rz = root_a / (nx_roots_ * ny_roots_);
+
+                int rx2 = rx + (axis == 0 ? delta : 0);
+                int ry2 = ry + (axis == 1 ? delta : 0);
+                int rz2 = rz + (axis == 2 ? delta : 0);
+
+                if (rx2 < 0 || rx2 >= nx_roots_) {
+                    if (!periodic_axis_[0]) continue;
+                    rx2 = (rx2 + nx_roots_) % nx_roots_;
+                }
+                if (ry2 < 0 || ry2 >= ny_roots_) {
+                    if (!periodic_axis_[1]) continue;
+                    ry2 = (ry2 + ny_roots_) % ny_roots_;
+                }
+                if (rz2 < 0 || rz2 >= nz_roots_) {
+                    if (!periodic_axis_[2]) continue;
+                    rz2 = (rz2 + nz_roots_) % nz_roots_;
+                }
+
+                int root_b = rz2 * (nx_roots_ * ny_roots_) + ry2 * nx_roots_ + rx2;
+
+                // Single-root periodic: avoid linking root to itself at lev==0
+                if (root_b == root_a && lev == 0) continue;
+
+                uint32_t xcode = cross_morton(a.morton, lev, axis, delta);
+
+                // ── Cross-root: same level ──────────────────────────────────────
+                uint64_t key = ((uint64_t)root_b << 35)
+                             | ((uint64_t)lev << 30)
+                             | (uint64_t)xcode;
                 auto it = lm_map.find(key);
                 if (it != lm_map.end()) {
                     int bi = it->second;
                     a.neighbours[d]             = bi;
                     nodes[bi].neighbours[d ^ 1] = ai;
                     continue;
+                }
+                // ── Cross-root: one level coarser (C/F at root boundary) ─────────
+                if (lev > 0) {
+                    uint64_t key2 = ((uint64_t)root_b << 35)
+                                  | ((uint64_t)(lev - 1) << 30)
+                                  | (uint64_t)(xcode >> 3);
+                    auto it2 = lm_map.find(key2);
+                    if (it2 != lm_map.end()) {
+                        int bi = it2->second;
+                        a.neighbours[d]             = bi;
+                        nodes[bi].neighbours[d ^ 1] = ai;
+                        continue;
+                    }
                 }
             }
         }
     }
-    invalidate_leaf_cache();  // topology changed — must rebuild cache next call
-    leaf_dirty_ = false;      // but we just rebuilt it above, so mark clean
-    // (leaf_cache_ is already populated by the leaf_indices() call at top)
+    invalidate_leaf_cache();
+    leaf_dirty_ = false;
 }
 
 // =============================================================================
