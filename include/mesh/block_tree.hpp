@@ -118,6 +118,7 @@ struct BlockTree {
 
     // ── Construction ────────────────────────────────────────────────────
     void init(double L);
+    void init(double Lx, double Ly, double Lz);
 
     // ── Refinement / coarsening ─────────────────────────────────────────────────
     // refine: leaf → 8 children (prolongates Q piecewise-constant)
@@ -238,7 +239,9 @@ struct BlockTree {
     }
 
 private:
-    double domain_L_ = 1.0;
+    double domain_L_  = 1.0;
+    double domain_Ly_ = 1.0;
+    double domain_Lz_ = 1.0;
 
     // P8.1: GPU lifecycle callbacks (see set_gpu_callbacks above)
     std::function<void(CellBlock*)> on_block_alloc_;

@@ -256,7 +256,9 @@ struct alignas(64) CellBlock {
 
     // ── Physical domain metadata ──────────────────────────────────────────────
     double ox = 0, oy = 0, oz = 0;
-    double h  = 0;
+    double h  = 0;   // cell size along X (hx); also used as isotropic h
+    double hy = 0;   // cell size along Y
+    double hz = 0;   // cell size along Z
 
     // P14.1: phase-field scalar φ ∈ [0,1] (0 = phase 1, 1 = phase 2).
     // Stored as flat SoA (separate from the NVAR AoSoA) so NVAR/AVX layout
@@ -276,7 +278,14 @@ struct alignas(64) CellBlock {
         std::fill(phi_data_, phi_data_ + NCELL, 0.0);
     }
     explicit CellBlock(double ox_, double oy_, double oz_, double h_) noexcept
-        : ox(ox_), oy(oy_), oz(oz_), h(h_)
+        : ox(ox_), oy(oy_), oz(oz_), h(h_), hy(h_), hz(h_)
+    {
+        init_views();
+        std::fill(data_, data_ + NTILE*NVAR*W, 0.0);
+        std::fill(phi_data_, phi_data_ + NCELL, 0.0);
+    }
+    CellBlock(double ox_, double oy_, double oz_, double hx_, double hy_, double hz_) noexcept
+        : ox(ox_), oy(oy_), oz(oz_), h(hx_), hy(hy_), hz(hz_)
     {
         init_views();
         std::fill(data_, data_ + NTILE*NVAR*W, 0.0);
@@ -285,7 +294,7 @@ struct alignas(64) CellBlock {
 
     // Deep-copy: memcpy entire AoSoA buffer and phi; views point to this->data_.
     CellBlock(const CellBlock& o) noexcept
-        : ox(o.ox), oy(o.oy), oz(o.oz), h(o.h)
+        : ox(o.ox), oy(o.oy), oz(o.oz), h(o.h), hy(o.hy), hz(o.hz)
     {
         init_views();
         std::memcpy(data_,     o.data_,     sizeof(data_));
@@ -293,7 +302,7 @@ struct alignas(64) CellBlock {
     }
     CellBlock& operator=(const CellBlock& o) noexcept {
         if (this != &o) {
-            ox = o.ox; oy = o.oy; oz = o.oz; h = o.h;
+            ox = o.ox; oy = o.oy; oz = o.oz; h = o.h; hy = o.hy; hz = o.hz;
             std::memcpy(data_,     o.data_,     sizeof(data_));
             std::memcpy(phi_data_, o.phi_data_, sizeof(phi_data_));
             // Q[v].data_ already == this->data_; no pointer update needed.

@@ -86,7 +86,7 @@ static double interior_sum(const CellBlock& b, Fn get) noexcept {
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i)
         s += get(i, j, k);
-    return s * b.h * b.h * b.h;
+    return s * b.h * b.hy * b.hz;
 }
 double CellBlock::total_mass()       const noexcept { return interior_sum(*this, [&](int i,int j,int k){ return rho (i,j,k); }); }
 double CellBlock::total_energy()     const noexcept { return interior_sum(*this, [&](int i,int j,int k){ return E   (i,j,k); }); }
@@ -222,8 +222,10 @@ int BlockTree::min_leaf_level() const noexcept {
 // =============================================================================
 // init
 // =============================================================================
-void BlockTree::init(double L) {
-    domain_L_ = L;
+void BlockTree::init(double Lx, double Ly, double Lz) {
+    domain_L_  = Lx;
+    domain_Ly_ = Ly;
+    domain_Lz_ = Lz;
     nodes.clear();
     free_list_.clear();
     leaf_dirty_ = true;
@@ -234,7 +236,12 @@ void BlockTree::init(double L) {
     root.morton = 0;
     root.parent = -1;
     root.ox = 0.0; root.oy = 0.0; root.oz = 0.0;
-    root.block  = std::make_unique<CellBlock>(0.0, 0.0, 0.0, L / NB);
+    root.block  = std::make_unique<CellBlock>(0.0, 0.0, 0.0,
+                                              Lx / NB, Ly / NB, Lz / NB);
+}
+
+void BlockTree::init(double L) {
+    init(L, L, L);   // cubic shorthand
 }
 
 // =============================================================================
@@ -242,20 +249,23 @@ void BlockTree::init(double L) {
 // =============================================================================
 void BlockTree::set_child_geometry(int parent_idx, int child_local, int child_idx) {
     const auto& par = nodes[parent_idx];
-    double cell_h = par.block ? par.block->h * 0.5
-                              : domain_L_ / (NB * (1 << (par.level + 1)));
+    double cell_hx = par.block ? par.block->h  * 0.5
+                               : domain_L_  / (NB * (1 << (par.level + 1)));
+    double cell_hy = par.block ? par.block->hy * 0.5
+                               : domain_Ly_ / (NB * (1 << (par.level + 1)));
+    double cell_hz = par.block ? par.block->hz * 0.5
+                               : domain_Lz_ / (NB * (1 << (par.level + 1)));
     // Use node-level ox/oy/oz (valid even when block is null after internal refine).
     double ox = par.ox;
     double oy = par.oy;
     double oz = par.oz;
-    double half = cell_h * NB;
-    if (oct_ix(child_local)) ox += half;
-    if (oct_iy(child_local)) oy += half;
-    if (oct_iz(child_local)) oz += half;
+    if (oct_ix(child_local)) ox += cell_hx * NB;
+    if (oct_iy(child_local)) oy += cell_hy * NB;
+    if (oct_iz(child_local)) oz += cell_hz * NB;
     nodes[child_idx].ox = ox;
     nodes[child_idx].oy = oy;
     nodes[child_idx].oz = oz;
-    nodes[child_idx].block = std::make_unique<CellBlock>(ox, oy, oz, cell_h);
+    nodes[child_idx].block = std::make_unique<CellBlock>(ox, oy, oz, cell_hx, cell_hy, cell_hz);
 }
 
 uint32_t BlockTree::child_morton(uint32_t parent_code, int oct) noexcept {
@@ -389,12 +399,14 @@ void BlockTree::coarsen(int parent_idx) {
         assert(nodes[fc + oct].is_leaf());
 
     if (!nodes[parent_idx].block) {
-        double h_par = nodes[fc].block->h * 2.0;
-        double ox    = nodes[fc].block->ox;
-        double oy    = nodes[fc].block->oy;
-        double oz    = nodes[fc].block->oz;
+        double hx_par = nodes[fc].block->h  * 2.0;
+        double hy_par = nodes[fc].block->hy * 2.0;
+        double hz_par = nodes[fc].block->hz * 2.0;
+        double ox     = nodes[fc].block->ox;
+        double oy     = nodes[fc].block->oy;
+        double oz     = nodes[fc].block->oz;
         nodes[parent_idx].block =
-            std::make_unique<CellBlock>(ox, oy, oz, h_par);
+            std::make_unique<CellBlock>(ox, oy, oz, hx_par, hy_par, hz_par);
     }
 
     if (on_gpu_coarsen_) {
