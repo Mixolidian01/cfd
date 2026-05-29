@@ -69,6 +69,17 @@ struct CellLaplacian {
               + f(i,j,k+1) + f(i,j,k-1)
               - 6.0*f(i,j,k)) / h2;
     }
+
+    // Anisotropic overload: uses per-axis cell sizes for rectangular grids.
+    template<typename Field>
+    __host__ __device__
+    double operator()(Field f, int i, int j, int k, const CellSizes& cs) const noexcept {
+        static_assert(Order == 2, "CellLaplacian: only Order=2 is implemented");
+        const double dxx = (f(i+1,j,k) - 2.0*f(i,j,k) + f(i-1,j,k)) / (cs.hx * cs.hx);
+        const double dyy = (f(i,j+1,k) - 2.0*f(i,j,k) + f(i,j-1,k)) / (cs.hy * cs.hy);
+        const double dzz = (f(i,j,k+1) - 2.0*f(i,j,k) + f(i,j,k-1)) / (cs.hz * cs.hz);
+        return dxx + dyy + dzz;
+    }
 };
 
 // ── CellDiv<Order> ───────────────────────────────────────────────────────────
@@ -84,6 +95,17 @@ struct CellDiv {
         return (Fx(i+1,j,k) - Fx(i-1,j,k)) * inv2h
              + (Fy(i,j+1,k) - Fy(i,j-1,k)) * inv2h
              + (Fz(i,j,k+1) - Fz(i,j,k-1)) * inv2h;
+    }
+
+    // Anisotropic overload: uses per-axis cell sizes for rectangular grids.
+    template<typename FxF, typename FyF, typename FzF>
+    __host__ __device__
+    double operator()(FxF Fx, FyF Fy, FzF Fz,
+                      int i, int j, int k, const CellSizes& cs) const noexcept {
+        static_assert(Order == 2, "CellDiv: only Order=2 is implemented");
+        return (Fx(i+1,j,k) - Fx(i-1,j,k)) / (2.0 * cs.hx)
+             + (Fy(i,j+1,k) - Fy(i,j-1,k)) / (2.0 * cs.hy)
+             + (Fz(i,j,k+1) - Fz(i,j,k-1)) / (2.0 * cs.hz);
     }
 };
 

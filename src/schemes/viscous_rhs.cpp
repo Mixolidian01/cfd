@@ -122,7 +122,7 @@ void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
 // =============================================================================
 template<Axis AX>
 static double cf_visc_energy_flux(
-    const CellBlock& blk, double h,
+    const CellBlock& blk, const CellSizes& cs,
     int ci, int cj, int ck, int gi, int gj, int gk, double ns) noexcept
 {
     const Prim p_i = blk.prim(ci,cj,ck);
@@ -132,17 +132,20 @@ static double cf_visc_energy_flux(
     const double u_f   = 0.5*(p_i.u + p_g.u);
     const double v_f   = 0.5*(p_i.v + p_g.v);
     const double w_f   = 0.5*(p_i.w + p_g.w);
-    const double ih    = 1.0 / h;
+    // Face-normal cell size for the temperature gradient
+    const double h_n   = (AX == Axis::X) ? cs.hx : (AX == Axis::Y) ? cs.hy : cs.hz;
+    const double ih_n  = 1.0 / h_n;
     auto uf = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).u; };
     auto vf = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).v; };
     auto wf = [&](int ii,int jj,int kk){ return blk.prim(ii,jj,kk).w; };
     constexpr VelocityGradAtFace<AX, 2> VGA;
-    const auto g = (ns > 0) ? VGA.plus(uf, vf, wf, ci, cj, ck, h)
-                             : VGA.minus(uf, vf, wf, ci, cj, ck, h);
+    // Use CellSizes overload so tangential gradients use correct per-axis h
+    const auto g = (ns > 0) ? VGA.plus(uf, vf, wf, ci, cj, ck, cs)
+                             : VGA.minus(uf, vf, wf, ci, cj, ck, cs);
     const double tau_nn  = mu_f*(2.0*g.dun_dxn - (2.0/3.0)*g.divu());
     const double tau_nt1 = mu_f*(g.dun_dxt1 + g.dut1_dxn);
     const double tau_nt2 = mu_f*(g.dun_dxt2 + g.dut2_dxn);
-    const double kT      = kappa * ns * ih * (p_g.T - p_i.T);
+    const double kT      = kappa * ns * ih_n * (p_g.T - p_i.T);
     if constexpr (AX == Axis::X)
         return tau_nn * u_f + tau_nt1 * v_f + tau_nt2 * w_f + kT;
     else if constexpr (AX == Axis::Y)
@@ -160,8 +163,7 @@ void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
 {
     const auto& nd   = tree.nodes[node_idx];
     const auto& blk  = *nd.block;
-    const double h   = blk.h;
-    const double ih  = 1.0 / h;
+    const CellSizes cs{blk.h, blk.hy, blk.hz};
 
     static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
     static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
@@ -176,15 +178,18 @@ void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
         const double ns  = (double)delta;
         const int bound  = (delta > 0) ? ihi() : ilo();
         const int gbound = bound + delta;
+        // Use axis-specific cell size for the face-normal divergence factor
+        const double h_face = (axis == 0) ? cs.hx : (axis == 1) ? cs.hy : cs.hz;
+        const double ih     = 1.0 / h_face;
 
         for (int b = ilo(); b <= ihi(); ++b)
         for (int a = ilo(); a <= ihi(); ++a) {
             const int ci=(axis==0)?bound:a, cj=(axis==1)?bound:(axis==0)?a:b, ck=(axis==2)?bound:b;
             const int gi=(axis==0)?gbound:a, gj=(axis==1)?gbound:(axis==0)?a:b, gk=(axis==2)?gbound:b;
             const double Fvisc_E =
-                (axis==0) ? cf_visc_energy_flux<Axis::X>(blk,h,ci,cj,ck,gi,gj,gk,ns) :
-                (axis==1) ? cf_visc_energy_flux<Axis::Y>(blk,h,ci,cj,ck,gi,gj,gk,ns) :
-                            cf_visc_energy_flux<Axis::Z>(blk,h,ci,cj,ck,gi,gj,gk,ns);
+                (axis==0) ? cf_visc_energy_flux<Axis::X>(blk,cs,ci,cj,ck,gi,gj,gk,ns) :
+                (axis==1) ? cf_visc_energy_flux<Axis::Y>(blk,cs,ci,cj,ck,gi,gj,gk,ns) :
+                            cf_visc_energy_flux<Axis::Z>(blk,cs,ci,cj,ck,gi,gj,gk,ns);
             rhs.Q[4][cell_idx(ci,cj,ck)] -= ns * ih * Fvisc_E;
         }
     }
