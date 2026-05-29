@@ -138,8 +138,8 @@ void adjoint_rhs(const CellBlock& Q_blk,
     }
 
     const double ihx = 1.0 / Q_blk.h;
-    const double ihy = 1.0 / Q_blk.hy;
-    const double ihz = 1.0 / Q_blk.hz;
+    const double ihy = Q_blk.hy > 0.0 ? 1.0 / Q_blk.hy : ihx;
+    const double ihz = Q_blk.hz > 0.0 ? 1.0 / Q_blk.hz : ihx;
 
     // ── Step 2: Prim adjoint accumulator (zero-init) ─────────────────────────
     // NCELL=1728, NVAR=5 → 1728*5*8 = 69120 bytes (~67 KB).
