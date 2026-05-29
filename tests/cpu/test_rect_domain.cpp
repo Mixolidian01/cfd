@@ -1,6 +1,7 @@
 #include "mesh/block_tree.hpp"
 #include "mesh/cell_block.hpp"
 #include "schemes/operators.hpp"
+#include "solver/ns_solver.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -123,6 +124,40 @@ int main() {
                 max_visc = std::max(max_visc, std::fabs(rhs.Q[v][idx]));
         }
         assert(max_visc < 1e-10);
+    }
+
+    // T7: AMR CF correction mass conservation (cubic domain — verifies no regress)
+    //
+    // Uses a cubic domain so that the test is self-contained without Task 7's
+    // 3-arg NSSolver::init() overload.  The purpose is to verify that the
+    // axis-correct ih/h_axis changes in undo_cf_one_face and apply_flux_correction
+    // do not break the Berger-Colella flux-register invariant on the existing
+    // cubic-domain code path.
+    {
+        NSSolver solver;
+        SolverConfig cfg;
+        cfg.amr.max_level = 1;
+        cfg.amr.regrid_interval = 5;
+        cfg.time.cfl = 0.5;
+        cfg.bc.variant = PeriodicBC{};
+        cfg.io.verbose = false;
+        solver.cfg = cfg;
+        solver.init(1.0, [](double x, double /*y*/, double /*z*/) -> Prim {
+            const double pi = std::acos(-1.0);
+            Prim q;
+            q.rho = 1.0 + 0.1 * std::sin(2.0 * pi * x);
+            q.u = 0; q.v = 0; q.w = 0; q.p = 1.0;
+            q.T = q.p / (q.rho * R_GAS);
+            q.c = std::sqrt(GAMMA * q.p / q.rho);
+            return q;
+        });
+        solver.regrid();
+        const double m0 = solver.compute_diag().mass;
+        for (int step = 0; step < 10; ++step)
+            solver.advance();
+        const double m1 = solver.compute_diag().mass;
+        [[maybe_unused]] const double rel_err = std::fabs((m1 - m0) / m0);
+        assert(rel_err < 1e-10);
     }
 
     std::puts("PASS test_rect_domain");
