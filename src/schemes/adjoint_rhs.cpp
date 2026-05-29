@@ -137,7 +137,9 @@ void adjoint_rhs(const CellBlock& Q_blk,
             pc[cell_idx(i,j,k)] = Q_blk.prim(i,j,k);
     }
 
-    const double ih = 1.0 / Q_blk.h;
+    const double ihx = 1.0 / Q_blk.h;
+    const double ihy = 1.0 / Q_blk.hy;
+    const double ihz = 1.0 / Q_blk.hz;
 
     // ── Step 2: Prim adjoint accumulator (zero-init) ─────────────────────────
     // NCELL=1728, NVAR=5 → 1728*5*8 = 69120 bytes (~67 KB).
@@ -150,19 +152,19 @@ void adjoint_rhs(const CellBlock& Q_blk,
     for (int k = ilo(); k <= ihi(); ++k) {
         for (int j = ilo(); j <= ihi(); ++j)
         for (int i = ilo()-1; i <= ihi(); ++i)
-            adjoint_accumulate_face<Axis::X>(pc, lambda_rhs, l_pc, ih, i, j, k, has_nbr);
+            adjoint_accumulate_face<Axis::X>(pc, lambda_rhs, l_pc, ihx, i, j, k, has_nbr);
     }
     // Y: n=j (normal), a=i, b=k
     for (int k = ilo(); k <= ihi(); ++k) {
         for (int j = ilo()-1; j <= ihi(); ++j)
         for (int i = ilo(); i <= ihi(); ++i)
-            adjoint_accumulate_face<Axis::Y>(pc, lambda_rhs, l_pc, ih, j, i, k, has_nbr);
+            adjoint_accumulate_face<Axis::Y>(pc, lambda_rhs, l_pc, ihy, j, i, k, has_nbr);
     }
     // Z: n=k (normal), a=i, b=j
     for (int k = ilo()-1; k <= ihi(); ++k) {
         for (int j = ilo(); j <= ihi(); ++j)
         for (int i = ilo(); i <= ihi(); ++i)
-            adjoint_accumulate_face<Axis::Z>(pc, lambda_rhs, l_pc, ih, k, i, j, has_nbr);
+            adjoint_accumulate_face<Axis::Z>(pc, lambda_rhs, l_pc, ihz, k, i, j, has_nbr);
     }
 
     // ── Step 4: Convert prim adjoint → cons adjoint, accumulate into lambda_Q ─
