@@ -20,10 +20,10 @@ void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
                       CellBlock& rhs, double hx, double hy, double hz) noexcept
 {
     PROFILE_SCOPE("viscous_rhs_impl");
-    const CellSizes cs{hx, hy, hz};
     const double ihx = 1.0 / hx;
-    const double ihy = 1.0 / hy;
-    const double ihz = 1.0 / hz;
+    const double ihy = hy > 0.0 ? 1.0 / hy : ihx;
+    const double ihz = hz > 0.0 ? 1.0 / hz : ihx;
+    const CellSizes cs{hx, hy > 0.0 ? hy : hx, hz > 0.0 ? hz : hx};
 
     auto U  = [&](int ii,int jj,int kk){ return pc[cell_idx(ii,jj,kk)].u; };
     auto V  = [&](int ii,int jj,int kk){ return pc[cell_idx(ii,jj,kk)].v; };

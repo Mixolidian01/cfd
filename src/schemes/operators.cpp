@@ -282,18 +282,22 @@ void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 {
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> duc;
+    const double hy = blk.hy > 0.0 ? blk.hy : blk.h;
+    const double hz = blk.hz > 0.0 ? blk.hz : blk.h;
     fill_prim_cache(blk, pc.data());
-    fill_ducros_cache(pc.data(), duc.data(), blk.h, blk.hy, blk.hz, DucrosConfig{});
-    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, blk.hy, blk.hz);
+    fill_ducros_cache(pc.data(), duc.data(), blk.h, hy, hz, DucrosConfig{});
+    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, hy, hz);
 }
 
 void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 {
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> mu_arr;
+    const double hy = blk.hy > 0.0 ? blk.hy : blk.h;
+    const double hz = blk.hz > 0.0 ? blk.hz : blk.h;
     fill_prim_cache(blk, pc.data());
     fill_mu_cache(pc.data(), mu_arr.data());
-    viscous_rhs_impl(pc.data(), mu_arr.data(), rhs_blk, blk.h, blk.hy, blk.hz);
+    viscous_rhs_impl(pc.data(), mu_arr.data(), rhs_blk, blk.h, hy, hz);
 }
 
 // R2: SpatialReconstruction for weno5_face_t now verified directly on Weno5Recon<DIR>
@@ -308,9 +312,11 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> mu_arr;
     static thread_local std::array<double, NCELL> duc;
+    const double hy = blk.hy > 0.0 ? blk.hy : blk.h;
+    const double hz = blk.hz > 0.0 ? blk.hz : blk.h;
     fill_prim_cache(blk, pc.data());
     fill_mu_cache(pc.data(), mu_arr.data());
-    fill_ducros_cache(pc.data(), duc.data(), blk.h, blk.hy, blk.hz, ducros);
+    fill_ducros_cache(pc.data(), duc.data(), blk.h, hy, hz, ducros);
 
     for (int v = 0; v < NVAR; ++v)
         for (int k = ilo(); k <= ihi(); ++k)
@@ -318,8 +324,8 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
         for (int i = ilo(); i <= ihi(); ++i)
             rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
 
-    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, blk.hy, blk.hz, has_nbr);
-    viscous_rhs_impl   (pc.data(), mu_arr.data(),               rhs_blk, blk.h, blk.hy, blk.hz);
+    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, hy, hz, has_nbr);
+    viscous_rhs_impl   (pc.data(), mu_arr.data(),               rhs_blk, blk.h, hy, hz);
 }
 
 // =============================================================================
@@ -339,9 +345,11 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> mu_arr;
     static thread_local std::array<double, NCELL> duc;
+    const double hy = blk.hy > 0.0 ? blk.hy : blk.h;
+    const double hz = blk.hz > 0.0 ? blk.hz : blk.h;
     fill_prim_cache(blk, pc.data());
     fill_mu_cache(pc.data(), mu_arr.data());
-    fill_ducros_cache(pc.data(), duc.data(), blk.h, blk.hy, blk.hz, ducros);
+    fill_ducros_cache(pc.data(), duc.data(), blk.h, hy, hz, ducros);
 
     for (int v = 0; v < NVAR; ++v)
         for (int k = ilo(); k <= ihi(); ++k)
@@ -349,8 +357,8 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
         for (int i = ilo(); i <= ihi(); ++i)
             rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
 
-    convective_rhs_impl_typed<Flux,Recon>(pc.data(), duc.data(), rhs_blk, blk.h, blk.hy, blk.hz, has_nbr);
-    viscous_rhs_impl          (pc.data(), mu_arr.data(),          rhs_blk, blk.h, blk.hy, blk.hz);
+    convective_rhs_impl_typed<Flux,Recon>(pc.data(), duc.data(), rhs_blk, blk.h, hy, hz, has_nbr);
+    viscous_rhs_impl          (pc.data(), mu_arr.data(),          rhs_blk, blk.h, hy, hz);
 }
 
 // Explicit instantiations — one row per supported (Flux × Recon × EOS) combination.

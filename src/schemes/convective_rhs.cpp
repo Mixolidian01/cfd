@@ -113,8 +113,8 @@ void convective_rhs_impl(const Prim* pc, const double* duc,
 {
     PROFILE_SCOPE("convective_rhs_impl");
     const double ihx = 1.0 / hx;
-    const double ihy = 1.0 / hy;
-    const double ihz = 1.0 / hz;
+    const double ihy = hy > 0.0 ? 1.0 / hy : ihx;
+    const double ihz = hz > 0.0 ? 1.0 / hz : ihx;
 
     // X: n=i (normal), a=j, b=k
     for (int k = ilo(); k <= ihi(); ++k) {

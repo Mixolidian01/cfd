@@ -74,8 +74,8 @@ void fill_ducros_cache(const Prim* pc, double* duc,
 void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 {
     const double ihx = 1.0 / blk.h;
-    const double ihy = 1.0 / blk.hy;
-    const double ihz = 1.0 / blk.hz;
+    const double ihy = blk.hy > 0.0 ? 1.0 / blk.hy : ihx;
+    const double ihz = blk.hz > 0.0 ? 1.0 / blk.hz : ihx;
 
     for (int k = NG; k < NG+NB; ++k)
     for (int j = NG; j < NG+NB; ++j)
