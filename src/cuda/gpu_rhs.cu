@@ -456,21 +456,23 @@ void k_prim_duc(const GpuLeafRhsMeta* __restrict__ metas) {
         if (i >= 1 && i < GPU_NB2-1 && j >= 1 && j < GPU_NB2-1
             && k >= 1 && k < GPU_NB2-1) {
             const double* sp = m.d_scratch;
-            const double ih2 = 0.5 / m.h;
+            const double ih2x = 0.5 / m.hx;
+            const double ih2y = 0.5 / m.hy;
+            const double ih2z = 0.5 / m.hz;
             auto U = [=](int ii,int jj,int kk){ return sp[1*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
             auto V = [=](int ii,int jj,int kk){ return sp[2*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
             auto W = [=](int ii,int jj,int kk){ return sp[3*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
             auto P = [=](int ii,int jj,int kk){ return sp[4*GPU_NCELL+gpu_cell_idx(ii,jj,kk)]; };
 
-            const double dudx = ih2*(U(i+1,j,k)-U(i-1,j,k));
-            const double dudy = ih2*(U(i,j+1,k)-U(i,j-1,k));
-            const double dudz = ih2*(U(i,j,k+1)-U(i,j,k-1));
-            const double dvdx = ih2*(V(i+1,j,k)-V(i-1,j,k));
-            const double dvdy = ih2*(V(i,j+1,k)-V(i,j-1,k));
-            const double dvdz = ih2*(V(i,j,k+1)-V(i,j,k-1));
-            const double dwdx = ih2*(W(i+1,j,k)-W(i-1,j,k));
-            const double dwdy = ih2*(W(i,j+1,k)-W(i,j-1,k));
-            const double dwdz = ih2*(W(i,j,k+1)-W(i,j,k-1));
+            const double dudx = ih2x*(U(i+1,j,k)-U(i-1,j,k));
+            const double dudy = ih2y*(U(i,j+1,k)-U(i,j-1,k));
+            const double dudz = ih2z*(U(i,j,k+1)-U(i,j,k-1));
+            const double dvdx = ih2x*(V(i+1,j,k)-V(i-1,j,k));
+            const double dvdy = ih2y*(V(i,j+1,k)-V(i,j-1,k));
+            const double dvdz = ih2z*(V(i,j,k+1)-V(i,j,k-1));
+            const double dwdx = ih2x*(W(i+1,j,k)-W(i-1,j,k));
+            const double dwdy = ih2y*(W(i,j+1,k)-W(i,j-1,k));
+            const double dwdz = ih2z*(W(i,j,k+1)-W(i,j,k-1));
             const double divu = dudx + dvdy + dwdz;
             const double ox = dwdy-dvdz, oy = dudz-dwdx, oz = dvdx-dudy;
             const double d2 = divu*divu;
@@ -564,7 +566,9 @@ void k_rhs_conv(const GpuLeafRhsMeta* __restrict__ metas) {
     double*       rhs = m.d_RHS;
     const int  ilo    = GPU_NG;
     const int  ihi    = GPU_NG + GPU_NB - 1;
-    const double ih   = 1.0 / m.h;
+    const double ihx  = 1.0 / m.hx;
+    const double ihy  = 1.0 / m.hy;
+    const double ihz  = 1.0 / m.hz;
     constexpr double kep_thr = 1.0e-8;
 
     // Face counts per axis: (NB+1)*NB*NB = 576 ; total = 1728
@@ -654,10 +658,11 @@ void k_rhs_conv(const GpuLeafRhsMeta* __restrict__ metas) {
             for (int v = 0; v < GPU_NVAR; ++v) F[v] = om*Fk[v] + th*Fs[v];
         }
 
+        const double ih_face = (axis == 0) ? ihx : (axis == 1) ? ihy : ihz;
         if (bL) for (int v = 0; v < GPU_NVAR; ++v)
-            atomicAdd(&rhs[v*GPU_NCELL+idxL], -ih*F[v]);
+            atomicAdd(&rhs[v*GPU_NCELL+idxL], -ih_face*F[v]);
         if (bR) for (int v = 0; v < GPU_NVAR; ++v)
-            atomicAdd(&rhs[v*GPU_NCELL+idxR], +ih*F[v]);
+            atomicAdd(&rhs[v*GPU_NCELL+idxR], +ih_face*F[v]);
     }
 }
 
@@ -674,7 +679,9 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
     double*       rhs = m.d_RHS;
     const int  ilo    = GPU_NG;
     const int  ihi    = GPU_NG + GPU_NB - 1;
-    const double ih   = 1.0 / m.h;
+    const double ihx  = 1.0 / m.hx;
+    const double ihy  = 1.0 / m.hy;
+    const double ihz  = 1.0 / m.hz;
     constexpr double kep_thr = 1.0e-8;
 
     constexpr int NF   = GPU_NB + 1;
@@ -765,10 +772,11 @@ void k_rhs_conv_teno(const GpuLeafRhsMeta* __restrict__ metas) {
             for (int v = 0; v < GPU_NVAR; ++v) F[v] = om*Fk[v] + th*Fs[v];
         }
 
+        const double ih_face = (axis == 0) ? ihx : (axis == 1) ? ihy : ihz;
         if (bL) for (int v = 0; v < GPU_NVAR; ++v)
-            atomicAdd(&rhs[v*GPU_NCELL+idxL], -ih*F[v]);
+            atomicAdd(&rhs[v*GPU_NCELL+idxL], -ih_face*F[v]);
         if (bR) for (int v = 0; v < GPU_NVAR; ++v)
-            atomicAdd(&rhs[v*GPU_NCELL+idxR], +ih*F[v]);
+            atomicAdd(&rhs[v*GPU_NCELL+idxR], +ih_face*F[v]);
     }
 }
 template __global__ void k_rhs_conv_teno<false>(const GpuLeafRhsMeta*);
@@ -796,7 +804,9 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
     double*       rhs = m.d_RHS;
     const int     ilo = GPU_NG;
     const int     ihi = GPU_NG + GPU_NB - 1;
-    const double  ih  = 1.0 / m.h;
+    const double  ihx = 1.0 / m.hx;
+    const double  ihy = 1.0 / m.hy;
+    const double  ihz = 1.0 / m.hz;
     constexpr double kep_thr = 1.0e-8;
     constexpr int NF   = GPU_NB + 1;           // 9 faces along normal axis
     constexpr int NF72 = NF * GPU_NB;           // 72 = faces per axis per xi-plane
@@ -877,10 +887,11 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
             for (int v = 0; v < GPU_NVAR; ++v) F[v] = om*Fk[v] + th*Fs[v];
         }
 
+        const double ih_face = (axis == 1) ? ihy : ihz;
         if (bL) for (int v = 0; v < GPU_NVAR; ++v)
-            atomicAdd(&rhs[v*GPU_NCELL+idxL], -ih*F[v]);
+            atomicAdd(&rhs[v*GPU_NCELL+idxL], -ih_face*F[v]);
         if (bR) for (int v = 0; v < GPU_NVAR; ++v)
-            atomicAdd(&rhs[v*GPU_NCELL+idxR], +ih*F[v]);
+            atomicAdd(&rhs[v*GPU_NCELL+idxR], +ih_face*F[v]);
     };
 
     // ── Y/Z faces: loop over pairs of i-planes ────────────────────────────────
@@ -992,9 +1003,9 @@ void k_rhs_conv_tiled(const GpuLeafRhsMeta* __restrict__ metas) {
         }
 
         if (bL) for (int v = 0; v < GPU_NVAR; ++v)
-            atomicAdd(&rhs[v*GPU_NCELL+idxL], -ih*F[v]);
+            atomicAdd(&rhs[v*GPU_NCELL+idxL], -ihx*F[v]);
         if (bR) for (int v = 0; v < GPU_NVAR; ++v)
-            atomicAdd(&rhs[v*GPU_NCELL+idxR], +ih*F[v]);
+            atomicAdd(&rhs[v*GPU_NCELL+idxR], +ihx*F[v]);
     }
 }
 
@@ -1014,14 +1025,17 @@ sp_vel(const double* __restrict__ sp, int comp, int ii, int jj, int kk) {
 
 // Viscous stress + energy flux at face AX±½ of cell (i,j,k).
 // AX: compile-time axis (0=X,1=Y,2=Z). dn ∈ {+1,-1}: +½ or -½ face.
-// dn sign convention: grad_nn = ih*dn*(v_nb - v_c) is positive outward.
+// dn sign convention: grad_nn = ih_nn*dn*(v_nb - v_c) is positive outward.
 // tnn: normal-normal stress; tnt1/tnt2: shear on (AX,t1)/(AX,t2) planes.
 // Fe: τ·u + κ∇T at face (energy flux, outward positive).
+// ih_nn: inverse cell size along the face-normal axis (AX).
+// ihs_t1: 0.25/h_t1 (quarter-cell tangential factor for axis t1=(AX+1)%3).
+// ihs_t2: 0.25/h_t2 (quarter-cell tangential factor for axis t2=(AX+2)%3).
 template<int AX>
 __device__ __forceinline__ static void face_visc(
     const double* __restrict__ sp,
     int dn, int i, int j, int k,
-    double mu, double kc, double ih, double ihs,
+    double mu, double kc, double ih_nn, double ihs_t1, double ihs_t2,
     double& tnn, double& tnt1, double& tnt2, double& Fe)
 {
     constexpr int t1 = (AX + 1) % 3;
@@ -1033,19 +1047,19 @@ __device__ __forceinline__ static void face_visc(
     constexpr int d2i = (t2 == 0), d2j = (t2 == 1), d2k = (t2 == 2);
 
     // Normal velocity gradients at this face (sign absorbed by dn)
-    const double dnn  = ih * dn * (sp_vel(sp, AX, ni, nj, nk) - sp_vel(sp, AX, i, j, k));
-    const double dtn1 = ih * dn * (sp_vel(sp, t1, ni, nj, nk) - sp_vel(sp, t1, i, j, k));
-    const double dtn2 = ih * dn * (sp_vel(sp, t2, ni, nj, nk) - sp_vel(sp, t2, i, j, k));
+    const double dnn  = ih_nn * dn * (sp_vel(sp, AX, ni, nj, nk) - sp_vel(sp, AX, i, j, k));
+    const double dtn1 = ih_nn * dn * (sp_vel(sp, t1, ni, nj, nk) - sp_vel(sp, t1, i, j, k));
+    const double dtn2 = ih_nn * dn * (sp_vel(sp, t2, ni, nj, nk) - sp_vel(sp, t2, i, j, k));
 
     // Tangential gradients: face-averaged between neighbor and center cells
-    const double d_ax_dt1 = ihs*(sp_vel(sp,AX,ni+d1i,nj+d1j,nk+d1k)-sp_vel(sp,AX,ni-d1i,nj-d1j,nk-d1k)
-                                +sp_vel(sp,AX,i +d1i,j +d1j,k +d1k)-sp_vel(sp,AX,i -d1i,j -d1j,k -d1k));
-    const double d_ax_dt2 = ihs*(sp_vel(sp,AX,ni+d2i,nj+d2j,nk+d2k)-sp_vel(sp,AX,ni-d2i,nj-d2j,nk-d2k)
-                                +sp_vel(sp,AX,i +d2i,j +d2j,k +d2k)-sp_vel(sp,AX,i -d2i,j -d2j,k -d2k));
-    const double d_t1_dt1 = ihs*(sp_vel(sp,t1,ni+d1i,nj+d1j,nk+d1k)-sp_vel(sp,t1,ni-d1i,nj-d1j,nk-d1k)
-                                +sp_vel(sp,t1,i +d1i,j +d1j,k +d1k)-sp_vel(sp,t1,i -d1i,j -d1j,k -d1k));
-    const double d_t2_dt2 = ihs*(sp_vel(sp,t2,ni+d2i,nj+d2j,nk+d2k)-sp_vel(sp,t2,ni-d2i,nj-d2j,nk-d2k)
-                                +sp_vel(sp,t2,i +d2i,j +d2j,k +d2k)-sp_vel(sp,t2,i -d2i,j -d2j,k -d2k));
+    const double d_ax_dt1 = ihs_t1*(sp_vel(sp,AX,ni+d1i,nj+d1j,nk+d1k)-sp_vel(sp,AX,ni-d1i,nj-d1j,nk-d1k)
+                                   +sp_vel(sp,AX,i +d1i,j +d1j,k +d1k)-sp_vel(sp,AX,i -d1i,j -d1j,k -d1k));
+    const double d_ax_dt2 = ihs_t2*(sp_vel(sp,AX,ni+d2i,nj+d2j,nk+d2k)-sp_vel(sp,AX,ni-d2i,nj-d2j,nk-d2k)
+                                   +sp_vel(sp,AX,i +d2i,j +d2j,k +d2k)-sp_vel(sp,AX,i -d2i,j -d2j,k -d2k));
+    const double d_t1_dt1 = ihs_t1*(sp_vel(sp,t1,ni+d1i,nj+d1j,nk+d1k)-sp_vel(sp,t1,ni-d1i,nj-d1j,nk-d1k)
+                                   +sp_vel(sp,t1,i +d1i,j +d1j,k +d1k)-sp_vel(sp,t1,i -d1i,j -d1j,k -d1k));
+    const double d_t2_dt2 = ihs_t2*(sp_vel(sp,t2,ni+d2i,nj+d2j,nk+d2k)-sp_vel(sp,t2,ni-d2i,nj-d2j,nk-d2k)
+                                   +sp_vel(sp,t2,i +d2i,j +d2j,k +d2k)-sp_vel(sp,t2,i -d2i,j -d2j,k -d2k));
 
     const double divu = dnn + d_t1_dt1 + d_t2_dt2;
     tnn  = mu * (2.0 * dnn - (2.0 / 3.0) * divu);
@@ -1064,14 +1078,17 @@ __device__ __forceinline__ static void face_visc(
     Fe = tnn  * fi(vel_ax, li, lj, lk)
        + tnt1 * fi(vel_t1, li, lj, lk)
        + tnt2 * fi(vel_t2, li, lj, lk)
-       + kc * ih * dn * (sp[5*GPU_NCELL + gpu_cell_idx(ni,nj,nk)]
-                        - sp[5*GPU_NCELL + gpu_cell_idx(i, j, k)]);
+       + kc * ih_nn * dn * (sp[5*GPU_NCELL + gpu_cell_idx(ni,nj,nk)]
+                           - sp[5*GPU_NCELL + gpu_cell_idx(i, j, k)]);
 }
 
 // Accumulate viscous stress divergence for one axis AX into acc[] and Fe_acc.
+// ih[3]: per-axis inverse cell sizes {ihx, ihy, ihz}.
+// ihs[3]: quarter-cell tangential factors {0.25*ihx, 0.25*ihy, 0.25*ihz}.
 template<int AX>
 __device__ __forceinline__ static void visc_axis(
-    const double* __restrict__ sp, double ih, double ihs,
+    const double* __restrict__ sp,
+    const double ih[3], const double ihs[3],
     int i, int j, int k, double mu_p, double mu_m,
     double (&acc)[3], double& Fe_acc)
 {
@@ -1079,14 +1096,16 @@ __device__ __forceinline__ static void visc_axis(
     constexpr int t2 = (AX + 2) % 3;
     double tnn_p, tnt1_p, tnt2_p, Fe_p;
     double tnn_m, tnt1_m, tnt2_m, Fe_m;
-    face_visc<AX>(sp, +1, i, j, k, mu_p, mu_p*GPU_CP/GPU_PR, ih, ihs,
+    face_visc<AX>(sp, +1, i, j, k, mu_p, mu_p*GPU_CP/GPU_PR,
+                  ih[AX], ihs[t1], ihs[t2],
                   tnn_p, tnt1_p, tnt2_p, Fe_p);
-    face_visc<AX>(sp, -1, i, j, k, mu_m, mu_m*GPU_CP/GPU_PR, ih, ihs,
+    face_visc<AX>(sp, -1, i, j, k, mu_m, mu_m*GPU_CP/GPU_PR,
+                  ih[AX], ihs[t1], ihs[t2],
                   tnn_m, tnt1_m, tnt2_m, Fe_m);
-    acc[AX] += ih * (tnn_p  - tnn_m );
-    acc[t1] += ih * (tnt1_p - tnt1_m);
-    acc[t2] += ih * (tnt2_p - tnt2_m);
-    Fe_acc  += ih * (Fe_p   - Fe_m  );
+    acc[AX] += ih[AX] * (tnn_p  - tnn_m );
+    acc[t1] += ih[AX] * (tnt1_p - tnt1_m);
+    acc[t2] += ih[AX] * (tnt2_p - tnt2_m);
+    Fe_acc  += ih[AX] * (Fe_p   - Fe_m  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1101,8 +1120,8 @@ void k_rhs_visc(const GpuLeafRhsMeta* __restrict__ metas) {
     double*      rhs = m.d_RHS;
     const int    ilo = GPU_NG;
     const int    ihi = GPU_NG + GPU_NB - 1;
-    const double ih  = 1.0 / m.h;
-    const double ihs = 0.25 * ih;  // 1/(4h): average of two 1/(2h) central diffs
+    const double ih[3]  = { 1.0 / m.hx, 1.0 / m.hy, 1.0 / m.hz };
+    const double ihs[3] = { 0.25 * ih[0], 0.25 * ih[1], 0.25 * ih[2] };
 
     const int i = GPU_NG + threadIdx.x;
     const int j = GPU_NG + threadIdx.y;
@@ -1168,7 +1187,9 @@ void GpuRhsList::build(const BlockTree& tree, const GpuPool& pool) {
         meta.d_Q          = pool.d_Q(nd.block.get());
         meta.d_RHS        = d_rhs_pool     + (size_t)li * NVAR          * NCELL;
         meta.d_scratch    = d_scratch_pool + (size_t)li * SCRATCH_NCOMP * NCELL;
-        meta.h            = nd.block->h;
+        meta.hx           = nd.block->h;
+        meta.hy           = nd.block->hy;
+        meta.hz           = nd.block->hz;
         meta.duc_p_thr    = duc_p_thr_;
         meta.duc_blend_inv= duc_blend_inv_;
         meta.is_periodic  = (tree.is_fully_periodic() && n_leaves == 1) ? 1u : 0u;

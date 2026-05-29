@@ -39,13 +39,16 @@ struct alignas(64) GpuLeafRhsMeta {
     const double* d_Q;          // source block d_Q (with ghost cells filled)
     double*       d_RHS;        // output RHS (flat SoA NVAR*NCELL; interior written)
     double*       d_scratch;    // 9*NCELL doubles: prim[0..6], mu[7], duc[8]
-    double        h;            // cell size
+    double        hx;           // cell size along X
+    double        hy;           // cell size along Y
+    double        hz;           // cell size along Z
     double        duc_p_thr;    // Ducros pressure-sensor threshold (config-driven)
     double        duc_blend_inv;// 1 / blend_width for Ducros pressure-sensor
     uint8_t       is_periodic;  // 1 → single-block fully-periodic: sidx(±3) wrap in gpu_teno7_face is valid
     uint8_t       cf_bnd_mask;  // bits 0..5: face dir d has a finer neighbour → force PCM for TENO7A
 };
-static_assert(sizeof(GpuLeafRhsMeta) <= 64, "GpuLeafRhsMeta too large");
+// Three pointers (24 B) + five doubles (40 B) + two uint8 (2 B) + padding (6 B) = 72 B.
+static_assert(sizeof(GpuLeafRhsMeta) <= 128, "GpuLeafRhsMeta too large");
 
 // ── RHS list ─────────────────────────────────────────────────────────────────
 struct GpuRhsList {
