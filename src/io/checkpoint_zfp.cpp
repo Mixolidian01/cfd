@@ -291,7 +291,7 @@ void checkpoint_load_compressed(NSSolver& s, const std::string& path) {
     std::fclose(f);
 
     // ── Replay topology (same as checkpoint_load) ─────────────────────────────
-    s.tree.init(s.tree.domain_L());
+    s.tree.init(s.tree.domain_L(), s.tree.domain_Ly(), s.tree.domain_Lz());
 
     std::vector<int> order((size_t)NL);
     for (int i = 0; i < NL; ++i) order[i] = i;

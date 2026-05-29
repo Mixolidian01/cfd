@@ -146,7 +146,7 @@ void checkpoint_load(NSSolver& s, const std::string& path) {
     // ── Replay refine() to reconstruct tree topology (FIX B7) ────────────────
     // Reset to a single root leaf, then replay refinements level by level
     // in Morton order so parents are always created before their children.
-    s.tree.init(s.tree.domain_L());
+    s.tree.init(s.tree.domain_L(), s.tree.domain_Ly(), s.tree.domain_Lz());
 
     // Sort by (level ASC, morton ASC) — guarantees parents before children
     std::vector<int> order((size_t)NL);
