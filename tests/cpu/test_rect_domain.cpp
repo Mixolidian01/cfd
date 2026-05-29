@@ -92,6 +92,39 @@ int main() {
         assert(max_rhs < 1e-12);
     }
 
+    // T6: viscous RHS of uniform-velocity state is zero on 2×1×0.5 domain
+    {
+        const double hx = 2.0 / NB;
+        const double hy = 1.0 / NB;
+        const double hz = 0.5 / NB;
+        CellBlock blk(0.0, 0.0, 0.0, hx, hy, hz);
+        // Constant-velocity state: rho=1.2, u=0.3, v=0, w=0, p=1
+        const double rho = 1.2, u = 0.3, p = 1.0;
+        const double E = p / (GAMMA - 1.0) + 0.5 * rho * u * u;
+        for (int k = 0; k < NB2; ++k)
+        for (int j = 0; j < NB2; ++j)
+        for (int i = 0; i < NB2; ++i) {
+            int idx = cell_idx(i, j, k);
+            blk.Q[0][idx] = rho;
+            blk.Q[1][idx] = rho * u;
+            blk.Q[2][idx] = 0.0;
+            blk.Q[3][idx] = 0.0;
+            blk.Q[4][idx] = E;
+        }
+        CellBlock rhs(0.0, 0.0, 0.0, hx, hy, hz);
+        // compute_rhs includes viscous; for uniform flow, viscous terms vanish
+        compute_rhs(blk, rhs);
+        double max_visc = 0.0;
+        for (int k = ilo(); k <= ihi(); ++k)
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i) {
+            int idx = cell_idx(i, j, k);
+            for (int v = 0; v < NVAR; ++v)
+                max_visc = std::max(max_visc, std::fabs(rhs.Q[v][idx]));
+        }
+        assert(max_visc < 1e-10);
+    }
+
     std::puts("PASS test_rect_domain");
     return 0;
 }

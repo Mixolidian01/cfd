@@ -13,6 +13,12 @@
 // Field: any callable double(int,int,int).
 #include "mesh/axis.hpp"
 
+// ── CellSizes ────────────────────────────────────────────────────────────────
+// Per-axis cell sizes for anisotropic (rectangular) grids.
+struct CellSizes {
+    double hx, hy, hz;
+};
+
 // ── CellGrad<DIR, Order> ─────────────────────────────────────────────────────
 // Cell-centred ∂f/∂x_DIR at (i,j,k).
 // Order=2: (f_{+1} − f_{-1}) / (2h)
@@ -35,6 +41,16 @@ struct CellGrad {
             if constexpr (DIR == Axis::Z)
                 return (-f(i,j,k+2)+8.0*f(i,j,k+1)-8.0*f(i,j,k-1)+f(i,j,k-2)) / (12.0*h);
         }
+        return 0.0;
+    }
+
+    // Anisotropic overload: picks the correct axis cell size from CellSizes.
+    template<typename Field>
+    __host__ __device__
+    double operator()(Field f, int i, int j, int k, const CellSizes& cs) const noexcept {
+        if constexpr (DIR == Axis::X) return operator()(f, i, j, k, cs.hx);
+        if constexpr (DIR == Axis::Y) return operator()(f, i, j, k, cs.hy);
+        if constexpr (DIR == Axis::Z) return operator()(f, i, j, k, cs.hz);
         return 0.0;
     }
 };
@@ -97,6 +113,16 @@ struct FaceGrad {
         return 0.0;
     }
 
+    // Anisotropic overload: normal gradient uses the face-normal axis's cell size.
+    template<typename Field>
+    __host__ __device__
+    double normal(Field f, int i, int j, int k, const CellSizes& cs) const noexcept {
+        if constexpr (DIR == Axis::X) return normal(f, i, j, k, cs.hx);
+        if constexpr (DIR == Axis::Y) return normal(f, i, j, k, cs.hy);
+        if constexpr (DIR == Axis::Z) return normal(f, i, j, k, cs.hz);
+        return 0.0;
+    }
+
     template<Axis T, typename Field>
     __host__ __device__
     double tangential(Field f, int i, int j, int k, double h) const noexcept {
@@ -138,6 +164,17 @@ struct FaceGrad {
                 return ((-f(i,j+2,k+1)+8*f(i,j+1,k+1)-8*f(i,j-1,k+1)+f(i,j-2,k+1))
                        +(-f(i,j+2,k  )+8*f(i,j+1,k  )-8*f(i,j-1,k  )+f(i,j-2,k  )))/(24.0*h);
         }
+        return 0.0;
+    }
+
+    // Anisotropic overload: tangential gradient uses the T-axis cell size.
+    template<Axis T, typename Field>
+    __host__ __device__
+    double tangential(Field f, int i, int j, int k, const CellSizes& cs) const noexcept {
+        static_assert(T != DIR, "FaceGrad::tangential: T must differ from DIR");
+        if constexpr (T == Axis::X) return tangential<T>(f, i, j, k, cs.hx);
+        if constexpr (T == Axis::Y) return tangential<T>(f, i, j, k, cs.hy);
+        if constexpr (T == Axis::Z) return tangential<T>(f, i, j, k, cs.hz);
         return 0.0;
     }
 };
@@ -216,5 +253,50 @@ struct VelocityGradAtFace {
         const int jm = (DIR == Axis::Y) ? j-1 : j;
         const int km = (DIR == Axis::Z) ? k-1 : k;
         return plus(u, v, w, im, jm, km, h);
+    }
+
+    // Anisotropic overloads: forward to the double-h plus/minus using CellSizes.
+    template<typename UF, typename VF, typename WF>
+    __host__ __device__
+    VelocityGradComponents plus(UF u, VF v, WF w,
+                                int i, int j, int k, const CellSizes& cs) const noexcept {
+        FaceGrad<DIR, Order> fg;
+        VelocityGradComponents g;
+        if constexpr (DIR == Axis::X) {
+            g.dun_dxn   = fg.normal(u, i, j, k, cs);
+            g.dut1_dxn  = fg.normal(v, i, j, k, cs);
+            g.dut2_dxn  = fg.normal(w, i, j, k, cs);
+            g.dun_dxt1  = fg.template tangential<Axis::Y>(u, i, j, k, cs);
+            g.dun_dxt2  = fg.template tangential<Axis::Z>(u, i, j, k, cs);
+            g.dut1_dxt1 = fg.template tangential<Axis::Y>(v, i, j, k, cs);
+            g.dut2_dxt2 = fg.template tangential<Axis::Z>(w, i, j, k, cs);
+        } else if constexpr (DIR == Axis::Y) {
+            g.dun_dxn   = fg.normal(v, i, j, k, cs);
+            g.dut1_dxn  = fg.normal(u, i, j, k, cs);
+            g.dut2_dxn  = fg.normal(w, i, j, k, cs);
+            g.dun_dxt1  = fg.template tangential<Axis::X>(v, i, j, k, cs);
+            g.dun_dxt2  = fg.template tangential<Axis::Z>(v, i, j, k, cs);
+            g.dut1_dxt1 = fg.template tangential<Axis::X>(u, i, j, k, cs);
+            g.dut2_dxt2 = fg.template tangential<Axis::Z>(w, i, j, k, cs);
+        } else {
+            g.dun_dxn   = fg.normal(w, i, j, k, cs);
+            g.dut1_dxn  = fg.normal(u, i, j, k, cs);
+            g.dut2_dxn  = fg.normal(v, i, j, k, cs);
+            g.dun_dxt1  = fg.template tangential<Axis::X>(w, i, j, k, cs);
+            g.dun_dxt2  = fg.template tangential<Axis::Y>(w, i, j, k, cs);
+            g.dut1_dxt1 = fg.template tangential<Axis::X>(u, i, j, k, cs);
+            g.dut2_dxt2 = fg.template tangential<Axis::Y>(v, i, j, k, cs);
+        }
+        return g;
+    }
+
+    template<typename UF, typename VF, typename WF>
+    __host__ __device__
+    VelocityGradComponents minus(UF u, VF v, WF w,
+                                 int i, int j, int k, const CellSizes& cs) const noexcept {
+        const int im = (DIR == Axis::X) ? i-1 : i;
+        const int jm = (DIR == Axis::Y) ? j-1 : j;
+        const int km = (DIR == Axis::Z) ? k-1 : k;
+        return plus(u, v, w, im, jm, km, cs);
     }
 };

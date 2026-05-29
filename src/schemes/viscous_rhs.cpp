@@ -17,10 +17,13 @@ static constexpr double CP = CPU_CP;
 // Non-static: called from compute_rhs / compute_rhs_typed in operators.cpp.
 // =============================================================================
 void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
-                      CellBlock& rhs, double h) noexcept
+                      CellBlock& rhs, double hx, double hy, double hz) noexcept
 {
     PROFILE_SCOPE("viscous_rhs_impl");
-    const double ih = 1.0 / h;
+    const CellSizes cs{hx, hy, hz};
+    const double ihx = 1.0 / hx;
+    const double ihy = 1.0 / hy;
+    const double ihz = 1.0 / hz;
 
     auto U  = [&](int ii,int jj,int kk){ return pc[cell_idx(ii,jj,kk)].u; };
     auto V  = [&](int ii,int jj,int kk){ return pc[cell_idx(ii,jj,kk)].v; };
@@ -48,12 +51,12 @@ void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
         double mu_zm = FI_Z(MU, i,   j,   k-1);
 
         // ── Velocity gradient tensors at 6 faces (R7: VelocityGradAtFace) ──
-        const auto gxp = VGX.plus (U, V, W, i, j, k, h);
-        const auto gxm = VGX.minus(U, V, W, i, j, k, h);
-        const auto gyp = VGY.plus (U, V, W, i, j, k, h);
-        const auto gym = VGY.minus(U, V, W, i, j, k, h);
-        const auto gzp = VGZ.plus (U, V, W, i, j, k, h);
-        const auto gzm = VGZ.minus(U, V, W, i, j, k, h);
+        const auto gxp = VGX.plus (U, V, W, i, j, k, cs);
+        const auto gxm = VGX.minus(U, V, W, i, j, k, cs);
+        const auto gyp = VGY.plus (U, V, W, i, j, k, cs);
+        const auto gym = VGY.minus(U, V, W, i, j, k, cs);
+        const auto gzp = VGZ.plus (U, V, W, i, j, k, cs);
+        const auto gzm = VGZ.minus(U, V, W, i, j, k, cs);
 
         // ── Face stresses τ = µ·(∂u_a/∂x_b + ∂u_b/∂x_a − δ·⅔ div u) ──────
         // x-faces
@@ -78,10 +81,10 @@ void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
         double tzy_zm = mu_zm*(gzm.dut2_dxn + gzm.dun_dxt2);
         double tzz_zm = mu_zm*(2.0*gzm.dun_dxn - (2.0/3.0)*gzm.divu());
 
-        // ── Conservative momentum divergences ─────────────────────────────────
-        double ax = ih*((txx_xp-txx_xm) + (tyx_yp-tyx_ym) + (tzx_zp-tzx_zm));
-        double ay = ih*((txy_xp-txy_xm) + (tyy_yp-tyy_ym) + (tzy_zp-tzy_zm));
-        double az = ih*((txz_xp-txz_xm) + (tyz_yp-tyz_ym) + (tzz_zp-tzz_zm));
+        // ── Conservative momentum divergences (per-axis ih for anisotropic grids)
+        double ax = ihx*(txx_xp-txx_xm) + ihy*(tyx_yp-tyx_ym) + ihz*(tzx_zp-tzx_zm);
+        double ay = ihx*(txy_xp-txy_xm) + ihy*(tyy_yp-tyy_ym) + ihz*(tzy_zp-tzy_zm);
+        double az = ihx*(txz_xp-txz_xm) + ihy*(tyz_yp-tyz_ym) + ihz*(tzz_zp-tzz_zm);
 
         // ── Energy: conservative face-flux form  div(τ·u + κ∇T) ──────────────
         auto UF=[&](int ii,int jj,int kk){return 0.5*(U(ii,jj,kk)+U(i,j,k));};
@@ -90,27 +93,27 @@ void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
         // x-faces
         double kxp = mu_xp*CP/PR, kxm = mu_xm*CP/PR;
         double Fex_p = txx_xp*UF(i+1,j,k) + txy_xp*VF(i+1,j,k) + txz_xp*WF(i+1,j,k)
-                     + kxp*ih*(Tf(i+1,j,k)-Tf(i,j,k));
+                     + kxp*ihx*(Tf(i+1,j,k)-Tf(i,j,k));
         double Fex_m = txx_xm*UF(i-1,j,k) + txy_xm*VF(i-1,j,k) + txz_xm*WF(i-1,j,k)
-                     + kxm*ih*(Tf(i,j,k)-Tf(i-1,j,k));
+                     + kxm*ihx*(Tf(i,j,k)-Tf(i-1,j,k));
         // y-faces
         double kyp = mu_yp*CP/PR, kym = mu_ym*CP/PR;
         double Fey_p = tyx_yp*UF(i,j+1,k) + tyy_yp*VF(i,j+1,k) + tyz_yp*WF(i,j+1,k)
-                     + kyp*ih*(Tf(i,j+1,k)-Tf(i,j,k));
+                     + kyp*ihy*(Tf(i,j+1,k)-Tf(i,j,k));
         double Fey_m = tyx_ym*UF(i,j-1,k) + tyy_ym*VF(i,j-1,k) + tyz_ym*WF(i,j-1,k)
-                     + kym*ih*(Tf(i,j,k)-Tf(i,j-1,k));
+                     + kym*ihy*(Tf(i,j,k)-Tf(i,j-1,k));
         // z-faces
         double kzp = mu_zp*CP/PR, kzm = mu_zm*CP/PR;
         double Fez_p = tzx_zp*UF(i,j,k+1) + tzy_zp*VF(i,j,k+1) + tzz_zp*WF(i,j,k+1)
-                     + kzp*ih*(Tf(i,j,k+1)-Tf(i,j,k));
+                     + kzp*ihz*(Tf(i,j,k+1)-Tf(i,j,k));
         double Fez_m = tzx_zm*UF(i,j,k-1) + tzy_zm*VF(i,j,k-1) + tzz_zm*WF(i,j,k-1)
-                     + kzm*ih*(Tf(i,j,k)-Tf(i,j,k-1));
+                     + kzm*ihz*(Tf(i,j,k)-Tf(i,j,k-1));
 
         int idx = cell_idx(i,j,k);
         rhs.Q[1][idx] += ax;
         rhs.Q[2][idx] += ay;
         rhs.Q[3][idx] += az;
-        rhs.Q[4][idx] += ih*(Fex_p-Fex_m) + ih*(Fey_p-Fey_m) + ih*(Fez_p-Fez_m);
+        rhs.Q[4][idx] += ihx*(Fex_p-Fex_m) + ihy*(Fey_p-Fey_m) + ihz*(Fez_p-Fez_m);
     }
 }
 

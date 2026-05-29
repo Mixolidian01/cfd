@@ -164,7 +164,7 @@ void convective_rhs_impl(const Prim* pc, const double* duc,
                           CellBlock& rhs, double hx, double hy, double hz,
                           uint8_t has_nbr = 0) noexcept;
 void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
-                      CellBlock& rhs, double h) noexcept;
+                      CellBlock& rhs, double hx, double hy, double hz) noexcept;
 void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
                              CellBlock& rhs) noexcept;
 void fill_ducros_cache(const Prim* pc, double* duc, double h,
@@ -292,7 +292,7 @@ void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
     static thread_local std::array<double, NCELL> mu_arr;
     fill_prim_cache(blk, pc.data());
     fill_mu_cache(pc.data(), mu_arr.data());
-    viscous_rhs_impl(pc.data(), mu_arr.data(), rhs_blk, blk.h);
+    viscous_rhs_impl(pc.data(), mu_arr.data(), rhs_blk, blk.h, blk.hy, blk.hz);
 }
 
 // R2: SpatialReconstruction for weno5_face_t now verified directly on Weno5Recon<DIR>
@@ -318,7 +318,7 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
             rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
 
     convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, blk.hy, blk.hz, has_nbr);
-    viscous_rhs_impl   (pc.data(), mu_arr.data(),               rhs_blk, blk.h);
+    viscous_rhs_impl   (pc.data(), mu_arr.data(),               rhs_blk, blk.h, blk.hy, blk.hz);
 }
 
 // =============================================================================
@@ -349,7 +349,7 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
             rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
 
     convective_rhs_impl_typed<Flux,Recon>(pc.data(), duc.data(), rhs_blk, blk.h, blk.hy, blk.hz, has_nbr);
-    viscous_rhs_impl          (pc.data(), mu_arr.data(),          rhs_blk, blk.h);
+    viscous_rhs_impl          (pc.data(), mu_arr.data(),          rhs_blk, blk.h, blk.hy, blk.hz);
 }
 
 // Explicit instantiations — one row per supported (Flux × Recon × EOS) combination.
