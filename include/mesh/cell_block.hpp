@@ -284,7 +284,7 @@ struct alignas(64) CellBlock {
         std::fill(data_, data_ + NTILE*NVAR*W, 0.0);
         std::fill(phi_data_, phi_data_ + NCELL, 0.0);
     }
-    CellBlock(double ox_, double oy_, double oz_, double hx_, double hy_, double hz_) noexcept
+    explicit CellBlock(double ox_, double oy_, double oz_, double hx_, double hy_, double hz_) noexcept
         : ox(ox_), oy(oy_), oz(oz_), h(hx_), hy(hy_), hz(hz_)
     {
         init_views();

@@ -670,12 +670,14 @@ static void fill_coarse_ghost_from_fine(
     int first_child = nodes[fine_parent].first_child;
     if (first_child < 0) return;
 
-    // A05-fix5: verify that the fine children have the expected cell size.
+    // A05-fix5: verify that the fine children have the expected cell size on all axes.
     if (!nodes[first_child].has_block()) return;
     {
-        const double h_fine_expected = coarse_blk.h * 0.5;
-        const double h_fine_actual   = nodes[first_child].block->h;
-        if (std::fabs(h_fine_actual - h_fine_expected) > 1e-12 * coarse_blk.h)
+        const auto* fc = nodes[first_child].block.get();
+        if (!fc) return;
+        if (std::fabs(fc->h  - coarse_blk.h  * 0.5) > 1e-12 * coarse_blk.h  ||
+            std::fabs(fc->hy - coarse_blk.hy * 0.5) > 1e-12 * coarse_blk.hy ||
+            std::fabs(fc->hz - coarse_blk.hz * 0.5) > 1e-12 * coarse_blk.hz)
             return;  // stale pointer — skip rather than corrupt
     }
 
@@ -1190,7 +1192,6 @@ void BlockTree::apply_flux_correction(double dt) {
         auto& nd  = nodes[li];
         if (!nd.has_block()) continue;  // P7.1: remote leaf
         auto& blk = *nd.block;
-        double h_c = blk.h;
 
         for (int d = 0; d < NFACES; ++d) {
             auto& reg = nd.flux_reg[d];
@@ -1200,6 +1201,8 @@ void BlockTree::apply_flux_correction(double dt) {
             if (nodes[ni].level <= nd.level) continue;
 
             const int axis = fd_axis(d);
+            // Use axis-specific cell size for the dt/h correction factor.
+            const double h_axis = (axis == 0) ? blk.h : (axis == 1) ? blk.hy : blk.hz;
             // +face subtracts (flux leaves cell), -face adds (flux enters cell)
             const double sign = (fd_side(d) == 1) ? -1.0 : +1.0;
             int g = (fd_side(d) == 0) ? ilo() : ihi();
@@ -1209,7 +1212,7 @@ void BlockTree::apply_flux_correction(double dt) {
                 const int flat = (axis == 0) ? cell_idx(g,        ilo()+jc, ilo()+ic) :
                                  (axis == 1) ? cell_idx(ilo()+ic, g,        ilo()+jc) :
                                                cell_idx(ilo()+ic, ilo()+jc, g       );
-                const double k = sign * (dt / h_c);
+                const double k = sign * (dt / h_axis);
                 for (int v = 0; v < NVAR; ++v)
                     blk.Q[v][flat] += k * reg[v*NB*NB + jc*NB + ic];
             }

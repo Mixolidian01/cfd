@@ -179,7 +179,9 @@ struct BlockTree {
     // ── Morton utilities ──────────────────────────────────────────────────────────
     static uint32_t child_morton(uint32_t parent_code, int oct) noexcept;
 
-    double domain_L() const noexcept { return domain_L_; }
+    double domain_L()  const noexcept { return domain_L_;  }
+    double domain_Ly() const noexcept { return domain_Ly_; }
+    double domain_Lz() const noexcept { return domain_Lz_; }
 
     // P4.1-fix: periodic BC flags — set by NSSolver::init() before any refine/balance.
     // When an axis is true, rebuild_neighbours() wraps domain-boundary faces on that
