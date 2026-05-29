@@ -203,7 +203,7 @@ if(NVCC)
         ${_S}/cuda/gpu_rhs.cu      ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
         ${_S}/cuda/gpu_cf.cu       ${_S}/cuda/gpu_sgs.cu
         ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
-        ${_S}/cuda/gpu_snapshot.cu
+        ${_S}/cuda/gpu_snapshot.cu ${_S}/cuda/gpu_acdi.cu
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
@@ -284,7 +284,7 @@ if(NVCC)
              ${_S}/cuda/gpu_graph.cu ${_S}/cuda/gpu_ghost_fill.cu
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
              ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
-             ${_S}/cuda/gpu_snapshot.cu
+             ${_S}/cuda/gpu_snapshot.cu ${_S}/cuda/gpu_acdi.cu
              ${_GPU_POOL}
              ${_GPU_OPS}
     )
@@ -352,6 +352,14 @@ if(NVCC)
     add_nvcc_gate(TARGET t40 BIN t40_nscbc COMMENT "D9 NSCBC outflow/inflow BC (acoustic reflection < 1%)"
         EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
         SRCS ${_T}/test_t40_nscbc.cu ${_GPU_NS}
+    )
+    add_nvcc_gate(TARGET t43 BIN t43_acdi_gpu COMMENT "G1 GPU ACDI phi transport (conservation test)"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t43_acdi_gpu.cu ${_GPU_NS}
+    )
+    add_nvcc_gate(TARGET t44 BIN t44_adjoint_gpu COMMENT "G2 GPU adjoint convective RHS (dot-product test)"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t44_adjoint_gpu.cu ${_S}/cuda/gpu_adjoint_rhs.cu ${_GPU_NS}
     )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS

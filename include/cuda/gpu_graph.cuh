@@ -38,6 +38,7 @@
 #include "gpu_pool.hpp"
 #include "gpu_amr.cuh"
 #include "gpu_snapshot.hpp"
+#include "cuda/gpu_acdi.cuh"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -58,6 +59,12 @@ struct GpuGraphSolver : IGpuSolver {
     GpuCfList        cf_list;      // P14.4: Berger-Colella CF correction
     GpuSgsList       sgs_list;     // P-SGS-GPU: Smagorinsky operator split
     GpuMpiHaloList   mpi_halo_;    // P-MPI-GPU: D2H→MPI→H2D per RK3 stage
+
+    // G1: GPU ACDI phi transport
+    GpuAcdiList  acdi_list_;
+    GpuPhiPool   phi_pool_;
+    bool         acdi_enabled_ = false;
+    double       acdi_ceps_    = 0.0;
 
     // SGS parameters — set via set_gpu_sgs() before build().
     bool   sgs_enabled = false;
@@ -104,6 +111,11 @@ struct GpuGraphSolver : IGpuSolver {
     // Must be called before build() to take effect on the current topology.
     void set_gpu_sgs(double Cs, double Pr_t) override {
         sgs_Cs_ = Cs; sgs_Pr_t_ = Pr_t; sgs_enabled = true;
+    }
+
+    void set_gpu_acdi(double ceps) override {
+        acdi_enabled_ = true;
+        acdi_ceps_    = ceps;
     }
 
     // Propagate Ducros sensor config to rhs_list for subsequent build() calls.

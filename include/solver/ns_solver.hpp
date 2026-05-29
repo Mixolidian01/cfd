@@ -64,6 +64,9 @@ struct IGpuSolver : TimeIntegrator {
     // P-SGS-GPU: enable Smagorinsky SGS for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_gpu_sgs(double /*Cs*/, double /*Pr_t*/) {}
+    // G1: enable GPU ACDI phi transport for subsequent build() calls.
+    // Default no-op — only GpuGraphSolver overrides this.
+    virtual void   set_gpu_acdi(double /*ceps*/) {}
     // R9-D fix: propagate Ducros sensor config to GPU path for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_ducros(double /*p_thr*/, double /*blend_inv*/) {}

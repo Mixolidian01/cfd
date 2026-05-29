@@ -16,6 +16,7 @@
 // reliability issue observed with cudaStreamCaptureModeGlobal.
 
 #include "cuda/gpu_graph.cuh"
+#include "cuda/gpu_acdi.cuh"
 #include "cuda/gpu_constants.cuh"
 #include "cuda/gpu_check.cuh"
 #include "cuda/gpu_meta_buffer.cuh"
@@ -171,6 +172,19 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
     if (sgs_enabled) sgs_list.build(tree, pool, sgs_Cs_, sgs_Pr_t_);
     if (mpi_part_) mpi_halo_.build(tree, pool, mpi_part_);
 
+    // G1: ACDI phi transport — alloc/upload phi pool, rebuild acdi_list_
+    if (acdi_enabled_) {
+        for (int idx : tree.leaf_indices()) {
+            const CellBlock* blk = tree.nodes[idx].block.get();
+            if (!blk) continue;
+            if (!phi_pool_.d_phi(blk)) {
+                phi_pool_.alloc(blk);
+                phi_pool_.upload(blk);
+            }
+        }
+        acdi_list_.build(tree, pool, phi_pool_, acdi_ceps_, bc_type);
+    }
+
     // Only process local leaves (those with an allocated block; remote MPI leaves have null).
     std::vector<int> local;
     for (int idx : tree.leaf_indices())
@@ -310,6 +324,7 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
     const double* d_dt = cfl_list.d_dt;
     const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
 
+    if (acdi_enabled_) acdi_list_.save_phin(s);
     k_save_qn<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
 
     auto stage = [&](bool s1, double a, double b) {
@@ -320,6 +335,13 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
         if (s1) k_rk3s1 <<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
         else    k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, a, b);
         k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
+        if (acdi_enabled_) {
+            acdi_list_.zero_rhs(s);
+            acdi_list_.fill_ghosts(s);
+            acdi_list_.rhs_advect(s);
+            acdi_list_.rhs_compress(s);
+            acdi_list_.update_phi(d_dt, a, s1, s);
+        }
     };
     stage(true,  0.0,     0.0   );
     stage(false, 0.75,    0.25  );
@@ -394,6 +416,8 @@ double GpuGraphSolver::_advance_amr(double cfl) {
     // Zero flux registers once before stage 1 (accumulate across all 3 stages).
     cf_list.zero_regs(stream);
 
+    if (acdi_enabled_) acdi_list_.save_phin(stream);
+
     auto stage = [&](bool save_qn, double cf_wt, bool s1, double a, double b) {
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
         if (save_qn) k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
@@ -405,6 +429,13 @@ double GpuGraphSolver::_advance_amr(double cfl) {
         if (s1) k_rk3s1 <<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt);
         else    k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, a, b);
         k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+        if (acdi_enabled_) {
+            acdi_list_.zero_rhs(stream);
+            acdi_list_.fill_ghosts(stream);
+            acdi_list_.rhs_advect(stream);
+            acdi_list_.rhs_compress(stream);
+            acdi_list_.update_phi(d_dt, a, s1, stream);
+        }
     };
     stage(true,  1.0/6.0, true,  0.0,     0.0   );   // Stage 1 — weight 1/6
     stage(false, 1.0/6.0, false, 0.75,    0.25  );   // Stage 2 — weight 1/6
@@ -423,6 +454,13 @@ double GpuGraphSolver::_advance_amr(double cfl) {
     _do_launch_snapshot(snap_buf_, n_leaves, stream);
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    // G1: copy device phi back to CPU CellBlocks.
+    if (acdi_enabled_) {
+        for (auto& [blk, _] : download_pairs)
+            if (blk && phi_pool_.d_phi(blk)) phi_pool_.download(blk);
+    }
+
     return dt;
 }
 
@@ -461,8 +499,9 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
         // Option A/C: GPU slice + metric kernels (before sync so they're covered).
         _do_launch_snapshot(snap_buf_, n_leaves, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
-        // Capture graphs only for single-rank runs (MPI cannot be captured).
-        if (!mpi_halo_.active()) _capture_graphs();
+        // Capture graphs only for single-rank runs without ACDI (ACDI uses
+        // dynamic flags that cannot be captured in a static graph).
+        if (!mpi_halo_.active() && !acdi_enabled_) _capture_graphs();
     } else {
         // Graph replay: zero RHS on stream before each sub-graph launch
         // (memset is a plain stream op, never a captured graph node)
@@ -479,6 +518,14 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
         // Option A/C: GPU slice + metric kernels (before sync so they're covered).
         _do_launch_snapshot(snap_buf_, n_leaves, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+
+    // G1: copy device phi back to CPU CellBlocks so host tests can read phi.
+    if (acdi_enabled_) {
+        for (const auto& li : tree.leaf_indices()) {
+            CellBlock* blk = tree.nodes[li].block.get();
+            if (blk && phi_pool_.d_phi(blk)) phi_pool_.download(blk);
+        }
     }
 
     return dt;
