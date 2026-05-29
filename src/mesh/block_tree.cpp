@@ -679,10 +679,15 @@ static inline int fd_side(int d) { return d & 1;  }  // 0→minus, 1→plus
 // Periodic wrap lookup: find the source block at the wrapped Morton position.
 // Returns nullptr when the domain is a single root block (level==0).
 struct PeriodicSrc { const CellBlock* blk; int level_rel; };
+// Key encoding matches rebuild_neighbours(): bits[63:35]=root_id, [34:30]=level, [29:0]=morton.
+static uint64_t lm_key(int root_id, int level, uint32_t morton) noexcept {
+    return ((uint64_t)root_id << 35) | ((uint64_t)level << 30) | (uint64_t)morton;
+}
+
 static PeriodicSrc periodic_src_lookup(
     const std::vector<BlockNode>& nodes,
     const std::unordered_map<uint64_t,int>& lm_map,
-    const BlockNode& nd, int d) noexcept
+    const BlockNode& nd, int root_id, int d) noexcept
 {
     static constexpr int face_axis[NFACES]  = {0,0,1,1,2,2};
     static constexpr int face_delta[NFACES] = {-1,+1,-1,+1,-1,+1};
@@ -693,13 +698,13 @@ static PeriodicSrc periodic_src_lookup(
     const uint32_t max_coord = (1u << lev) - 1u;
     uint32_t& mc = (axis == 0) ? mx : (axis == 1) ? my : mz;
     mc = (delta > 0) ? 0 : max_coord;
-    const uint64_t key = ((uint64_t)lev << 32) | morton_encode(mx, my, mz);
+    const uint64_t key = lm_key(root_id, lev, morton_encode(mx, my, mz));
     auto it = lm_map.find(key);
     if (it != lm_map.end() && nodes[it->second].has_block())
         return {nodes[it->second].block.get(), 0};
     if (lev > 1) {
         const uint32_t pc = morton_encode(mx, my, mz) >> 3;
-        const uint64_t pk = ((uint64_t)(lev-1) << 32) | pc;
+        const uint64_t pk = lm_key(root_id, lev - 1, pc);
         auto it2 = lm_map.find(pk);
         if (it2 != lm_map.end() && nodes[it2->second].has_block())
             return {nodes[it2->second].block.get(), -1};
@@ -873,19 +878,21 @@ static void fill_coarse_ghost_zero_grad(CellBlock& coarse_blk, int d) noexcept
 void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
     const auto& leaves = leaf_indices();
 
-    // Build (level, morton) → leaf index map for periodic boundary lookup.
-    // When rebuild_neighbours() finds no same-level neighbor (domain edge),
-    // it leaves neighbours[d]=-1.  On a periodic multi-block domain the correct
-    // source is the leaf at the wrapped Morton code, not `this` block.
+    // Build (root_id, level, morton) → leaf index map for periodic boundary lookup.
+    auto get_root_id = [&](int li) -> int {
+        int cur = li;
+        while (nodes[cur].level > 0) cur = nodes[cur].parent;
+        return cur;
+    };
     std::unordered_map<uint64_t, int> lm_map;
     lm_map.reserve(leaves.size() * 2);
     for (int li : leaves) {
         auto& nd_tmp = nodes[li];
-        lm_map[((uint64_t)nd_tmp.level << 32) | nd_tmp.morton] = li;
+        lm_map[lm_key(get_root_id(li), nd_tmp.level, nd_tmp.morton)] = li;
     }
 
-    auto periodic_src = [&](const BlockNode& nd, int d) -> PeriodicSrc {
-        return periodic_src_lookup(nodes, lm_map, nd, d);
+    auto periodic_src = [&](const BlockNode& nd, int li, int d) -> PeriodicSrc {
+        return periodic_src_lookup(nodes, lm_map, nd, get_root_id(li), d);
     };
 
     for (int li : leaves) {
@@ -941,7 +948,7 @@ void BlockTree::fill_ghosts_periodic(bool cf_zero_grad) {
 
             // Same level neighbour, or domain boundary → resolve periodic source.
             // When ni==-1 (domain boundary), look up the periodically-wrapped leaf.
-            PeriodicSrc psrc = (ni < 0) ? periodic_src(nd, d) : PeriodicSrc{nullptr, 0};
+            PeriodicSrc psrc = (ni < 0) ? periodic_src(nd, li, d) : PeriodicSrc{nullptr, 0};
             if (ni < 0 && psrc.blk && psrc.level_rel < 0) {
                 // Periodic wrap reached a coarser block: use CF ghost fill, not 1:1 copy.
                 int oct = child_octant_of(nodes, li);
@@ -1055,17 +1062,22 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
     for (int d = 0; d < NFACES; ++d)
         if (bc_is_periodic(bcs[d])) { any_periodic = true; break; }
 
+    auto get_root_id_pf = [&](int li) -> int {
+        int cur = li;
+        while (nodes[cur].level > 0) cur = nodes[cur].parent;
+        return cur;
+    };
     std::unordered_map<uint64_t, int> lm_map;
     if (any_periodic) {
         lm_map.reserve(leaves.size() * 2);
         for (int li : leaves) {
             const auto& nd_tmp = nodes[li];
-            lm_map[((uint64_t)nd_tmp.level << 32) | nd_tmp.morton] = li;
+            lm_map[lm_key(get_root_id_pf(li), nd_tmp.level, nd_tmp.morton)] = li;
         }
     }
 
-    auto periodic_src = [&](const BlockNode& nd, int d) -> PeriodicSrc {
-        return periodic_src_lookup(nodes, lm_map, nd, d);
+    auto periodic_src = [&](const BlockNode& nd, int li, int d) -> PeriodicSrc {
+        return periodic_src_lookup(nodes, lm_map, nd, get_root_id_pf(li), d);
     };
 
     struct FaceSpec { int axis, side; };
@@ -1151,7 +1163,7 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
 
             // Domain boundary: dispatch on face BC type
             if (bc_is_periodic(bcs[d])) {
-                PeriodicSrc psrc = periodic_src(nd, d);
+                PeriodicSrc psrc = periodic_src(nd, li, d);
                 if (psrc.blk && psrc.level_rel < 0) {
                     fill_cf_ghosts(blk, *psrc.blk, child_octant_of(nodes, li), axis, side);
                     continue;
