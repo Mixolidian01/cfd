@@ -105,30 +105,33 @@ static void accumulate_face(const Prim* pc, const double* duc,
 // =============================================================================
 // convective_rhs_impl — the face-centred hybrid loop (P2.2/P3.2/P15.1)
 // Non-static: called from compute_rhs / compute_rhs_typed in operators.cpp.
+// rect: per-axis inverse cell sizes ihx/ihy/ihz support non-cubic domains.
 // =============================================================================
 void convective_rhs_impl(const Prim* pc, const double* duc,
-                          CellBlock& rhs, double h,
+                          CellBlock& rhs, double hx, double hy, double hz,
                           uint8_t has_nbr) noexcept
 {
     PROFILE_SCOPE("convective_rhs_impl");
-    const double ih = 1.0 / h;
+    const double ihx = 1.0 / hx;
+    const double ihy = 1.0 / hy;
+    const double ihz = 1.0 / hz;
 
     // X: n=i (normal), a=j, b=k
     for (int k = ilo(); k <= ihi(); ++k) {
         for (int j = ilo(); j <= ihi(); ++j)
         for (int i = ilo()-1; i <= ihi(); ++i)
-            accumulate_face<Axis::X>(pc, duc, rhs, ih, i, j, k, has_nbr);
+            accumulate_face<Axis::X>(pc, duc, rhs, ihx, i, j, k, has_nbr);
     }
     // Y: n=j (normal), a=i (innermost for stride-1), b=k
     for (int k = ilo(); k <= ihi(); ++k) {
         for (int j = ilo()-1; j <= ihi(); ++j)
         for (int i = ilo(); i <= ihi(); ++i)
-            accumulate_face<Axis::Y>(pc, duc, rhs, ih, j, i, k, has_nbr);
+            accumulate_face<Axis::Y>(pc, duc, rhs, ihy, j, i, k, has_nbr);
     }
     // Z: n=k (normal), a=i (innermost for stride-1), b=j
     for (int k = ilo()-1; k <= ihi(); ++k) {
         for (int j = ilo(); j <= ihi(); ++j)
         for (int i = ilo(); i <= ihi(); ++i)
-            accumulate_face<Axis::Z>(pc, duc, rhs, ih, k, i, j, has_nbr);
+            accumulate_face<Axis::Z>(pc, duc, rhs, ihz, k, i, j, has_nbr);
     }
 }

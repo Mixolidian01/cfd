@@ -640,7 +640,7 @@ add_custom_target(ba
 )
 
 add_executable(test_rect_domain tests/cpu/test_rect_domain.cpp)
-target_link_libraries(test_rect_domain PRIVATE block m)
+target_link_libraries(test_rect_domain PRIVATE operators m)
 add_test(NAME t_rect COMMAND test_rect_domain)
 add_custom_target(t_rect
     DEPENDS test_rect_domain

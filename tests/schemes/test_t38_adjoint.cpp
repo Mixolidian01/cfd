@@ -20,7 +20,7 @@
 // convective_rhs_impl is not in any header; forward-declare it here.
 // Defined in src/schemes/convective_rhs.cpp (external linkage).
 void convective_rhs_impl(const Prim* pc, const double* duc,
-                          CellBlock& rhs, double h,
+                          CellBlock& rhs, double hx, double hy, double hz,
                           uint8_t has_nbr) noexcept;
 
 static int nfail = 0;

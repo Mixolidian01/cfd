@@ -161,7 +161,7 @@ static void fill_mu_cache(const Prim* pc, double* mu_arr) noexcept {
 // they can be resolved at link time.
 // =============================================================================
 void convective_rhs_impl(const Prim* pc, const double* duc,
-                          CellBlock& rhs, double h,
+                          CellBlock& rhs, double hx, double hy, double hz,
                           uint8_t has_nbr = 0) noexcept;
 void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
                       CellBlock& rhs, double h) noexcept;
@@ -252,24 +252,26 @@ static void accumulate_face_typed(const Prim* pc, const double* duc,
 
 template<template<Axis> class Flux, template<Axis> class Recon>
 static void convective_rhs_impl_typed(const Prim* pc, const double* duc,
-                                       CellBlock& rhs, double h,
+                                       CellBlock& rhs, double hx, double hy, double hz,
                                        uint8_t has_nbr = 0) noexcept {
-    const double ih = 1.0 / h;
+    const double ihx = 1.0 / hx;
+    const double ihy = 1.0 / hy;
+    const double ihz = 1.0 / hz;
 
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo()-1; i <= ihi(); ++i)
-        accumulate_face_typed<Axis::X,Flux,Recon>(pc, duc, rhs, ih, i, j, k, has_nbr);
+        accumulate_face_typed<Axis::X,Flux,Recon>(pc, duc, rhs, ihx, i, j, k, has_nbr);
 
     for (int k = ilo(); k <= ihi(); ++k)
     for (int j = ilo()-1; j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i)
-        accumulate_face_typed<Axis::Y,Flux,Recon>(pc, duc, rhs, ih, j, i, k, has_nbr);
+        accumulate_face_typed<Axis::Y,Flux,Recon>(pc, duc, rhs, ihy, j, i, k, has_nbr);
 
     for (int k = ilo()-1; k <= ihi(); ++k)
     for (int j = ilo(); j <= ihi(); ++j)
     for (int i = ilo(); i <= ihi(); ++i)
-        accumulate_face_typed<Axis::Z,Flux,Recon>(pc, duc, rhs, ih, k, i, j, has_nbr);
+        accumulate_face_typed<Axis::Z,Flux,Recon>(pc, duc, rhs, ihz, k, i, j, has_nbr);
 }
 
 // =============================================================================
@@ -281,7 +283,7 @@ void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
     static thread_local std::array<double, NCELL> duc;
     fill_prim_cache(blk, pc.data());
     fill_ducros_cache(pc.data(), duc.data(), blk.h, DucrosConfig{});
-    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h);
+    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, blk.hy, blk.hz);
 }
 
 void viscous_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
@@ -315,7 +317,7 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
         for (int i = ilo(); i <= ihi(); ++i)
             rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
 
-    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, has_nbr);
+    convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, blk.hy, blk.hz, has_nbr);
     viscous_rhs_impl   (pc.data(), mu_arr.data(),               rhs_blk, blk.h);
 }
 
@@ -346,7 +348,7 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
         for (int i = ilo(); i <= ihi(); ++i)
             rhs_blk.Q[v][cell_idx(i,j,k)] = 0.0;
 
-    convective_rhs_impl_typed<Flux,Recon>(pc.data(), duc.data(), rhs_blk, blk.h, has_nbr);
+    convective_rhs_impl_typed<Flux,Recon>(pc.data(), duc.data(), rhs_blk, blk.h, blk.hy, blk.hz, has_nbr);
     viscous_rhs_impl          (pc.data(), mu_arr.data(),          rhs_blk, blk.h);
 }
 
@@ -391,7 +393,10 @@ template void compute_rhs_typed<HllcFlux, Weno5Recon, StiffenedGasEOS>(
 // accumulate_face<DIR>, guaranteeing exact Berger-Colella cancellation.
 template <Axis DIR>
 static void undo_cf_one_face(const CellBlock& blk, CellBlock& rhs, int delta) noexcept {
-    const double ih   = 1.0 / blk.h;
+    // rect: select the correct axis cell size for the face direction
+    const double ih = (DIR == Axis::X) ? 1.0 / blk.h
+                    : (DIR == Axis::Y) ? 1.0 / blk.hy
+                    :                    1.0 / blk.hz;
     const double sign = (double)delta;  // +1 (right face) or -1 (left face)
     const int    bound = (delta > 0) ? ihi() : ilo();
     for (int b = ilo(); b <= ihi(); ++b)

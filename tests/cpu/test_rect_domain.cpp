@@ -1,5 +1,6 @@
 #include "mesh/block_tree.hpp"
 #include "mesh/cell_block.hpp"
+#include "schemes/operators.hpp"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -53,6 +54,42 @@ int main() {
             assert(nearly_eq(child.block->hy, (1.0 / NB) * 0.5));
             assert(nearly_eq(child.block->hz, (0.5 / NB) * 0.5));
         }
+    }
+
+    // T5: convective RHS of uniform state is zero on a 2×1×0.5 rectangular domain
+    {
+        // Cell sizes for a single-block (NB=8) covering a 2×1×0.5 domain
+        const double hx = 2.0 / NB;
+        const double hy = 1.0 / NB;
+        const double hz = 0.5 / NB;
+        CellBlock blk(0.0, 0.0, 0.0, hx, hy, hz);
+        // Uniform state: rho=1, u=v=w=0, p=1  (ideal gas, E = p/(γ-1))
+        const double rho0 = 1.0;
+        const double p0   = 1.0;
+        const double E0   = p0 / (GAMMA - 1.0);
+        // Fill ALL cells including ghost layers with the uniform state
+        for (int k = 0; k < NB2; ++k)
+        for (int j = 0; j < NB2; ++j)
+        for (int i = 0; i < NB2; ++i) {
+            int idx = cell_idx(i, j, k);
+            blk.Q[0][idx] = rho0;
+            blk.Q[1][idx] = 0.0;
+            blk.Q[2][idx] = 0.0;
+            blk.Q[3][idx] = 0.0;
+            blk.Q[4][idx] = E0;
+        }
+        CellBlock rhs(0.0, 0.0, 0.0, hx, hy, hz);
+        compute_rhs(blk, rhs);
+        // For a uniform state all fluxes cancel; RHS must be exactly zero
+        double max_rhs = 0.0;
+        for (int k = ilo(); k <= ihi(); ++k)
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i) {
+            int idx = cell_idx(i, j, k);
+            for (int v = 0; v < NVAR; ++v)
+                max_rhs = std::max(max_rhs, std::fabs(rhs.Q[v][idx]));
+        }
+        assert(max_rhs < 1e-12);
     }
 
     std::puts("PASS test_rect_domain");
