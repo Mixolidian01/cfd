@@ -220,6 +220,11 @@ struct NSSolver {
     void init(double domain_L,
               const std::function<Prim(double,double,double)>& ic,
               const std::function<double(double,double,double)>* phi_ic = nullptr);
+
+    // Rectangular domain: initialise on [0,Lx] × [0,Ly] × [0,Lz].
+    void init(double Lx, double Ly, double Lz,
+              const std::function<Prim(double,double,double)>& ic,
+              const std::function<double(double,double,double)>* phi_ic = nullptr);
     void run();
     double advance();
     SolverResult<double> advance_result() noexcept;

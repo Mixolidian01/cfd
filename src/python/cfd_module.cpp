@@ -198,6 +198,17 @@ PYBIND11_MODULE(cfd, m) {
             "domain_L"_a, "ic_fn"_a,
             "Initialise solver on [0,domain_L]^3; ic_fn(x,y,z)→(rho,u,v,w,p)")
 
+        .def("init_rect",
+            [](NSSolver& s, double Lx, double Ly, double Lz,
+               std::function<py::tuple(double,double,double)> ic_fn) {
+                s.init(Lx, Ly, Lz, [ic_fn](double x, double y, double z) -> Prim {
+                    return prim_from_tuple(ic_fn(x, y, z));
+                });
+            },
+            py::arg("Lx"), py::arg("Ly"), py::arg("Lz"), py::arg("ic_fn"),
+            "Initialise solver on [0,Lx] x [0,Ly] x [0,Lz].\n"
+            "ic_fn(x,y,z) → (rho,u,v,w,p).")
+
         .def("advance", &NSSolver::advance,
              "Advance one SSP-RK3 step; return dt")
         .def("run",     &NSSolver::run,

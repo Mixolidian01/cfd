@@ -623,7 +623,7 @@ add_custom_target(sim
 # =============================================================================
 
 add_custom_target(b
-    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill test_cell_block_accessors test_ensemble test_rect_domain
+    DEPENDS simulate test_linalg test_block test_operators test_ns test_amr6 test_step7 test_config test_imex test_sat test_ghost_fill test_cell_block_accessors test_ensemble test_rect_domain test_t42_rect_ns
     COMMENT "Build all targets (incremental)"
 )
 
@@ -633,7 +633,7 @@ add_custom_target(ba
             test_bn_amr test_bn_solver test_multiphase
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
             test_ensemble test_scheme_select test_t38_adjoint test_t42_adjoint_rk3
-            test_rect_domain
+            test_rect_domain test_t42_rect_ns
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
@@ -646,6 +646,16 @@ add_custom_target(t_rect
     DEPENDS test_rect_domain
     COMMAND $<TARGET_FILE:test_rect_domain>
     COMMENT "rect: CellBlock(h,hy,hz) + BlockTree init(Lx,Ly,Lz)"
+    USES_TERMINAL
+)
+
+add_executable(test_t42_rect_ns tests/cpu/test_t42_rect_ns.cpp)
+target_link_libraries(test_t42_rect_ns PRIVATE ns_solver m)
+add_test(NAME t42_rect_ns COMMAND test_t42_rect_ns)
+add_custom_target(t42_rect
+    DEPENDS test_t42_rect_ns
+    COMMAND $<TARGET_FILE:test_t42_rect_ns>
+    COMMENT "rect gate: 2x1x0.5 domain — NSSolver::init(Lx,Ly,Lz), IC coords, mass conservation"
     USES_TERMINAL
 )
 

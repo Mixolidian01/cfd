@@ -114,9 +114,9 @@ void SolverConfig::validate() const {
 }
 
 // =============================================================================
-// NSSolver::init
+// NSSolver::init (rectangular domain — primary implementation)
 // =============================================================================
-void NSSolver::init(double domain_L,
+void NSSolver::init(double Lx, double Ly, double Lz,
                     const std::function<Prim(double,double,double)>& ic,
                     const std::function<double(double,double,double)>* phi_ic) {
     cfg.validate();
@@ -130,7 +130,7 @@ void NSSolver::init(double domain_L,
     } else {
         tree.set_periodic(bc_is_periodic(cfg.bc.variant));
     }
-    tree.init(domain_L);
+    tree.init(Lx, Ly, Lz);
     t = 0.0; step = 0;
     history.clear();
     ke_prev_ = -1.0;
@@ -140,8 +140,8 @@ void NSSolver::init(double domain_L,
     for (int j = 0; j < NB2; ++j)
     for (int i = 0; i < NB2; ++i) {
         double x = blk.ox + (i - NG + 0.5) * blk.h;
-        double y = blk.oy + (j - NG + 0.5) * blk.h;
-        double z = blk.oz + (k - NG + 0.5) * blk.h;
+        double y = blk.oy + (j - NG + 0.5) * blk.hy;   // per-axis cell size
+        double z = blk.oz + (k - NG + 0.5) * blk.hz;   // per-axis cell size
         Prim p = ic(x, y, z);
         int idx = cell_idx(i,j,k);
         // P14.1c: use eos_prim_to_cons so gamma_m/p_inf_m from IC are respected
@@ -160,6 +160,15 @@ void NSSolver::init(double domain_L,
     // P8.1: GPU pool wiring (alloc+upload of IC, tree callbacks) is performed
     // by the application TU after init() returns — see gpu_pool.hpp.
     // NSSolver only stores the gpu_pool_ pointer; direct CUDA calls are in .cu TUs.
+}
+
+// =============================================================================
+// NSSolver::init (cubic domain — delegates to the rectangular overload)
+// =============================================================================
+void NSSolver::init(double domain_L,
+                    const std::function<Prim(double,double,double)>& ic,
+                    const std::function<double(double,double,double)>* phi_ic) {
+    init(domain_L, domain_L, domain_L, ic, phi_ic);
 }
 
 // =============================================================================
