@@ -57,11 +57,7 @@ __host__ __device__ inline double d_log_mean_da(double a, double b) noexcept {
         // F = log(xi)/(2*f);   xi=a/b so log(xi)=log(a)-log(b)
         // dF/da via quotient rule: F = log(xi)/(2f)
         //   dF/da = (1/a)/(2f) - log(xi)*df_da/(2f^2)
-#ifdef __CUDA_ARCH__
-        const double lxi = __logf(xi);
-#else
-        const double lxi = std::log(xi);
-#endif
+        const double lxi = log(xi);
         F     = lxi / (2.0 * f);
         dF_da = (1.0 / (a * 2.0 * f)) - lxi * df_da / (2.0 * f * f);
     }
@@ -324,12 +320,15 @@ void adj_chandrashekar_ec(const Prim& L, const Prim& R,
 // Adjoint of dissipation (Q_R - Q_L) term with frozen lam_frozen:
 //   lqL[v] = +0.5*lam*l_F[v],  lqR[v] = -0.5*lam*l_F[v]  → acc_adj_prim_to_cons
 //
-// Adjoint of lam = max(|unL|+cL, |unR|+cR):
+// Adjoint of lam = max(|unL|+cL, |unR|+cR) (only when SKIP_LAM_ADJ=false):
 //   d_lam = -0.5 * Σ l_F[v]*(Q_R[v]-Q_L[v])
 //   ∂lamX/∂rhoX = -cX/(2*rhoX),  ∂lamX/∂unX = sign(unX),  ∂lamX/∂pX = cX/(2*pX)
-//   lamL == lamR (degenerate, e.g. uniform base): 50/50 subgradient split,
-//   consistent with centered-FD dot-product test.
-template<Axis DIR>
+//   lamL == lamR (degenerate, e.g. uniform base): 50/50 subgradient split.
+//
+// SKIP_LAM_ADJ=true: treat lam as a constant (frozen from base state).
+// Use this when the forward operator also uses frozen lam to guarantee
+// <L_froz·δQ,λ> = <δQ, L*_froz·λ> without non-smooth max() kinks.
+template<Axis DIR, bool SKIP_LAM_ADJ = false>
 __host__ __device__ inline
 void adjoint_hllces_flux(const Prim& L, const Prim& R,
                          const double l_F[NVAR],
@@ -353,38 +352,38 @@ void adjoint_hllces_flux(const Prim& L, const Prim& R,
     acc_adj_prim_to_cons(L, lqL, l_pL);
     acc_adj_prim_to_cons(R, lqR, l_pR);
 
-    // ── Lam adjoint: ∂lam/∂prim ───────────────────────────────────────────────
-    // d_lam = -0.5 * Σ_v l_F[v] * (Q_R[v] - Q_L[v])  (in cons space)
-    const double gm1 = L.gamma_m - 1.0;
-    const double keL = 0.5*(L.u*L.u + L.v*L.v + L.w*L.w);
-    const double keR = 0.5*(R.u*R.u + R.v*R.v + R.w*R.w);
-    const double EL  = L.p/gm1 + L.rho*keL;
-    const double ER  = R.p/gm1 + R.rho*keR;
-    double d_lam = 0.0;
-    d_lam -= 0.5 * l_F[0] * (R.rho         - L.rho);
-    d_lam -= 0.5 * l_F[1] * (R.rho*R.u     - L.rho*L.u);
-    d_lam -= 0.5 * l_F[2] * (R.rho*R.v     - L.rho*L.v);
-    d_lam -= 0.5 * l_F[3] * (R.rho*R.w     - L.rho*L.w);
-    d_lam -= 0.5 * l_F[4] * (ER            - EL);
+    // ── Lam adjoint: ∂lam/∂prim (skipped when SKIP_LAM_ADJ=true) ────────────
+    if constexpr (!SKIP_LAM_ADJ) {
+        // d_lam = -0.5 * Σ_v l_F[v] * (Q_R[v] - Q_L[v])  (in cons space)
+        const double gm1 = L.gamma_m - 1.0;
+        const double keL = 0.5*(L.u*L.u + L.v*L.v + L.w*L.w);
+        const double keR = 0.5*(R.u*R.u + R.v*R.v + R.w*R.w);
+        const double EL  = L.p/gm1 + L.rho*keL;
+        const double ER  = R.p/gm1 + R.rho*keR;
+        double d_lam = 0.0;
+        d_lam -= 0.5 * l_F[0] * (R.rho         - L.rho);
+        d_lam -= 0.5 * l_F[1] * (R.rho*R.u     - L.rho*L.u);
+        d_lam -= 0.5 * l_F[2] * (R.rho*R.v     - L.rho*L.v);
+        d_lam -= 0.5 * l_F[3] * (R.rho*R.w     - L.rho*L.w);
+        d_lam -= 0.5 * l_F[4] * (ER            - EL);
 
-    const double unL_ = (ax==0)?L.u:(ax==1)?L.v:L.w;
-    const double unR_ = (ax==0)?R.u:(ax==1)?R.v:R.w;
-    const double lamL_ = std::abs(unL_) + L.c;
-    const double lamR_ = std::abs(unR_) + R.c;
+        const double unL_ = (ax==0)?L.u:(ax==1)?L.v:L.w;
+        const double unR_ = (ax==0)?R.u:(ax==1)?R.v:R.w;
+        const double lamL_ = std::abs(unL_) + L.c;
+        const double lamR_ = std::abs(unR_) + R.c;
 
-    // Weight for L: 1 if L strictly dominates, 0 if R strictly dominates, 0.5 if equal.
-    // Equal case (lamL==lamR) is the correct 50/50 subgradient for centered-FD consistency.
-    const double wL = (lamL_ > lamR_) ? 1.0 : (lamR_ > lamL_) ? 0.0 : 0.5;
-    const double wR = 1.0 - wL;
+        const double wL = (lamL_ > lamR_) ? 1.0 : (lamR_ > lamL_) ? 0.0 : 0.5;
+        const double wR = 1.0 - wL;
 
-    if (wL > 0.0) {
-        l_pL[n_prim] += wL * d_lam * (unL_ >= 0.0 ? 1.0 : -1.0);  // ∂|unL|/∂unL
-        l_pL[0]      += wL * d_lam * (-L.c / (2.0 * L.rho));       // ∂cL/∂rhoL
-        l_pL[4]      += wL * d_lam * ( L.c / (2.0 * L.p));         // ∂cL/∂pL
-    }
-    if (wR > 0.0) {
-        l_pR[n_prim] += wR * d_lam * (unR_ >= 0.0 ? 1.0 : -1.0);  // ∂|unR|/∂unR
-        l_pR[0]      += wR * d_lam * (-R.c / (2.0 * R.rho));       // ∂cR/∂rhoR
-        l_pR[4]      += wR * d_lam * ( R.c / (2.0 * R.p));         // ∂cR/∂pR
+        if (wL > 0.0) {
+            l_pL[n_prim] += wL * d_lam * (unL_ >= 0.0 ? 1.0 : -1.0);
+            l_pL[0]      += wL * d_lam * (-L.c / (2.0 * L.rho));
+            l_pL[4]      += wL * d_lam * ( L.c / (2.0 * L.p));
+        }
+        if (wR > 0.0) {
+            l_pR[n_prim] += wR * d_lam * (unR_ >= 0.0 ? 1.0 : -1.0);
+            l_pR[0]      += wR * d_lam * (-R.c / (2.0 * R.rho));
+            l_pR[4]      += wR * d_lam * ( R.c / (2.0 * R.p));
+        }
     }
 }

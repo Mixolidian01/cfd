@@ -19,10 +19,6 @@ __host__ __device__ inline double physics_log_mean(double a, double b) noexcept 
     const double u2 = f * f;
     const double F  = (u2 < 1.0e-4)
                     ? 1.0 + u2 * (1.0/3.0 + u2 * (1.0/5.0 + u2 / 7.0))
-#ifdef __CUDA_ARCH__
-                    : __logf(xi) / (2.0 * f);
-#else
-                    : std::log(xi) / (2.0 * f);
-#endif
+                    : log(xi) / (2.0 * f);
     return (a + b) / (2.0 * F);
 }
