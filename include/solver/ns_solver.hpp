@@ -64,6 +64,8 @@ struct IGpuSolver : TimeIntegrator {
     // P-SGS-GPU: enable Smagorinsky SGS for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_gpu_sgs(double /*Cs*/, double /*Pr_t*/) {}
+    // G3: enable GPU dynamic Smagorinsky (Germano+Lilly) for subsequent build() calls.
+    virtual void   set_gpu_dyn_sgs(double /*Pr_t*/) {}
     // G1: enable GPU ACDI phi transport for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_gpu_acdi(double /*ceps*/) {}

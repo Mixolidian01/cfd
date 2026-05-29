@@ -169,7 +169,8 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
     rhs_list.build(tree, pool);
     cfl_list.build(tree, pool);
     cf_list.build(tree, pool, rhs_list.d_rhs_pool, rhs_list.d_scratch_pool);
-    if (sgs_enabled) sgs_list.build(tree, pool, sgs_Cs_, sgs_Pr_t_);
+    if (sgs_enabled)     sgs_list.build(tree, pool, sgs_Cs_, sgs_Pr_t_);
+    if (dyn_sgs_enabled_) dyn_sgs_list_.build(tree, pool, dyn_sgs_Pr_t_);
     if (mpi_part_) mpi_halo_.build(tree, pool, mpi_part_);
 
     // G1: ACDI phi transport — alloc/upload phi pool, rebuild acdi_list_
@@ -444,10 +445,11 @@ double GpuGraphSolver::_advance_amr(double cfl) {
     // Apply Berger-Colella correction to coarse Q (once, after all 3 stages).
     cf_list.apply_correction(stream, dt);
 
-    // SGS operator-split: refresh ghosts with Q^{n+1} then apply Smagorinsky.
-    if (sgs_enabled) {
+    // SGS operator-split: refresh ghosts with Q^{n+1}, then apply SGS model.
+    if (sgs_enabled || dyn_sgs_enabled_) {
         ghost_list.exec(stream);
-        sgs_list.exec(cfl_list.d_dt, stream);
+        if (sgs_enabled)      sgs_list.exec(cfl_list.d_dt, stream);
+        if (dyn_sgs_enabled_) dyn_sgs_list_.exec(cfl_list.d_dt, stream);
     }
 
     // Option A/C: GPU slice + metric kernels (before final sync so they're covered).
@@ -492,28 +494,29 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
 
     if (use_explicit) {
         _run_rk3_explicit(stream);
-        if (sgs_enabled) {
+        if (sgs_enabled || dyn_sgs_enabled_) {
             ghost_list.exec(stream);
-            sgs_list.exec(cfl_list.d_dt, stream);
+            if (sgs_enabled)      sgs_list.exec(cfl_list.d_dt, stream);
+            if (dyn_sgs_enabled_) dyn_sgs_list_.exec(cfl_list.d_dt, stream);
         }
         // Option A/C: GPU slice + metric kernels (before sync so they're covered).
         _do_launch_snapshot(snap_buf_, n_leaves, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
-        // Capture graphs only for single-rank runs without ACDI (ACDI uses
-        // dynamic flags that cannot be captured in a static graph).
-        if (!mpi_halo_.active() && !acdi_enabled_) _capture_graphs();
+        // Capture graphs only for single-rank runs without ACDI or dynamic SGS
+        // (both use dynamic state that cannot be captured in a static graph).
+        if (!mpi_halo_.active() && !acdi_enabled_ && !dyn_sgs_enabled_) _capture_graphs();
     } else {
         // Graph replay: zero RHS on stream before each sub-graph launch
-        // (memset is a plain stream op, never a captured graph node)
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
         CUDA_CHECK(cudaGraphLaunch(graph_s1, stream));
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
         CUDA_CHECK(cudaGraphLaunch(graph_s2, stream));
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
         CUDA_CHECK(cudaGraphLaunch(graph_s3, stream));
-        if (sgs_enabled) {
+        if (sgs_enabled || dyn_sgs_enabled_) {
             ghost_list.exec(stream);
-            sgs_list.exec(cfl_list.d_dt, stream);
+            if (sgs_enabled)      sgs_list.exec(cfl_list.d_dt, stream);
+            if (dyn_sgs_enabled_) dyn_sgs_list_.exec(cfl_list.d_dt, stream);
         }
         // Option A/C: GPU slice + metric kernels (before sync so they're covered).
         _do_launch_snapshot(snap_buf_, n_leaves, stream);

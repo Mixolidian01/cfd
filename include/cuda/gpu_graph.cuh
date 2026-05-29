@@ -66,10 +66,15 @@ struct GpuGraphSolver : IGpuSolver {
     bool         acdi_enabled_ = false;
     double       acdi_ceps_    = 0.0;
 
-    // SGS parameters — set via set_gpu_sgs() before build().
+    // Static Smagorinsky SGS
     bool   sgs_enabled = false;
     double sgs_Cs_     = 0.16;
     double sgs_Pr_t_   = 0.9;
+
+    // G3: dynamic Smagorinsky (Germano + Lilly)
+    GpuDynSgsList dyn_sgs_list_;
+    bool          dyn_sgs_enabled_ = false;
+    double        dyn_sgs_Pr_t_    = 0.9;
 
     // Ducros sensor config — set via set_ducros() before build().
     double duc_p_thr_     = 0.1;
@@ -107,10 +112,12 @@ struct GpuGraphSolver : IGpuSolver {
     GpuGraphSolver& operator=(const GpuGraphSolver&) = delete;
     ~GpuGraphSolver();
 
-    // Enable Smagorinsky SGS for subsequent build() calls.
-    // Must be called before build() to take effect on the current topology.
     void set_gpu_sgs(double Cs, double Pr_t) override {
         sgs_Cs_ = Cs; sgs_Pr_t_ = Pr_t; sgs_enabled = true;
+    }
+
+    void set_gpu_dyn_sgs(double Pr_t) override {
+        dyn_sgs_Pr_t_ = Pr_t; dyn_sgs_enabled_ = true;
     }
 
     void set_gpu_acdi(double ceps) override {

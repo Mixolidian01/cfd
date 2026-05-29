@@ -361,6 +361,10 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}
         SRCS ${_T}/test_t44_adjoint_gpu.cu ${_S}/cuda/gpu_adjoint_rhs.cu ${_GPU_NS}
     )
+    add_nvcc_gate(TARGET t45 BIN t45_dyn_sgs_gpu COMMENT "G3 GPU dynamic Smagorinsky (Germano+Lilly)"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t45_dyn_sgs_gpu.cu ${_GPU_NS}
+    )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu
