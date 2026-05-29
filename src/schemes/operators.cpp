@@ -167,7 +167,8 @@ void viscous_rhs_impl(const Prim* pc, const double* mu_arr,
                       CellBlock& rhs, double hx, double hy, double hz) noexcept;
 void undo_cf_viscous_energy(const BlockTree& tree, int node_idx,
                              CellBlock& rhs) noexcept;
-void fill_ducros_cache(const Prim* pc, double* duc, double h,
+void fill_ducros_cache(const Prim* pc, double* duc,
+                       double hx, double hy, double hz,
                        const DucrosConfig& ducros) noexcept;
 
 // =============================================================================
@@ -282,7 +283,7 @@ void convective_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
     static thread_local std::array<Prim,   NCELL> pc;
     static thread_local std::array<double, NCELL> duc;
     fill_prim_cache(blk, pc.data());
-    fill_ducros_cache(pc.data(), duc.data(), blk.h, DucrosConfig{});
+    fill_ducros_cache(pc.data(), duc.data(), blk.h, blk.hy, blk.hz, DucrosConfig{});
     convective_rhs_impl(pc.data(), duc.data(), rhs_blk, blk.h, blk.hy, blk.hz);
 }
 
@@ -309,7 +310,7 @@ void compute_rhs(const CellBlock& blk, CellBlock& rhs_blk,
     static thread_local std::array<double, NCELL> duc;
     fill_prim_cache(blk, pc.data());
     fill_mu_cache(pc.data(), mu_arr.data());
-    fill_ducros_cache(pc.data(), duc.data(), blk.h, ducros);
+    fill_ducros_cache(pc.data(), duc.data(), blk.h, blk.hy, blk.hz, ducros);
 
     for (int v = 0; v < NVAR; ++v)
         for (int k = ilo(); k <= ihi(); ++k)
@@ -340,7 +341,7 @@ void compute_rhs_typed(const CellBlock& blk, CellBlock& rhs_blk,
     static thread_local std::array<double, NCELL> duc;
     fill_prim_cache(blk, pc.data());
     fill_mu_cache(pc.data(), mu_arr.data());
-    fill_ducros_cache(pc.data(), duc.data(), blk.h, ducros);
+    fill_ducros_cache(pc.data(), duc.data(), blk.h, blk.hy, blk.hz, ducros);
 
     for (int v = 0; v < NVAR; ++v)
         for (int k = ilo(); k <= ihi(); ++k)

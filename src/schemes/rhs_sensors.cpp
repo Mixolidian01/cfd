@@ -16,7 +16,8 @@
 // Non-static: called from convective_rhs / compute_rhs / compute_rhs_typed
 //             in operators.cpp via forward declaration.
 // =============================================================================
-void fill_ducros_cache(const Prim* pc, double* duc, double h,
+void fill_ducros_cache(const Prim* pc, double* duc,
+                       double hx, double hy, double hz,
                        const DucrosConfig& ducros) noexcept
 {
     constexpr double eps_duc = 1.0e-30;
@@ -33,15 +34,15 @@ void fill_ducros_cache(const Prim* pc, double* duc, double h,
     for (int k = 1; k < NB2-1; ++k)
     for (int j = 1; j < NB2-1; ++j)
     for (int i = 1; i < NB2-1; ++i) {
-        const double dudx = dX(U, i, j, k, h);
-        const double dudy = dY(U, i, j, k, h);
-        const double dudz = dZ(U, i, j, k, h);
-        const double dvdx = dX(V, i, j, k, h);
-        const double dvdy = dY(V, i, j, k, h);
-        const double dvdz = dZ(V, i, j, k, h);
-        const double dwdx = dX(W, i, j, k, h);
-        const double dwdy = dY(W, i, j, k, h);
-        const double dwdz = dZ(W, i, j, k, h);
+        const double dudx = dX(U, i, j, k, hx);
+        const double dudy = dY(U, i, j, k, hy);
+        const double dudz = dZ(U, i, j, k, hz);
+        const double dvdx = dX(V, i, j, k, hx);
+        const double dvdy = dY(V, i, j, k, hy);
+        const double dvdz = dZ(V, i, j, k, hz);
+        const double dwdx = dX(W, i, j, k, hx);
+        const double dwdy = dY(W, i, j, k, hy);
+        const double dwdz = dZ(W, i, j, k, hz);
 
         const double divu = dudx + dvdy + dwdz;
         const double ox   = dwdy - dvdz;
@@ -72,7 +73,9 @@ void fill_ducros_cache(const Prim* pc, double* duc, double h,
 // =============================================================================
 void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 {
-    const double inv_h = 1.0 / blk.h;
+    const double ihx = 1.0 / blk.h;
+    const double ihy = 1.0 / blk.hy;
+    const double ihz = 1.0 / blk.hz;
 
     for (int k = NG; k < NG+NB; ++k)
     for (int j = NG; j < NG+NB; ++j)
@@ -110,7 +113,9 @@ void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
         const double f_lz = (w_lz >= 0.0) ? w_lz * phi_Zm : w_lz * phi_C;
         const double f_rz = (w_rz >= 0.0) ? w_rz * phi_C  : w_rz * phi_Zp;
 
-        rhs_blk.phi_data_[flat] += inv_h * ((f_lx - f_rx) + (f_ly - f_ry) + (f_lz - f_rz));
+        rhs_blk.phi_data_[flat] += ihx * (f_lx - f_rx)
+                                  + ihy * (f_ly - f_ry)
+                                  + ihz * (f_lz - f_rz);
     }
 }
 
@@ -120,9 +125,10 @@ void phi_rhs(const CellBlock& blk, CellBlock& rhs_blk) noexcept
 void phi_compression_rhs(const CellBlock& blk, CellBlock& rhs_blk,
                           double ceps) noexcept
 {
-    const double h      = blk.h;
-    const double eps    = ceps * h;
-    const double eps_sq = 1e-10 / (h * h);
+    const CellSizes cs  = {blk.h, blk.hy, blk.hz};
+    const double h_min  = std::min({blk.h, blk.hy, blk.hz});
+    const double eps    = ceps * h_min;
+    const double eps_sq = 1e-10 / (h_min * h_min);
 
     alignas(64) double Fx[NCELL] = {};
     alignas(64) double Fy[NCELL] = {};
@@ -139,9 +145,9 @@ void phi_compression_rhs(const CellBlock& blk, CellBlock& rhs_blk,
     for (int k = NG-1; k <= NG+NB; ++k)
     for (int j = NG-1; j <= NG+NB; ++j)
     for (int i = NG-1; i <= NG+NB; ++i) {
-        const double dpx   = dX(Phi, i, j, k, h);
-        const double dpy   = dY(Phi, i, j, k, h);
-        const double dpz   = dZ(Phi, i, j, k, h);
+        const double dpx   = dX(Phi, i, j, k, cs.hx);
+        const double dpy   = dY(Phi, i, j, k, cs.hy);
+        const double dpz   = dZ(Phi, i, j, k, cs.hz);
         const double mag2  = dpx*dpx + dpy*dpy + dpz*dpz + eps_sq;
         const double inv_mag = 1.0 / std::sqrt(mag2);
         const double phi_c = blk.phi(i, j, k);
@@ -161,7 +167,7 @@ void phi_compression_rhs(const CellBlock& blk, CellBlock& rhs_blk,
     for (int k = NG; k < NG+NB; ++k)
     for (int j = NG; j < NG+NB; ++j)
     for (int i = NG; i < NG+NB; ++i)
-        rhs_blk.phi_data_[cell_idx(i,j,k)] += divOp(Fxa, Fya, Fza, i, j, k, h);
+        rhs_blk.phi_data_[cell_idx(i,j,k)] += divOp(Fxa, Fya, Fza, i, j, k, cs);
 }
 
 // =============================================================================
@@ -199,7 +205,8 @@ void tree_sat_penalty(BlockTree& tree,
             const int face_i = (side == 0) ? ilo() : ihi();
             const int ghost_i = (side == 0) ? (ilo()-1) : (ihi()+1);
 
-            const double sigma_f = tau / blk.h;
+            const double h_face  = (axis == 0) ? blk.h : (axis == 1) ? blk.hy : blk.hz;
+            const double sigma_f = tau / h_face;
             const double sigma_c = sigma_f;
 
             CellBlock& rhs_f = rhs_blocks[ii];

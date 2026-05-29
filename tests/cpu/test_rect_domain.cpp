@@ -160,6 +160,37 @@ int main() {
         assert(rel_err < 1e-10);
     }
 
+    // T8: fill_ducros_cache produces finite values on 2×1×0.5 block
+    {
+        const double hx = 2.0 / NB;
+        const double hy = 1.0 / NB;
+        const double hz = 0.5 / NB;
+        CellBlock blk(0.0, 0.0, 0.0, hx, hy, hz);
+        // Uniform state with small perturbation
+        for (int k = 0; k < NB2; ++k)
+        for (int j = 0; j < NB2; ++j)
+        for (int i = 0; i < NB2; ++i) {
+            int idx = cell_idx(i, j, k);
+            blk.Q[0][idx] = 1.0;
+            blk.Q[1][idx] = 0.01 * std::sin(2*M_PI*i/NB2);
+            blk.Q[2][idx] = 0.0;
+            blk.Q[3][idx] = 0.0;
+            blk.Q[4][idx] = 2.5;
+        }
+        // compute_rhs internally calls fill_ducros_cache; check result is finite
+        CellBlock rhs(0.0, 0.0, 0.0, hx, hy, hz);
+        compute_rhs(blk, rhs);
+        for (int k = ilo(); k <= ihi(); ++k)
+        for (int j = ilo(); j <= ihi(); ++j)
+        for (int i = ilo(); i <= ihi(); ++i) {
+            int idx = cell_idx(i, j, k);
+            for (int v = 0; v < NVAR; ++v) {
+                [[maybe_unused]] bool fin = std::isfinite(rhs.Q[v][idx]);
+                assert(fin);
+            }
+        }
+    }
+
     std::puts("PASS test_rect_domain");
     return 0;
 }
