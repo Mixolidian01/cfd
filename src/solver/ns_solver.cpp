@@ -67,7 +67,7 @@ static double block_kinetic_energy(const CellBlock& b) {
         Prim q = b.prim(i,j,k);
         s += 0.5 * q.rho * (q.u*q.u + q.v*q.v + q.w*q.w);
     }
-    return s * b.h*b.h*b.h;
+    return s * b.h*b.hy*b.hz;
 }
 
 // =============================================================================
@@ -343,7 +343,7 @@ double NSSolver::advance() {
             ms.rho_max = 0.0;
             for (int li : lvs) {
                 auto& blk = *tree.nodes[li].block;
-                const double h3 = blk.h * blk.h * blk.h;
+                const double h3 = blk.h * blk.hy * blk.hz;
                 const int lv = tree.nodes[li].level;
                 if (lv < 8) ms.leaves_per_level[lv]++;
                 ms.mass += blk.total_mass();
