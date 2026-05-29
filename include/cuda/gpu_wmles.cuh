@@ -74,3 +74,46 @@ __host__ __device__ inline double d_wm_log_law(
     }
     return utau;
 }
+
+// ── Device-callable ODE mixing-length model (equilibrium TBLE, van Driest) ──
+// Picard iteration: integrate u_pred = ∫₀^{y_m} u_τ²/(ν+ν_t) dy,
+// update u_τ ← u_τ · sqrt(u_t / u_pred) until converged.
+// Uses N=128 trapezoidal points (same as CPU default).
+__host__ __device__ inline double d_wm_ode_ml(
+    double u_t, double y_m, double nu, double kappa, double A_plus, double tol)
+{
+    if (u_t <= WM_UTAU_MIN) return 0.0;
+
+    // Start from algebraic guess (kappa=0.41, B=5.2)
+    double utau = d_wm_log_law(u_t, y_m, nu, kappa, 5.2, tol);
+    if (utau <= WM_UTAU_MIN) return 0.0;
+
+    constexpr int N  = 128;
+    const double  dy = y_m / N;
+
+    for (int iter = 0; iter < 60; ++iter) {
+        double u_pred = 0.0;
+        double f_prev = 1.0;  // f = u_τ²/(ν+ν_t) at y=0 → ν/(ν+0) = 1 × u_τ²/u_τ² = 1
+        for (int i = 1; i <= N; ++i) {
+            const double y    = i * dy;
+            const double yp   = y * utau / nu;
+            const double D    = 1.0 - exp(-yp / A_plus);
+            const double lm   = kappa * y * D;
+            // Solve ν_t² + ν·ν_t - lm²·u_τ² = 0 (quadratic in ν_t)
+            const double disc = nu*nu + 4.0*lm*lm*utau*utau;
+            const double nut  = 0.5*(-nu + sqrt(disc));
+            const double f_cur = utau*utau / (nu + nut);
+            u_pred += 0.5*(f_prev + f_cur) * dy;
+            f_prev  = f_cur;
+        }
+        const double ratio    = u_t / (u_pred + 1e-300);
+        const double utau_new = utau * sqrt(ratio);
+        if (fabs(utau_new - utau) < tol * utau + 1e-15) {
+            utau = utau_new;
+            break;
+        }
+        utau = 0.5*utau + 0.5*utau_new;
+        utau = (utau < WM_UTAU_MIN) ? WM_UTAU_MIN : utau;
+    }
+    return utau;
+}

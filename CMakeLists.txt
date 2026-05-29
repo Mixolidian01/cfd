@@ -365,6 +365,13 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}
         SRCS ${_T}/test_t45_dyn_sgs_gpu.cu ${_GPU_NS}
     )
+    add_nvcc_gate(TARGET t46 BIN t46_wmles_ode_gpu COMMENT "G4 GPU ODE mixing-length wall model"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t46_wmles_ode_gpu.cu
+             ${_S}/cuda/gpu_wmles.cu
+             ${_S}/models/wall_model.cpp
+             ${_GPU_NS}
+    )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu
