@@ -23,6 +23,9 @@
 #include "mpi/mpi_comm.hpp"
 #include <functional>
 #include <string>
+#include "physics/arrhenius.hpp"
+#include "physics/p1_radiation.hpp"
+#include "models/wall_model.hpp"
 
 // Forward declaration — full definition in gpu_pool.hpp (CUDA TU only).
 struct GpuPool;
@@ -109,12 +112,14 @@ struct SolverConfig {
     // R4: Backend tag dispatch and flux scheme.
     enum class ExecutionBackend { CPU, GPU };
     enum class FluxScheme       { HLLC, HLLC_ES };
+    enum class ReconScheme { WENO5Z, TENO5A };
 
     // ── 1. Execution backend ──────────────────────────────────────────────
     struct ExecConfig {
         ExecutionBackend backend     = ExecutionBackend::CPU;
         FluxScheme       flux_scheme = FluxScheme::HLLC_ES;
         bool             use_gpu     = false;  // P8.1: GPU memory pool path
+        ReconScheme      recon       = ReconScheme::WENO5Z;
     } exec;
 
     // ── 2. Time integration ───────────────────────────────────────────────
@@ -158,6 +163,18 @@ struct SolverConfig {
         bool   use_imex  = false;
         int    mg_levels = 3;
         double gamma     = GAMMA;   // ratio of specific heats; must be > 1.0
+
+        // D5 Arrhenius combustion (GPU path; CPU path ignores with warning)
+        bool            combustion_enabled = false;
+        ArrheniusParams arrhenius{};
+
+        // D6 P1 radiation (GPU path; CPU path ignores with warning)
+        bool            radiation_enabled = false;
+        RadiationParams rad_params{};
+
+        // D7 WMLES (GPU path; CPU path ignores with warning)
+        bool            wmles_enabled = false;
+        WallModelCfg    wall_model{};
     } physics;
 
     // ── 6. Numerical sensors ──────────────────────────────────────────────
