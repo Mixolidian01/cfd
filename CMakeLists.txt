@@ -378,6 +378,16 @@ if(NVCC)
              ${_S}/cuda/gpu_lts.cu
              ${_GPU_NS}
     )
+    add_nvcc_gate(TARGET t48 BIN t48_bn_gpu COMMENT "G6 GPU Baer-Nunziato two-phase solver"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t48_bn_gpu.cu
+             ${_S}/cuda/gpu_bn.cu
+             ${_S}/models/bn_operators.cpp
+             ${_S}/models/bn_ghost_fill.cpp
+             ${_S}/models/bn_solver.cpp
+             ${_S}/models/bn_flux_correction.cpp
+             ${_GPU_POOL}
+    )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu
