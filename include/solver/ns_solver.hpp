@@ -112,14 +112,14 @@ struct SolverConfig {
     // R4: Backend tag dispatch and flux scheme.
     enum class ExecutionBackend { CPU, GPU };
     enum class FluxScheme       { HLLC, HLLC_ES };
-    enum class ReconScheme { WENO5Z, TENO5A };
+    enum class ReconScheme      { WENO5Z, TENO5A, TENO7A };
 
     // ── 1. Execution backend ──────────────────────────────────────────────
     struct ExecConfig {
         ExecutionBackend backend     = ExecutionBackend::CPU;
         FluxScheme       flux_scheme = FluxScheme::HLLC_ES;
         bool             use_gpu     = false;  // P8.1: GPU memory pool path
-        ReconScheme      recon       = ReconScheme::WENO5Z;
+        ReconScheme      recon       = ReconScheme::WENO5Z; // mapped to GpuReconScheme in simulate_gpu.cu (S6)
     } exec;
 
     // ── 2. Time integration ───────────────────────────────────────────────
@@ -155,7 +155,7 @@ struct SolverConfig {
         int  lts_ratio = 2;   // refinement ratio (must match tree's geometric ratio)
     } amr;
 
-    // ── 5. Physics: SGS turbulence + IMEX ────────────────────────────────
+    // ── 5. Physics: SGS turbulence, IMEX, combustion, radiation, WMLES ──
     struct PhysicsConfig {
         std::shared_ptr<SGSModel> sgs = nullptr;
 
@@ -170,7 +170,7 @@ struct SolverConfig {
 
         // D6 P1 radiation (GPU path; CPU path ignores with warning)
         bool            radiation_enabled = false;
-        RadiationParams rad_params{};
+        RadiationParams radiation{};
 
         // D7 WMLES (GPU path; CPU path ignores with warning)
         bool            wmles_enabled = false;

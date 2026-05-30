@@ -111,6 +111,15 @@ void SolverConfig::validate() const {
     if (physics.gamma <= 1.0)
         throw std::invalid_argument("physics.gamma must be > 1.0 (got "
                                     + std::to_string(physics.gamma) + ")");
+    if (physics.combustion_enabled) {
+        if (physics.arrhenius.A     <= 0.0) throw std::runtime_error("ArrheniusParams: A must be > 0");
+        if (physics.arrhenius.T_act <= 0.0) throw std::runtime_error("ArrheniusParams: T_act must be > 0");
+        if (physics.arrhenius.q_heat<= 0.0) throw std::runtime_error("ArrheniusParams: q_heat must be > 0");
+    }
+    if (physics.radiation_enabled) {
+        if (physics.radiation.kappa <= 0.0) throw std::runtime_error("RadiationParams: kappa must be > 0");
+        if (physics.radiation.a_rad <= 0.0) throw std::runtime_error("RadiationParams: a_rad must be > 0");
+    }
 }
 
 // =============================================================================
