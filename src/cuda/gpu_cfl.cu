@@ -122,14 +122,17 @@ GpuCflList::~GpuCflList() {
     if (d_dt)      { cudaFree(d_dt);      d_dt      = nullptr; }
 }
 
-void GpuCflList::build(const BlockTree& tree, const GpuPool& pool) {
+void GpuCflList::build(const BlockTree& tree, const GpuPool& pool, int level_filter) {
     // d_metas freed inside gpu_upload_meta; d_dt_bits and d_dt freed manually
     cudaFree(d_dt_bits); d_dt_bits = nullptr;
     cudaFree(d_dt);      d_dt      = nullptr;
 
     std::vector<int> local;
-    for (int idx : tree.leaf_indices())
-        if (tree.nodes[idx].has_block()) local.push_back(idx);
+    for (int idx : tree.leaf_indices()) {
+        if (!tree.nodes[idx].has_block()) continue;
+        if (level_filter >= 0 && tree.nodes[idx].level != level_filter) continue;
+        local.push_back(idx);
+    }
     n_leaves = (int)local.size();
     if (n_leaves == 0) return;
 

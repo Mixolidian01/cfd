@@ -76,5 +76,7 @@ struct GpuCfList {
     // Per-stage operations (called after rhs_list.exec()):
     void undo_coarse_flux(cudaStream_t stream = nullptr) const;
     void accum_fine_flux(cudaStream_t stream, double stage_weight) const;
+    // LTS coarse step: subtract stage_weight * F_coarse from d_reg (no d_RHS mod).
+    void accum_coarse_neg_flux(cudaStream_t stream, double stage_weight) const;
     void apply_correction(cudaStream_t stream, double dt) const;
 };

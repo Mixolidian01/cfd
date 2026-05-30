@@ -48,8 +48,8 @@ struct GpuCflList {
     GpuCflList& operator=(const GpuCflList&) = delete;
     ~GpuCflList();
 
-    // Rebuild after regrid.
-    void build(const BlockTree& tree, const GpuPool& pool);
+    // Rebuild after regrid.  level_filter=-1 → all leaves; ≥0 → only that level.
+    void build(const BlockTree& tree, const GpuPool& pool, int level_filter = -1);
 
     // Launch k_cfl_reduce; synchronises; copies d_dt to host; returns dt.
     // If stream != nullptr, the memcpy is async on that stream and this

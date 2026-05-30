@@ -161,6 +161,42 @@ void k_cf_accum(const GpuCfFineMeta* __restrict__ metas, double stage_weight) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// k_cf_accum_coarse_neg
+// Grid:  (n_coarse, 1, 1)   Block: (GPU_NB, GPU_NB, 1) = 64 threads
+//
+// Subtracts stage_weight * F_coarse from d_reg, so that after the full
+// coarse RK3 (weights 1/6+1/6+2/3=1) d_reg holds avg(F_fine) - F_coarse.
+// No 0.25 factor: one coarse cell (a,b) maps directly to d_reg entry (jc=a,ic=b).
+// Used by GpuLtsIntegrator in place of undo_coarse_flux.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__
+void k_cf_accum_coarse_neg(const GpuCfCoarseMeta* __restrict__ metas, double stage_weight) {
+    const GpuCfCoarseMeta& m = metas[blockIdx.x];
+    const int a = threadIdx.x;  // [0, GPU_NB-1] → jc
+    const int b = threadIdx.y;  // [0, GPU_NB-1] → ic
+
+    const int axis  = m.face_dir >> 1;
+    const int side  = m.face_dir & 1;
+    const int delta = (side == 1) ? +1 : -1;
+
+    int flat_I, flat_G, flat_unused;
+    cf_face_cells(m.face_dir, a, b, flat_I, flat_G, flat_unused);
+
+    GPrim pI, pG;
+    load_prim_scratch(m.d_scratch, flat_I, pI);
+    load_prim_scratch(m.d_scratch, flat_G, pG);
+
+    const GPrim& pL = (delta > 0) ? pI : pG;
+    const GPrim& pR = (delta > 0) ? pG : pI;
+    double F[GPU_NVAR];
+    gpu_hllc_es_flux(pL, pR, axis, F);
+
+    for (int v = 0; v < GPU_NVAR; ++v)
+        atomicAdd(&m.d_reg[v * GPU_NB * GPU_NB + a * GPU_NB + b],
+                  -stage_weight * F[v]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // k_cf_apply
 // Grid:  (n_coarse, 1, 1)   Block: (GPU_NB, GPU_NB, 1) = 64 threads
 //
@@ -339,6 +375,11 @@ void GpuCfList::undo_coarse_flux(cudaStream_t stream) const {
 void GpuCfList::accum_fine_flux(cudaStream_t stream, double stage_weight) const {
     if (n_fine == 0) return;
     k_cf_accum<<<n_fine, dim3(GPU_NB, GPU_NB), 0, stream>>>(d_fine, stage_weight);
+}
+
+void GpuCfList::accum_coarse_neg_flux(cudaStream_t stream, double stage_weight) const {
+    if (n_coarse == 0) return;
+    k_cf_accum_coarse_neg<<<n_coarse, dim3(GPU_NB, GPU_NB), 0, stream>>>(d_coarse, stage_weight);
 }
 
 void GpuCfList::apply_correction(cudaStream_t stream, double dt) const {

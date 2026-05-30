@@ -372,6 +372,12 @@ if(NVCC)
              ${_S}/models/wall_model.cpp
              ${_GPU_NS}
     )
+    add_nvcc_gate(TARGET t47 BIN t47_gpu_lts COMMENT "G5 GPU Berger-Oliger LTS integrator"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t47_gpu_lts.cu
+             ${_S}/cuda/gpu_lts.cu
+             ${_GPU_NS}
+    )
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu
