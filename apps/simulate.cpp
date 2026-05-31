@@ -255,14 +255,16 @@ int main(int argc, char* argv[])
     if (use_gpu)
         fprintf(stderr, "[INFO] simulate: gpu=true — run simulate_gpu for the GPU path\n");
 
-    // Boundary conditions — per-face keys take precedence over global "bc"
+    // Boundary condition parser — shared by NS and BN paths
+    auto parse_bc_str = [&](const std::string& s) -> BCVariant {
+        if (s == "Wall")  return WallBC{};
+        if (s == "Open")  return OpenBC{};
+        if (s == "NSCBC") return NscbcBC{ cfg.d("nscbc_p_inf", 1.0) };
+        return PeriodicBC{};
+    };
+
+    // NS boundary conditions — per-face keys take precedence over global "bc"
     {
-        auto parse_bc_str = [&](const std::string& s) -> BCVariant {
-            if (s == "Wall")  return WallBC{};
-            if (s == "Open")  return OpenBC{};
-            if (s == "NSCBC") return NscbcBC{ cfg.d("nscbc_p_inf", 1.0) };
-            return PeriodicBC{};
-        };
         static const char* face_keys[6] = {
             "bc_xlo", "bc_xhi", "bc_ylo", "bc_yhi", "bc_zlo", "bc_zhi"
         };
@@ -354,6 +356,8 @@ int main(int argc, char* argv[])
         cfg.d("bn_pinf2",  6e8)
     };
     const double bn_cfl = cfg.d("bn_cfl", 0.4);
+    if (bn_cfl != 0.4)
+        fprintf(stderr, "[WARN] simulate: bn_cfl=%.3g specified but BNSolver uses hardcoded CFL=0.4 — bn_cfl ignored\n", bn_cfl);
 
     double domain_L      = cfg.d("domain_L",      1.0);
     int    refine_levels = cfg.i("refine_levels",  0);
@@ -368,10 +372,12 @@ int main(int argc, char* argv[])
         BNSolver bn_solver;
         {
             const std::string bc_str = cfg.str("bc", "Periodic");
-            if (bc_str == "Wall")        bn_solver.bc = WallBC{};
-            else if (bc_str == "Open")   bn_solver.bc = OpenBC{};
-            else if (bc_str == "NSCBC")  bn_solver.bc = NscbcBC{ cfg.d("nscbc_p_inf", 1.0) };
-            else                         bn_solver.bc = PeriodicBC{};
+            if (bc_str == "NSCBC") {
+                fprintf(stderr, "[WARN] simulate: NSCBC not implemented for BN model — falling back to Periodic\n");
+                bn_solver.bc = PeriodicBC{};
+            } else {
+                bn_solver.bc = parse_bc_str(bc_str);
+            }
         }
         bn_solver.init(domain_L, bn_ic, bn_eos, bn_solver.bc);
         if (mpi_rank == 0)
