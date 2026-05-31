@@ -204,6 +204,7 @@ if(NVCC)
         ${_S}/cuda/gpu_cf.cu       ${_S}/cuda/gpu_sgs.cu
         ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
         ${_S}/cuda/gpu_snapshot.cu ${_S}/cuda/gpu_acdi.cu
+        ${_S}/models/stl_loader.cpp ${_S}/cuda/gpu_bvh.cu ${_S}/cuda/gpu_ibm.cu
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
@@ -388,6 +389,13 @@ if(NVCC)
              ${_S}/models/bn_flux_correction.cpp
              ${_GPU_POOL}
     )
+    add_nvcc_gate(TARGET t49 BIN t49_ibm_gpu COMMENT "IBM GPU ghost-cell STL import (I5-I9)"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t49_gpu_ibm.cu
+             ${_S}/models/ibm.cpp
+             ${_GPU_NS}
+    )
+
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu

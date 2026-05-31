@@ -24,7 +24,7 @@ struct alignas(16) GhostEntry {
     double*  ghost_ptr;      // base pointer into ghost cell's block d_Q
     double*  stencil[8];     // base pointers into stencil cells' d_Q arrays
     float    w[8];           // trilinear weights (sum ~1)
-    uint8_t  wall_bc;        // 0=NoSlip, 1=Adiabatic, 2=Isothermal
+    uint8_t  wall_bc;        // 0=NoSlip/Adiabatic, 2=Isothermal, 3=SolidFill (copy Q_I to SOLID cell)
     uint8_t  _pad[3];
     float    u_wall, v_wall, w_wall, T_wall;
 };
@@ -34,11 +34,13 @@ struct GpuIbmList {
     int8_t*     d_cell_type_pool = nullptr; // [n_leaves * NCELL]
     float*      d_sdf_pool       = nullptr; // [n_leaves * NCELL]
     float*      d_wnorm_pool     = nullptr; // [n_leaves * 3 * NCELL]
-    GhostEntry* d_ghosts         = nullptr; // [n_ghosts]
+    GhostEntry* d_ghosts         = nullptr; // [n_ghosts]  IBM_GHOST fill entries
+    GhostEntry* d_solid_fills    = nullptr; // [n_solid_fills] SOLID cell suppression entries
     int         n_leaves         = 0;
     int         n_ghosts         = 0;
+    int         n_solid_fills    = 0;
 
-    uint8_t  wall_bc = 0;  // 0=NoSlip, 1=Adiabatic, 2=Isothermal
+    uint8_t  wall_bc = 0;  // 0=NoSlip/Adiabatic, 2=Isothermal
     float    u_wall = 0.f, v_wall = 0.f, w_wall = 0.f, T_wall = 300.f;
 
     GpuIbmList() = default;
