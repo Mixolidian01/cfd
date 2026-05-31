@@ -186,6 +186,9 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
         acdi_list_.build(tree, pool, phi_pool_, acdi_ceps_, bc_type);
     }
 
+    if (ibm_enabled_ && ibm_bvh_ptr_ && ibm_bvh_ptr_->ready())
+        ibm_list_.build(tree, pool, *ibm_bvh_ptr_);
+
     // Only process local leaves (those with an allocated block; remote MPI leaves have null).
     std::vector<int> local;
     for (int idx : tree.leaf_indices())
@@ -332,6 +335,7 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
         mpi_halo_.exchange(s);
         ghost_list.exec(s);
+        if (ibm_enabled_) ibm_list_.exec(s);
         rhs_list.exec(s, false);
         if (s1) k_rk3s1 <<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
         else    k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, a, b);
@@ -371,6 +375,7 @@ void GpuGraphSolver::_capture_graphs() {
     capture_one(graph_s1, [&]() {
         k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
         ghost_list.exec(stream);
+        if (ibm_enabled_) ibm_list_.exec(stream);
         rhs_list.exec(stream, /*zero_rhs=*/false);
         k_rk3s1<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt);
         k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
@@ -379,6 +384,7 @@ void GpuGraphSolver::_capture_graphs() {
     // Sub-graph 2: ghost fill + RHS(no zero) + k_rk3s23(0.75, 0.25) + floor
     capture_one(graph_s2, [&]() {
         ghost_list.exec(stream);
+        if (ibm_enabled_) ibm_list_.exec(stream);
         rhs_list.exec(stream, /*zero_rhs=*/false);
         k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 0.75, 0.25);
         k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
@@ -387,6 +393,7 @@ void GpuGraphSolver::_capture_graphs() {
     // Sub-graph 3: ghost fill + RHS(no zero) + k_rk3s23(1/3, 2/3) + floor
     capture_one(graph_s3, [&]() {
         ghost_list.exec(stream);
+        if (ibm_enabled_) ibm_list_.exec(stream);
         rhs_list.exec(stream, /*zero_rhs=*/false);
         k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, 1.0/3.0, 2.0/3.0);
         k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
@@ -424,6 +431,7 @@ double GpuGraphSolver::_advance_amr(double cfl) {
         if (save_qn) k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
         mpi_halo_.exchange(stream);
         ghost_list.exec(stream);
+        if (ibm_enabled_) ibm_list_.exec(stream);
         rhs_list.exec(stream, false);
         cf_list.undo_coarse_flux(stream);
         cf_list.accum_fine_flux(stream, cf_wt);
@@ -448,6 +456,7 @@ double GpuGraphSolver::_advance_amr(double cfl) {
     // SGS operator-split: refresh ghosts with Q^{n+1}, then apply SGS model.
     if (sgs_enabled || dyn_sgs_enabled_) {
         ghost_list.exec(stream);
+        if (ibm_enabled_) ibm_list_.exec(stream);
         if (sgs_enabled)      sgs_list.exec(cfl_list.d_dt, stream);
         if (dyn_sgs_enabled_) dyn_sgs_list_.exec(cfl_list.d_dt, stream);
     }
@@ -496,6 +505,7 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
         _run_rk3_explicit(stream);
         if (sgs_enabled || dyn_sgs_enabled_) {
             ghost_list.exec(stream);
+            if (ibm_enabled_) ibm_list_.exec(stream);
             if (sgs_enabled)      sgs_list.exec(cfl_list.d_dt, stream);
             if (dyn_sgs_enabled_) dyn_sgs_list_.exec(cfl_list.d_dt, stream);
         }
@@ -504,7 +514,8 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
         CUDA_CHECK(cudaStreamSynchronize(stream));
         // Capture graphs only for single-rank runs without ACDI or dynamic SGS
         // (both use dynamic state that cannot be captured in a static graph).
-        if (!mpi_halo_.active() && !acdi_enabled_ && !dyn_sgs_enabled_) _capture_graphs();
+        // IBM uses dynamic d_ghosts pointers rebuilt on regrid — skip graph capture
+        if (!mpi_halo_.active() && !acdi_enabled_ && !dyn_sgs_enabled_ && !ibm_enabled_) _capture_graphs();
     } else {
         // Graph replay: zero RHS on stream before each sub-graph launch
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
@@ -515,6 +526,7 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
         CUDA_CHECK(cudaGraphLaunch(graph_s3, stream));
         if (sgs_enabled || dyn_sgs_enabled_) {
             ghost_list.exec(stream);
+            if (ibm_enabled_) ibm_list_.exec(stream);
             if (sgs_enabled)      sgs_list.exec(cfl_list.d_dt, stream);
             if (dyn_sgs_enabled_) dyn_sgs_list_.exec(cfl_list.d_dt, stream);
         }

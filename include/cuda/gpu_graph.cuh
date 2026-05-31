@@ -39,6 +39,7 @@
 #include "gpu_amr.cuh"
 #include "gpu_snapshot.hpp"
 #include "cuda/gpu_acdi.cuh"
+#include "cuda/gpu_ibm.cuh"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -65,6 +66,11 @@ struct GpuGraphSolver : IGpuSolver {
     GpuPhiPool   phi_pool_;
     bool         acdi_enabled_ = false;
     double       acdi_ceps_    = 0.0;
+
+    // GPU ghost-cell IBM (STL geometry, built once in build(), exec'd per RK3 stage)
+    GpuIbmList   ibm_list_;
+    GpuBvh*      ibm_bvh_ptr_ = nullptr;  // non-owning; caller manages BVH lifetime
+    bool         ibm_enabled_ = false;
 
     // Static Smagorinsky SGS
     bool   sgs_enabled = false;
@@ -123,6 +129,16 @@ struct GpuGraphSolver : IGpuSolver {
     void set_gpu_acdi(double ceps) override {
         acdi_enabled_ = true;
         acdi_ceps_    = ceps;
+    }
+
+    void set_gpu_ibm(GpuBvh* bvh, uint8_t bc, float uw, float vw, float ww, float Tw) override {
+        ibm_enabled_      = true;
+        ibm_bvh_ptr_      = bvh;
+        ibm_list_.wall_bc = bc;
+        ibm_list_.u_wall  = uw;
+        ibm_list_.v_wall  = vw;
+        ibm_list_.w_wall  = ww;
+        ibm_list_.T_wall  = Tw;
     }
 
     // Propagate Ducros sensor config to rhs_list for subsequent build() calls.
