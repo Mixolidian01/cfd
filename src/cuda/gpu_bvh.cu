@@ -70,12 +70,10 @@ static int build_recursive(
 {
     assert(lo < hi);
 
-    // Reserve a slot for this node.
     const int my_idx = static_cast<int>(nodes.size());
     nodes.push_back(CpuBvhNode{});
 
     if (hi - lo == 1) {
-        // Leaf node.
         const int tri_idx = indices[lo];
         const AABB b = tri_aabb(tris[tri_idx]);
         CpuBvhNode& n = nodes[my_idx];
@@ -90,7 +88,6 @@ static int build_recursive(
         return my_idx;
     }
 
-    // Interior node: find the longest axis of the centroid AABB.
     AABB centroid_aabb;
     for (int i = lo; i < hi; ++i) {
         const int t = indices[i];
@@ -108,7 +105,6 @@ static int build_recursive(
     if (span[1] > span[0]) axis = 1;
     if (span[2] > span[axis]) axis = 2;
 
-    // Partition around median centroid.
     const int mid = (lo + hi) / 2;
     std::nth_element(
         indices.begin() + lo,
@@ -121,7 +117,6 @@ static int build_recursive(
     const int left_idx  = build_recursive(tris, indices, lo,  mid, nodes);
     const int right_idx = build_recursive(tris, indices, mid, hi,  nodes);
 
-    // AABB = union of children.
     CpuBvhNode& n  = nodes[my_idx];
     const CpuBvhNode& lc = nodes[left_idx];
     const CpuBvhNode& rc = nodes[right_idx];
@@ -160,6 +155,10 @@ GpuBvh::~GpuBvh() {
 void GpuBvh::build(const StlMesh& mesh) {
     const int nt = static_cast<int>(mesh.triangles.size());
     if (nt == 0) return;
+
+    // Free any prior allocation so build() is safe to call more than once.
+    this->~GpuBvh();
+    new (this) GpuBvh();
 
     // ── 1. Build CPU BVH ──────────────────────────────────────────────────────
     std::vector<int> indices(nt);
@@ -227,7 +226,6 @@ __device__ static void closest_on_triangle(
     float px, float py, float pz,   // query point
     float& rx, float& ry, float& rz) noexcept
 {
-    // Edge vectors
     const float abx = bx-ax, aby = by-ay, abz = bz-az;
     const float acx = cx-ax, acy = cy-ay, acz = cz-az;
     const float apx = px-ax, apy = py-ay, apz = pz-az;
@@ -316,10 +314,9 @@ __device__ float bvh_sdf(
     float best_cx = px, best_cy = py, best_cz = pz;
     int   best_tri = 0;
 
-    // Iterative DFS stack.
     int stack[64];
     int sp = 0;
-    stack[sp++] = 0;  // root
+    stack[sp++] = 0;
 
     while (sp > 0) {
         const int idx = stack[--sp];
@@ -331,7 +328,6 @@ __device__ float bvh_sdf(
         if (ad2 >= best_dist2) continue;
 
         if (node.left < 0) {
-            // Leaf: evaluate closest point on triangle.
             const int ti = ~node.left;
             float rx, ry, rz;
             closest_on_triangle(
@@ -348,7 +344,6 @@ __device__ float bvh_sdf(
                 best_tri = ti;
             }
         } else {
-            // Interior: push both children (closer child last = visited first).
             const float d2l = aabb_sq_dist(
                 nodes[node.left].aabb_min, nodes[node.left].aabb_max, px, py, pz);
             const float d2r = aabb_sq_dist(
