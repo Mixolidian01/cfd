@@ -3,6 +3,7 @@
 // Provides fill_leaves() and build_ic() for the simulation entry point.
 
 #include "solver/ns_solver.hpp"
+#include "models/bn_model.hpp"   // BNCellBlock, BNEosParams, cell_idx, NB2, NG
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -150,8 +151,89 @@ build_ic(const Config& cfg)
         };
     }
 
+    if (name == "reactive_blast") {
+        const double L         = cfg.d("domain_L",       1.0);
+        const double blast_r   = cfg.d("ic_blast_r",     0.1);
+        const double T_hot     = cfg.d("ic_blast_T_hot", 4.0);
+        const double rho0      = 1.0;
+        const double xc = 0.5*L, yc = 0.5*L, zc = 0.5*L;
+        return [=](double x, double y, double z) -> Prim {
+            const double r = std::sqrt((x-xc)*(x-xc)+(y-yc)*(y-yc)+(z-zc)*(z-zc));
+            const bool   hot = (r < blast_r * L);
+            Prim q{};
+            q.rho = rho0;
+            q.u = q.v = q.w = 0.0;
+            q.T   = hot ? T_hot : 1.0;
+            q.p   = q.rho * R_GAS * q.T;
+            q.c   = std::sqrt(GAMMA * q.p / q.rho);
+            return q;
+        };
+    }
+
     fprintf(stderr, "simulate: unknown ic '%s'. "
-            "Valid: uniform sod taylor_green kelvin_helmholtz isentropic_vortex\n",
+            "Valid: uniform sod taylor_green kelvin_helmholtz isentropic_vortex reactive_blast\n",
             name.c_str());
     exit(1);
+}
+
+// IC factory for BNSolver — returns a void(BNCellBlock&, ox, oy, oz, h) lambda.
+// Supported names: "bn_sod_x", "bn_uniform".
+inline std::function<void(BNCellBlock&, double, double, double, double)>
+build_bn_ic(const Config& cfg, const BNEosParams& eos)
+{
+    std::string name = cfg.str("ic", "bn_sod_x");
+    const double L   = cfg.d("domain_L", 1.0);
+
+    if (name == "bn_uniform") {
+        const double a1   = cfg.d("ic_bn_alpha1_l", 0.5);
+        const double a2   = 1.0 - a1;
+        const double p    = cfg.d("ic_bn_p_l",      1.0);
+        const double rho1 = cfg.d("ic_bn_rho1",     1.0);
+        const double rho2 = cfg.d("ic_bn_rho2",     1.0);
+        return [=](BNCellBlock& blk, double /*ox*/, double /*oy*/, double /*oz*/, double /*h*/) {
+            const double rho_e = a1 * (p + eos.gamma1 * eos.pinf1) / (eos.gamma1 - 1.0)
+                               + a2 * (p + eos.gamma2 * eos.pinf2) / (eos.gamma2 - 1.0);
+            for (int k = 0; k < NB2; ++k)
+            for (int j = 0; j < NB2; ++j)
+            for (int i = 0; i < NB2; ++i) {
+                const int f = cell_idx(i, j, k);
+                blk.Q[0][f] = a1 * rho1;   // α₁ρ₁
+                blk.Q[1][f] = a2 * rho2;   // α₂ρ₂
+                blk.Q[2][f] = 0.0;          // ρu
+                blk.Q[3][f] = 0.0;          // ρv
+                blk.Q[4][f] = 0.0;          // ρw
+                blk.Q[5][f] = rho_e;        // E (KE=0 since u=0)
+                blk.Q[6][f] = a1;           // α₁
+            }
+        };
+    }
+
+    // Default: bn_sod_x
+    const double a1_l  = cfg.d("ic_bn_alpha1_l", 0.9);
+    const double a1_r  = cfg.d("ic_bn_alpha1_r", 0.1);
+    const double p_l   = cfg.d("ic_bn_p_l",      1.0);
+    const double p_r   = cfg.d("ic_bn_p_r",      0.1);
+    const double rho1  = cfg.d("ic_bn_rho1",     1.0);
+    const double rho2  = cfg.d("ic_bn_rho2",     1.0);
+    return [=](BNCellBlock& blk, double ox, double /*oy*/, double /*oz*/, double h) {
+        for (int k = 0; k < NB2; ++k)
+        for (int j = 0; j < NB2; ++j)
+        for (int i = 0; i < NB2; ++i) {
+            const double x  = ox + (i - NG + 0.5) * h;
+            const bool   lf = (x < 0.5 * L);
+            const double a1 = lf ? a1_l : a1_r;
+            const double a2 = 1.0 - a1;
+            const double p  = lf ? p_l  : p_r;
+            const double rho_e = a1 * (p + eos.gamma1 * eos.pinf1) / (eos.gamma1 - 1.0)
+                               + a2 * (p + eos.gamma2 * eos.pinf2) / (eos.gamma2 - 1.0);
+            const int f = cell_idx(i, j, k);
+            blk.Q[0][f] = a1 * rho1;   // α₁ρ₁
+            blk.Q[1][f] = a2 * rho2;   // α₂ρ₂
+            blk.Q[2][f] = 0.0;          // ρu
+            blk.Q[3][f] = 0.0;          // ρv
+            blk.Q[4][f] = 0.0;          // ρw
+            blk.Q[5][f] = rho_e;        // E (KE=0 since u=0)
+            blk.Q[6][f] = a1;           // α₁
+        }
+    };
 }
