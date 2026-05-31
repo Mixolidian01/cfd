@@ -5,7 +5,13 @@
 //
 // JSON config keys — all optional, defaults shown:
 //   Solver:
-//     "domain_L"           : 1.0          physical box side length [m]
+//     "domain_L"           : 1.0          cubic side length [m] (fallback when domain_Lx/Ly/Lz absent)
+//     "domain_Lx"          : 1.0          x side length [m]  — rectangular/forest override
+//     "domain_Ly"          : 1.0          y side length [m]
+//     "domain_Lz"          : 1.0          z side length [m]
+//     "domain_Nx"          : 0            root blocks in x for forest-of-octrees; 0 = single root block
+//     "domain_Ny"          : 0            root blocks in y (forest only; all three must be > 0)
+//     "domain_Nz"          : 0            root blocks in z
 //     "cfl"                : 0.8
 //     "t_end"              : 1.0
 //     "max_steps"          : 1000000
@@ -359,7 +365,14 @@ int main(int argc, char* argv[])
     if (bn_cfl != 0.4)
         fprintf(stderr, "[WARN] simulate: bn_cfl=%.3g specified but BNSolver uses hardcoded CFL=0.4 — bn_cfl ignored\n", bn_cfl);
 
-    double domain_L      = cfg.d("domain_L",      1.0);
+    const double domain_L = cfg.d("domain_L", 1.0);
+    const double Lx = cfg.has("domain_Lx") ? cfg.d("domain_Lx", domain_L) : domain_L;
+    const double Ly = cfg.has("domain_Ly") ? cfg.d("domain_Ly", domain_L) : domain_L;
+    const double Lz = cfg.has("domain_Lz") ? cfg.d("domain_Lz", domain_L) : domain_L;
+    const int    NX = cfg.i("domain_Nx", 0);
+    const int    NY = cfg.i("domain_Ny", 0);
+    const int    NZ = cfg.i("domain_Nz", 0);
+    const bool   forest_domain = (NX > 0 && NY > 0 && NZ > 0);
     int    refine_levels = cfg.i("refine_levels",  0);
 
     std::string ckpt_load  = cfg.str("checkpoint_load",  "");
@@ -392,18 +405,31 @@ int main(int argc, char* argv[])
     // ── Build IC and initialise ────────────────────────────────────────────────
     auto ic = build_ic(cfg);
 
-    if (mpi_rank == 0)
-        printf("simulate: initialising solver (domain_L=%.4g, ic=%s, bc=%s, ranks=%d)\n",
-               domain_L, cfg.str("ic", "uniform").c_str(),
-               cfg.str("bc", "Periodic").c_str(), mpi_size);
+    if (mpi_rank == 0) {
+        if (forest_domain)
+            printf("simulate: initialising solver (Lx=%.4g Ly=%.4g Lz=%.4g NX=%d NY=%d NZ=%d ic=%s bc=%s ranks=%d)\n",
+                   Lx, Ly, Lz, NX, NY, NZ, cfg.str("ic","uniform").c_str(),
+                   cfg.str("bc","Periodic").c_str(), mpi_size);
+        else
+            printf("simulate: initialising solver (Lx=%.4g Ly=%.4g Lz=%.4g ic=%s bc=%s ranks=%d)\n",
+                   Lx, Ly, Lz, cfg.str("ic","uniform").c_str(),
+                   cfg.str("bc","Periodic").c_str(), mpi_size);
+    }
+
+    auto do_solver_init = [&]() {
+        if (forest_domain)
+            solver.init(Lx, Ly, Lz, NX, NY, NZ, ic);
+        else
+            solver.init(Lx, Ly, Lz, ic);
+    };
 
     if (!ckpt_load.empty()) {
         // Restart from checkpoint; IC is used only to set tree topology.
-        solver.init(domain_L, ic);
+        do_solver_init();
         printf("simulate: loading checkpoint from '%s'\n", ckpt_load.c_str());
         checkpoint_load(solver, ckpt_load);
     } else {
-        solver.init(domain_L, ic);
+        do_solver_init();
 
         // Optional extra uniform refinement
         if (refine_levels > 0) {
@@ -425,8 +451,8 @@ int main(int argc, char* argv[])
         mpi_part.comm = mpi_env.comm();
         mpi_partition(solver.tree, &mpi_part);
         // Free remote blocks; each rank keeps only its owned leaves in memory.
-        mpi_alloc_local_blocks(solver.tree, mpi_part,
-                               domain_L / NB);  // h0 = L/NB for root block
+        const double h0 = forest_domain ? (Lx / (NX * NB)) : (Lx / NB);
+        mpi_alloc_local_blocks(solver.tree, mpi_part, h0);
         solver.set_mpi(&mpi_part);
         if (mpi_rank == 0)
             printf("simulate: MPI partition  ranks=%d  local_leaves=%d\n",

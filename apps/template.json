@@ -6,8 +6,22 @@
     // =========================================================================
 
     // ── Domain ────────────────────────────────────────────────────────────────
-    "domain_L"           : 1.0,     // Physical side length of the cubic domain [m].
-                                    // Taylor-Green Vortex requires 2π ≈ 6.283185307.
+    // Cubic shorthand — used when domain_Lx/Ly/Lz are absent.
+    "domain_L"           : 1.0,     // Cubic side length [m]. Taylor-Green Vortex: 2π ≈ 6.283185307.
+
+    // Rectangular domain overrides — set any/all of these to depart from cubic.
+    // When only domain_Lx/Ly/Lz are set, a single root block with per-axis cell
+    // sizes hy = Ly/NB, hz = Lz/NB is created via NSSolver::init(Lx,Ly,Lz).
+    // "domain_Lx"          : 1.0,  // x side length [m]
+    // "domain_Ly"          : 0.5,  // y side length [m]  (duct, channel, etc.)
+    // "domain_Lz"          : 0.5,  // z side length [m]
+
+    // Forest-of-octrees — set all three Nx/Ny/Nz > 0 to create an NX×NY×NZ
+    // array of root blocks (each NB³ cells) via NSSolver::init(Lx,Ly,Lz,NX,NY,NZ).
+    // Enables non-square aspect ratios with AMR on each root block independently.
+    // "domain_Nx"          : 2,    // root blocks in x (e.g. 2×1×1 for a 2:1 duct)
+    // "domain_Ny"          : 1,    // root blocks in y
+    // "domain_Nz"          : 1,    // root blocks in z
 
     // ── Time integration ──────────────────────────────────────────────────────
     "cfl"                : 0.8,     // CFL number for the SSP-RK3 time step (0 < cfl ≤ 1).

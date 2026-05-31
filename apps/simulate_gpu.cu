@@ -243,7 +243,14 @@ int main(int argc, char* argv[])
     if (sc.physics.wmles_enabled)
         fprintf(stderr, "[WARN] simulate_gpu: wmles wired via gpu_wmles.cu — not yet in simulate_gpu.cu step loop\n");
 
-    double domain_L      = cfg.d("domain_L",      1.0);
+    const double domain_L = cfg.d("domain_L", 1.0);
+    const double Lx = cfg.has("domain_Lx") ? cfg.d("domain_Lx", domain_L) : domain_L;
+    const double Ly = cfg.has("domain_Ly") ? cfg.d("domain_Ly", domain_L) : domain_L;
+    const double Lz = cfg.has("domain_Lz") ? cfg.d("domain_Lz", domain_L) : domain_L;
+    const int    NX = cfg.i("domain_Nx", 0);
+    const int    NY = cfg.i("domain_Ny", 0);
+    const int    NZ = cfg.i("domain_Nz", 0);
+    const bool   forest_domain = (NX > 0 && NY > 0 && NZ > 0);
     int    refine_levels = cfg.i("refine_levels",  0);
 
     std::string ckpt_load  = cfg.str("checkpoint_load",  "");
@@ -253,15 +260,26 @@ int main(int argc, char* argv[])
     // ── Build IC and initialise ────────────────────────────────────────────────
     auto ic = build_ic(cfg);
 
-    printf("simulate_gpu: initialising solver (domain_L=%.4g, ic=%s, bc=%s)\n",
-           domain_L, cfg.str("ic", "uniform").c_str(), cfg.str("bc", "Periodic").c_str());
+    if (forest_domain)
+        printf("simulate_gpu: initialising solver (Lx=%.4g Ly=%.4g Lz=%.4g NX=%d NY=%d NZ=%d ic=%s bc=%s)\n",
+               Lx, Ly, Lz, NX, NY, NZ, cfg.str("ic","uniform").c_str(), cfg.str("bc","Periodic").c_str());
+    else
+        printf("simulate_gpu: initialising solver (Lx=%.4g Ly=%.4g Lz=%.4g ic=%s bc=%s)\n",
+               Lx, Ly, Lz, cfg.str("ic","uniform").c_str(), cfg.str("bc","Periodic").c_str());
+
+    auto do_solver_init = [&]() {
+        if (forest_domain)
+            solver.init(Lx, Ly, Lz, NX, NY, NZ, ic);
+        else
+            solver.init(Lx, Ly, Lz, ic);
+    };
 
     if (!ckpt_load.empty()) {
-        solver.init(domain_L, ic);
+        do_solver_init();
         printf("simulate_gpu: loading checkpoint from '%s'\n", ckpt_load.c_str());
         checkpoint_load(solver, ckpt_load);
     } else {
-        solver.init(domain_L, ic);
+        do_solver_init();
 
         if (refine_levels > 0) {
             printf("simulate_gpu: applying %d extra uniform refinement pass(es)\n",
