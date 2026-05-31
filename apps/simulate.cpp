@@ -66,6 +66,8 @@
 #include "io/live_streamer.hpp"
 #include "io/checkpoint.hpp"
 #include "models/sgs.hpp"
+#include "models/bn_model.hpp"      // BNEosParams (parsed even for ns path)
+#include "models/bn_solver.hpp"     // BNSolver (used in Task 5 BN dispatch)
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -213,11 +215,19 @@ int main(int argc, char* argv[])
     sc.amr.lts_ratio       = cfg.i("lts_ratio",       2);
     sc.physics.use_imex        = cfg.b("use_imex",        false);
 
+    // === Model selection ===
+    const std::string model   = cfg.str("model", "ns");
+    const bool        use_gpu = cfg.b("gpu", false);
+    (void)model;    // used in Task 5 BN dispatch; suppress unused warning for now
+    if (use_gpu)
+        fprintf(stderr, "[INFO] simulate: gpu=true — run simulate_gpu for the GPU path\n");
+
     // Boundary conditions — per-face keys take precedence over global "bc"
     {
-        auto parse_bc_str = [](const std::string& s) -> BCVariant {
+        auto parse_bc_str = [&](const std::string& s) -> BCVariant {
             if (s == "Wall")  return WallBC{};
             if (s == "Open")  return OpenBC{};
+            if (s == "NSCBC") return NscbcBC{ cfg.d("nscbc_p_inf", 1.0) };
             return PeriodicBC{};
         };
         static const char* face_keys[6] = {
@@ -251,6 +261,64 @@ int main(int argc, char* argv[])
         else
             sc.physics.sgs = nullptr;
     }
+
+    // === Scheme selection ===
+    {
+        const std::string sch = cfg.str("scheme", "weno5z");
+        if (sch == "teno5a")
+            sc.exec.recon = SolverConfig::ReconScheme::TENO5A;
+        else if (sch == "teno7a")
+            sc.exec.recon = SolverConfig::ReconScheme::TENO7A;
+        // else WENO5Z default
+    }
+
+    // === Viscosity ===
+    {
+        const double mu         = cfg.d("mu",         0.0);
+        const bool   sutherland = cfg.b("sutherland", false);
+        (void)mu; (void)sutherland;
+    }
+
+    // === ACDI phase field ===
+    sc.acdi.use_acdi  = cfg.b("acdi",         false);
+    sc.acdi.acdi_ceps = cfg.d("acdi_ceps",    0.0);
+    sc.acdi.gamma_a   = cfg.d("acdi_gamma_a", GAMMA);
+    sc.acdi.gamma_b   = cfg.d("acdi_gamma_b", GAMMA);
+    sc.acdi.p_inf_a   = cfg.d("acdi_pinf_a",  0.0);
+    sc.acdi.p_inf_b   = cfg.d("acdi_pinf_b",  0.0);
+
+    // === Combustion / Arrhenius ===
+    sc.physics.combustion_enabled = cfg.b("combustion",      false);
+    sc.physics.arrhenius.A        = cfg.d("combustion_A",    1e4);
+    sc.physics.arrhenius.T_act    = cfg.d("combustion_Tact", 10.0);
+    sc.physics.arrhenius.q_heat   = cfg.d("combustion_Q",    10.0);
+    sc.physics.arrhenius.n_sub    = cfg.i("combustion_nsub", 8);
+    if (sc.physics.combustion_enabled)
+        fprintf(stderr, "[WARN] simulate: combustion=true — use simulate_gpu (CPU path ignores combustion)\n");
+
+    // === Radiation / P1 ===
+    sc.physics.radiation_enabled  = cfg.b("radiation",       false);
+    sc.physics.radiation.kappa    = cfg.d("radiation_kappa", 1.0);
+    sc.physics.radiation.a_rad    = cfg.d("radiation_arad",  1.0);
+    if (sc.physics.radiation_enabled)
+        fprintf(stderr, "[WARN] simulate: radiation=true — use simulate_gpu (CPU path ignores radiation)\n");
+
+    // === WMLES ===
+    sc.physics.wmles_enabled        = cfg.b("wmles",         false);
+    sc.physics.wall_model.use_ode   = (cfg.str("wmles_model","reichardt") == "ode");
+    if (sc.physics.wmles_enabled)
+        fprintf(stderr, "[WARN] simulate: wmles=true — use simulate_gpu (CPU path ignores wmles)\n");
+
+    // === BN EOS (read regardless; used in BN dispatch in Task 5) ===
+    const BNEosParams bn_eos{
+        cfg.d("bn_gamma1", 1.4),
+        cfg.d("bn_gamma2", 4.4),
+        cfg.d("bn_pinf1",  0.0),
+        cfg.d("bn_pinf2",  6e8)
+    };
+    const double bn_cfl = cfg.d("bn_cfl", 0.4);
+    (void)bn_eos;   // used in Task 5; suppress unused warning for now
+    (void)bn_cfl;   // used in Task 5; suppress unused warning for now
 
     double domain_L      = cfg.d("domain_L",      1.0);
     int    refine_levels = cfg.i("refine_levels",  0);
