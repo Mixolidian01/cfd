@@ -179,13 +179,13 @@ build_ic(const Config& cfg)
 // IC factory for BNSolver — returns a void(BNCellBlock&, ox, oy, oz, h) lambda.
 // Supported names: "bn_sod_x", "bn_uniform".
 inline std::function<void(BNCellBlock&, double, double, double, double)>
-build_bn_ic(const Config& cfg, const BNEosParams& eos)
+build_bn_ic(const Config& cfg, BNEosParams eos)
 {
     std::string name = cfg.str("ic", "bn_sod_x");
     const double L   = cfg.d("domain_L", 1.0);
 
     if (name == "bn_uniform") {
-        const double a1   = cfg.d("ic_bn_alpha1_l", 0.5);
+        const double a1   = cfg.d("ic_bn_alpha1", 0.5);
         const double a2   = 1.0 - a1;
         const double p    = cfg.d("ic_bn_p_l",      1.0);
         const double rho1 = cfg.d("ic_bn_rho1",     1.0);
@@ -206,6 +206,12 @@ build_bn_ic(const Config& cfg, const BNEosParams& eos)
                 blk.Q[6][f] = a1;           // α₁
             }
         };
+    }
+
+    if (name != "bn_sod_x") {
+        fprintf(stderr, "simulate: unknown BN ic '%s'. Valid: bn_sod_x bn_uniform\n",
+                name.c_str());
+        exit(1);
     }
 
     // Default: bn_sod_x
