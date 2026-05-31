@@ -148,11 +148,19 @@ int main(int argc, char* argv[])
     sc.amr.lts_ratio        = cfg.i("lts_ratio",       2);
     sc.physics.use_imex     = cfg.b("use_imex",        false);
 
+    // === Model selection (informational; GPU binary always uses NSSolver) ===
+    {
+        const std::string model = cfg.str("model", "ns");
+        if (model == "bn")
+            fprintf(stderr, "[WARN] simulate_gpu: model=bn not yet wired for GPU — use simulate for BN\n");
+    }
+
     // Boundary conditions — per-face keys take precedence over global "bc"
     {
-        auto parse_bc_str = [](const std::string& s) -> BCVariant {
+        auto parse_bc_str = [&](const std::string& s) -> BCVariant {
             if (s == "Wall")  return WallBC{};
             if (s == "Open")  return OpenBC{};
+            if (s == "NSCBC") return NscbcBC{ cfg.d("nscbc_p_inf", 1.0) };
             return PeriodicBC{};
         };
         static const char* face_keys[6] = {
@@ -184,6 +192,56 @@ int main(int argc, char* argv[])
         else
             sc.physics.sgs = nullptr;
     }
+
+    // === Scheme selection ===
+    {
+        const std::string sch = cfg.str("scheme", "weno5z");
+        if (sch == "teno5a")
+            sc.exec.recon = SolverConfig::ReconScheme::TENO5A;
+        else if (sch == "teno7a")
+            sc.exec.recon = SolverConfig::ReconScheme::TENO7A;
+        else if (sch != "weno5z")
+            fprintf(stderr, "[WARN] simulate_gpu: unknown scheme='%s', falling back to weno5z\n", sch.c_str());
+    }
+
+    // === Viscosity ===
+    {
+        const double mu         = cfg.d("mu",         0.0);
+        const bool   sutherland = cfg.b("sutherland", false);
+        if (mu != 0.0 || sutherland)
+            fprintf(stderr, "[WARN] simulate_gpu: mu/sutherland not yet wired in simulate_gpu.cu step loop\n");
+        (void)mu; (void)sutherland;
+    }
+
+    // === ACDI phase field ===
+    sc.acdi.use_acdi  = cfg.b("acdi",         false);
+    sc.acdi.acdi_ceps = cfg.d("acdi_ceps",    0.0);
+    sc.acdi.gamma_a   = cfg.d("acdi_gamma_a", GAMMA);
+    sc.acdi.gamma_b   = cfg.d("acdi_gamma_b", GAMMA);
+    sc.acdi.p_inf_a   = cfg.d("acdi_pinf_a",  0.0);
+    sc.acdi.p_inf_b   = cfg.d("acdi_pinf_b",  0.0);
+
+    // === Combustion / Arrhenius ===
+    sc.physics.combustion_enabled = cfg.b("combustion",      false);
+    sc.physics.arrhenius.A        = cfg.d("combustion_A",    1e4);
+    sc.physics.arrhenius.T_act    = cfg.d("combustion_Tact", 10.0);
+    sc.physics.arrhenius.q_heat   = cfg.d("combustion_Q",    10.0);
+    sc.physics.arrhenius.n_sub    = cfg.i("combustion_nsub", 8);
+    if (sc.physics.combustion_enabled)
+        fprintf(stderr, "[WARN] simulate_gpu: combustion wired via gpu_source.cu — not yet in simulate_gpu.cu step loop\n");
+
+    // === Radiation / P1 ===
+    sc.physics.radiation_enabled  = cfg.b("radiation",       false);
+    sc.physics.radiation.kappa    = cfg.d("radiation_kappa", 1.0);
+    sc.physics.radiation.a_rad    = cfg.d("radiation_arad",  1.0);
+    if (sc.physics.radiation_enabled)
+        fprintf(stderr, "[WARN] simulate_gpu: radiation wired via gpu_p1.cu — not yet in simulate_gpu.cu step loop\n");
+
+    // === WMLES ===
+    sc.physics.wmles_enabled        = cfg.b("wmles",         false);
+    sc.physics.wall_model.use_ode   = (cfg.str("wmles_model","reichardt") == "ode");
+    if (sc.physics.wmles_enabled)
+        fprintf(stderr, "[WARN] simulate_gpu: wmles wired via gpu_wmles.cu — not yet in simulate_gpu.cu step loop\n");
 
     double domain_L      = cfg.d("domain_L",      1.0);
     int    refine_levels = cfg.i("refine_levels",  0);
@@ -231,7 +289,11 @@ int main(int argc, char* argv[])
     if (sc.physics.sgs) {
         if (auto* sm = dynamic_cast<SmagorinskyModel*>(sc.physics.sgs.get()))
             graph_solver.set_gpu_sgs(sm->Cs, sm->Pr_t);
+        else if (auto* dm = dynamic_cast<DynamicSmagorinskyModel*>(sc.physics.sgs.get()))
+            graph_solver.set_gpu_dyn_sgs(dm->Pr_t);
     }
+    if (sc.acdi.use_acdi)
+        graph_solver.set_gpu_acdi(sc.acdi.acdi_ceps);
     graph_solver.set_ducros(sc.numerics.ducros_p_threshold,
                             1.0 / sc.numerics.ducros_blend_width);
     auto gpu_build = [&]() {
