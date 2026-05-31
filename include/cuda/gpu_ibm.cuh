@@ -17,8 +17,17 @@ struct GpuIbmMeta {
     float    hx, hy, hz;
 };
 
-// GhostEntry is forward-declared here; full definition added in Task 4.
-struct GhostEntry;
+// One entry per IBM ghost cell.  Pointers encode:
+//   ghost_ptr  = d_Q_block + flat_ghost   (access var v: ghost_ptr + v*GPU_NCELL)
+//   stencil[s] = d_Q_blockS + flat_s      (access var v: stencil[s] + v*GPU_NCELL)
+struct alignas(16) GhostEntry {
+    double*  ghost_ptr;      // base pointer into ghost cell's block d_Q
+    double*  stencil[8];     // base pointers into stencil cells' d_Q arrays
+    float    w[8];           // trilinear weights (sum ~1)
+    uint8_t  wall_bc;        // 0=NoSlip, 1=Adiabatic, 2=Isothermal
+    uint8_t  _pad[3];
+    float    u_wall, v_wall, w_wall, T_wall;
+};
 
 struct GpuIbmList {
     GpuIbmMeta* d_metas          = nullptr; // [n_leaves]

@@ -66,6 +66,183 @@ void k_ibm_mark_ghosts(const GpuIbmMeta* __restrict__ metas)
     }
 }
 
+// gridDim.x = (n_ghosts + 255) / 256,  blockDim.x = 256
+// ghost_ptr + v*GPU_NCELL = d_Q[v*NCELL + flat_ghost]
+__global__
+void k_ghost_fill_ibm(const GhostEntry* __restrict__ ghosts, int n_ghosts)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_ghosts) return;
+    const GhostEntry& ge = ghosts[tid];
+    const int NC = GPU_NCELL;
+
+    double Q_I[GPU_NVAR] = {};
+    for (int s = 0; s < 8; ++s) {
+        const double* sp = ge.stencil[s];
+        float w = ge.w[s];
+        for (int v = 0; v < GPU_NVAR; ++v)
+            Q_I[v] += w * sp[v * NC];
+    }
+
+    double rho_I = Q_I[0];
+    double u_I   = Q_I[1] / rho_I;
+    double v_I   = Q_I[2] / rho_I;
+    double w_I   = Q_I[3] / rho_I;
+    double E_I   = Q_I[4];
+    double p_I   = (GPU_GAMMA - 1.0) * (E_I - 0.5 * rho_I * (u_I*u_I + v_I*v_I + w_I*w_I));
+    double T_I   = p_I / (rho_I * GPU_R_GAS);
+
+    double rho_g = rho_I;
+    double u_g   = 2.0 * ge.u_wall - u_I;
+    double v_g   = 2.0 * ge.v_wall - v_I;
+    double w_g   = 2.0 * ge.w_wall - w_I;
+    double p_g   = p_I;
+
+    if (ge.wall_bc == 1) {  // Adiabatic: T_ghost = T_image
+        p_g = rho_g * GPU_R_GAS * T_I;
+    } else if (ge.wall_bc == 2) {  // Isothermal: T_ghost = 2*T_wall - T_image
+        double T_g = 2.0 * ge.T_wall - T_I;
+        if (T_g < 1.0) T_g = 1.0;
+        p_g = rho_g * GPU_R_GAS * T_g;
+    }
+
+    double KE_g = 0.5 * rho_g * (u_g*u_g + v_g*v_g + w_g*w_g);
+    double E_g  = p_g / (GPU_GAMMA - 1.0) + KE_g;
+
+    double* gp = ge.ghost_ptr;
+    gp[0 * NC] = rho_g;
+    gp[1 * NC] = rho_g * u_g;
+    gp[2 * NC] = rho_g * v_g;
+    gp[3 * NC] = rho_g * w_g;
+    gp[4 * NC] = E_g;
+}
+
+// Struct to hold per-leaf host-side info for stencil lookups
+struct LeafInfo {
+    double ox, oy, oz, hx, hy, hz;
+    double* d_Q;
+    int li;
+};
+
+static void build_ghost_entries(
+    const BlockTree& tree,
+    const GpuPool& pool,
+    const std::vector<int>& local,
+    const int8_t* d_ct_pool,
+    const float*  d_sdf_pool,
+    const float*  d_wnorm_pool,
+    int n_leaves,
+    uint8_t wall_bc, float u_wall, float v_wall, float ww, float T_wall,
+    GhostEntry*& d_ghosts_out, int& n_ghosts_out)
+{
+    const int NC = GPU_NCELL;
+    std::vector<int8_t> h_ct(n_leaves * NC);
+    std::vector<float>  h_sdf(n_leaves * NC);
+    std::vector<float>  h_wnorm(n_leaves * NC * 3);
+    cudaMemcpy(h_ct.data(),    d_ct_pool,    n_leaves*NC*sizeof(int8_t), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_sdf.data(),   d_sdf_pool,   n_leaves*NC*sizeof(float),  cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_wnorm.data(), d_wnorm_pool, n_leaves*NC*3*sizeof(float),cudaMemcpyDeviceToHost);
+
+    std::vector<LeafInfo> info(n_leaves);
+    for (int li = 0; li < n_leaves; ++li) {
+        const CellBlock* blk = tree.nodes[local[li]].block.get();
+        info[li] = {blk->ox, blk->oy, blk->oz,
+                    (double)blk->h, (double)blk->hy, (double)blk->hz,
+                    pool.d_Q(blk), li};
+    }
+
+    // Find the leaf and base cell for a physical point (px, py, pz)
+    auto find_cell = [&](double px, double py, double pz,
+                         int& out_li, int& out_flat) -> bool {
+        for (int li = 0; li < n_leaves; ++li) {
+            const auto& inf = info[li];
+            double fi = (px - inf.ox) / inf.hx + GPU_NG - 0.5;
+            double fj = (py - inf.oy) / inf.hy + GPU_NG - 0.5;
+            double fk = (pz - inf.oz) / inf.hz + GPU_NG - 0.5;
+            int ci = (int)fi, cj = (int)fj, ck = (int)fk;
+            if (ci < 0 || ci >= GPU_NB2-1) continue;
+            if (cj < 0 || cj >= GPU_NB2-1) continue;
+            if (ck < 0 || ck >= GPU_NB2-1) continue;
+            out_li   = li;
+            out_flat = ck*GPU_NB2*GPU_NB2 + cj*GPU_NB2 + ci;
+            return true;
+        }
+        return false;
+    };
+
+    std::vector<GhostEntry> h_ghosts;
+    for (int li = 0; li < n_leaves; ++li) {
+        const auto& inf = info[li];
+        for (int k = GPU_NG; k < GPU_NG+GPU_NB; ++k)
+        for (int j = GPU_NG; j < GPU_NG+GPU_NB; ++j)
+        for (int i = GPU_NG; i < GPU_NG+GPU_NB; ++i) {
+            int flat = k*GPU_NB2*GPU_NB2 + j*GPU_NB2 + i;
+            if (h_ct[li*NC + flat] != 2) continue;
+
+            float sdf = h_sdf[li*NC + flat];
+            float nx  = h_wnorm[li*NC*3 + 0*NC + flat];
+            float ny  = h_wnorm[li*NC*3 + 1*NC + flat];
+            float nz  = h_wnorm[li*NC*3 + 2*NC + flat];
+
+            double gx = inf.ox + (i - GPU_NG + 0.5) * inf.hx;
+            double gy = inf.oy + (j - GPU_NG + 0.5) * inf.hy;
+            double gz = inf.oz + (k - GPU_NG + 0.5) * inf.hz;
+
+            // Image point: mirror of ghost across IB surface
+            double ix = gx - 2.0 * sdf * nx;
+            double iy = gy - 2.0 * sdf * ny;
+            double iz = gz - 2.0 * sdf * nz;
+
+            int sli, sflat;
+            if (!find_cell(ix, iy, iz, sli, sflat)) continue;
+
+            const auto& sinf = info[sli];
+            int sk0 =  sflat / (GPU_NB2 * GPU_NB2);
+            int sj0 = (sflat /  GPU_NB2) % GPU_NB2;
+            int si0 =  sflat %  GPU_NB2;
+
+            double fi = (ix - sinf.ox) / sinf.hx + GPU_NG - 0.5;
+            double fj = (iy - sinf.oy) / sinf.hy + GPU_NG - 0.5;
+            double fk = (iz - sinf.oz) / sinf.hz + GPU_NG - 0.5;
+            double tx = fi - si0, ty = fj - sj0, tz = fk - sk0;
+            tx = (tx < 0) ? 0 : (tx > 1 ? 1 : tx);
+            ty = (ty < 0) ? 0 : (ty > 1 ? 1 : ty);
+            tz = (tz < 0) ? 0 : (tz > 1 ? 1 : tz);
+
+            GhostEntry ge{};
+            ge.ghost_ptr = inf.d_Q + flat;
+            ge.wall_bc   = wall_bc;
+            ge.u_wall    = u_wall;
+            ge.v_wall    = v_wall;
+            ge.w_wall    = ww;
+            ge.T_wall    = T_wall;
+
+            for (int dz = 0; dz < 2; ++dz)
+            for (int dy = 0; dy < 2; ++dy)
+            for (int dx = 0; dx < 2; ++dx) {
+                int s = dz*4 + dy*2 + dx;
+                int ci = si0+dx, cj = sj0+dy, ck = sk0+dz;
+                if (ci >= GPU_NB2) ci = GPU_NB2-1;
+                if (cj >= GPU_NB2) cj = GPU_NB2-1;
+                if (ck >= GPU_NB2) ck = GPU_NB2-1;
+                int sf = ck*GPU_NB2*GPU_NB2 + cj*GPU_NB2 + ci;
+                ge.stencil[s] = sinf.d_Q + sf;
+                ge.w[s] = (float)(
+                    (dx ? tx : 1-tx) * (dy ? ty : 1-ty) * (dz ? tz : 1-tz));
+            }
+            h_ghosts.push_back(ge);
+        }
+    }
+
+    n_ghosts_out = (int)h_ghosts.size();
+    if (d_ghosts_out) { cudaFree(d_ghosts_out); d_ghosts_out = nullptr; }
+    if (n_ghosts_out == 0) return;
+    CUDA_CHECK(cudaMalloc(&d_ghosts_out, n_ghosts_out * sizeof(GhostEntry)));
+    CUDA_CHECK(cudaMemcpy(d_ghosts_out, h_ghosts.data(),
+                          n_ghosts_out * sizeof(GhostEntry),
+                          cudaMemcpyHostToDevice));
+}
+
 void GpuIbmList::build(const BlockTree& tree, const GpuPool& pool, const GpuBvh& bvh) {
     // Free old allocations
     if (d_metas)          { cudaFree(d_metas);          d_metas = nullptr; }
@@ -111,10 +288,18 @@ void GpuIbmList::build(const BlockTree& tree, const GpuPool& pool, const GpuBvh&
     k_ibm_mark_ghosts<<<n_leaves, TPB>>>(d_metas);
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    // Phase 2 (ghost list): added in Task 4
+    build_ghost_entries(tree, pool, local,
+                        d_cell_type_pool, d_sdf_pool, d_wnorm_pool, n_leaves,
+                        wall_bc, u_wall, v_wall, w_wall, T_wall,
+                        d_ghosts, n_ghosts);
 }
 
-void GpuIbmList::exec(cudaStream_t /*stream*/) const {}
+void GpuIbmList::exec(cudaStream_t stream) const {
+    if (n_ghosts == 0 || !d_ghosts) return;
+    constexpr int TPB = 256;
+    int nblocks = (n_ghosts + TPB - 1) / TPB;
+    k_ghost_fill_ibm<<<nblocks, TPB, 0, stream>>>(d_ghosts, n_ghosts);
+}
 
 GpuIbmList::~GpuIbmList() {
     if (d_metas)          cudaFree(d_metas);
