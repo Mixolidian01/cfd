@@ -252,11 +252,8 @@ int main(int argc, char* argv[])
     // === Model selection ===
     const std::string model   = cfg.str("model", "ns");
     const bool        use_gpu = cfg.b("gpu", false);
-    (void)model;    // used in Task 5 BN dispatch; suppress unused warning for now
     if (use_gpu)
         fprintf(stderr, "[INFO] simulate: gpu=true — run simulate_gpu for the GPU path\n");
-    if (model == "bn")
-        fprintf(stderr, "[WARN] simulate: model=bn not yet dispatched on CPU path — running NS\n");
 
     // Boundary conditions — per-face keys take precedence over global "bc"
     {
@@ -357,8 +354,6 @@ int main(int argc, char* argv[])
         cfg.d("bn_pinf2",  6e8)
     };
     const double bn_cfl = cfg.d("bn_cfl", 0.4);
-    (void)bn_eos;   // used in Task 5; suppress unused warning for now
-    (void)bn_cfl;   // used in Task 5; suppress unused warning for now
 
     double domain_L      = cfg.d("domain_L",      1.0);
     int    refine_levels = cfg.i("refine_levels",  0);
@@ -366,6 +361,27 @@ int main(int argc, char* argv[])
     std::string ckpt_load  = cfg.str("checkpoint_load",  "");
     std::string ckpt_save  = cfg.str("checkpoint_save",  "");
     int         ckpt_intvl = cfg.i("checkpoint_interval", 0);
+
+    // ── BN two-phase dispatch ──────────────────────────────────────────────────
+    if (model == "bn") {
+        auto bn_ic = build_bn_ic(cfg, bn_eos);
+        BNSolver bn_solver;
+        {
+            const std::string bc_str = cfg.str("bc", "Periodic");
+            if (bc_str == "Wall")        bn_solver.bc = WallBC{};
+            else if (bc_str == "Open")   bn_solver.bc = OpenBC{};
+            else if (bc_str == "NSCBC")  bn_solver.bc = NscbcBC{ cfg.d("nscbc_p_inf", 1.0) };
+            else                         bn_solver.bc = PeriodicBC{};
+        }
+        bn_solver.init(domain_L, bn_ic, bn_eos, bn_solver.bc);
+        if (mpi_rank == 0)
+            printf("simulate: BN solver  t_end=%.4g  max_steps=%d  bn_cfl=%.3g\n",
+                   cfg.d("t_end", 1.0), cfg.i("max_steps", 1000000), bn_cfl);
+        bn_solver.run(cfg.d("t_end", 1.0), cfg.i("max_steps", 1000000));
+        if (mpi_rank == 0)
+            printf("simulate: BN done  t=%.6e  step=%d\n", bn_solver.t, bn_solver.step);
+        return 0;
+    } else {
 
     // ── Build IC and initialise ────────────────────────────────────────────────
     auto ic = build_ic(cfg);
@@ -480,4 +496,5 @@ int main(int argc, char* argv[])
         printf("simulate: done.\n");
     }
     return 0;
+    }  // end else (model != "bn")
 }

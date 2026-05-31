@@ -643,7 +643,7 @@ add_bench_gate(tb9 test_bench_b9 "B.9 benchmark: Turbulent channel flow Re_tau=1
 # Apps
 # =============================================================================
 add_executable(simulate apps/simulate.cpp)
-target_link_libraries(simulate PRIVATE ns_solver m)
+target_link_libraries(simulate PRIVATE ns_solver bn_operators m)
 
 add_custom_target(sim
     DEPENDS simulate
