@@ -64,6 +64,85 @@
     "sgs_prt"            : 0.9,     // Turbulent Prandtl number Prt (both Smagorinsky variants).
                                     // Controls SGS heat flux; 0.7–1.0 is physically reasonable.
 
+    // ── Model dispatch ─────────────────────────────────────────────────────────
+    "model"              : "ns",
+    // Solver model: "ns" (single-phase NSSolver, default) | "bn" (Baer-Nunziato two-phase BNSolver)
+    // GPU binary always uses NSSolver; use simulate for BN.
+    "gpu"                : false,
+    // GPU execution flag (informational in simulate; run simulate_gpu for GPU path).
+
+    // ── Scheme selection ───────────────────────────────────────────────────────
+    "scheme"             : "weno5z",
+    // Convective reconstruction (CPU path):
+    //   "weno5z"  — WENO5-Z (default, 5th-order shock-capturing)
+    //   "teno5a"  — TENO5-A (better spectral resolution)
+    //   "teno7a"  — TENO7-A (7th-order; CPU falls back to TENO5-A with warning)
+    // GPU path uses the scheme compiled into gpu_rhs.cu.
+
+    // ── Viscosity ──────────────────────────────────────────────────────────────
+    "mu"                 : 0.0,
+    // Dynamic viscosity [Pa·s]. 0 = inviscid. GPU only; CPU path warns if non-zero.
+    "sutherland"         : false,
+    // Sutherland law mu(T). GPU only; CPU path warns if true.
+
+    // ── ACDI phase field ───────────────────────────────────────────────────────
+    "acdi"               : false,
+    // Enable ACDI compressible interface sharpening (φ ∈ [0,1]).
+    "acdi_ceps"          : 0.0,
+    // Compression coefficient Cε. 0 = pure advection (no sharpening).
+    "acdi_gamma_a"       : 1.4,
+    // γ for fluid A (φ=1). E.g. 6.12 for liquid water.
+    "acdi_gamma_b"       : 1.4,
+    // γ for fluid B (φ=0). 1.4 for air.
+    "acdi_pinf_a"        : 0.0,
+    // p∞ for fluid A [Pa]. 3.43e8 for liquid water, 0 for ideal gas.
+    "acdi_pinf_b"        : 0.0,
+    // p∞ for fluid B [Pa]. 0 for air.
+
+    // ── Combustion / Arrhenius (GPU only) ──────────────────────────────────────
+    "combustion"         : false,
+    // Enable single-step Arrhenius chemistry. CPU path ignores with warning.
+    "combustion_A"       : 1e4,
+    // Pre-exponential factor A [1/s].
+    "combustion_Tact"    : 10.0,
+    // Activation temperature T_act [code units].
+    "combustion_Q"       : 10.0,
+    // Heat release per unit mass of reactant.
+    "combustion_nsub"    : 8,
+    // Chemistry substeps per fluid step.
+
+    // ── Radiation / P1 (GPU only) ──────────────────────────────────────────────
+    "radiation"          : false,
+    // Enable P1 diffusion-limit radiation. CPU path ignores with warning.
+    "radiation_kappa"    : 1.0,
+    // Absorption opacity κ [1/length].
+    "radiation_arad"     : 1.0,
+    // Radiation constant a_rad [energy/(volume·T⁴)].
+
+    // ── WMLES (GPU only) ───────────────────────────────────────────────────────
+    "wmles"              : false,
+    // Enable wall-modelled LES ghost-fill. CPU path ignores with warning.
+    "wmles_model"        : "reichardt",
+    // Wall model: "reichardt" (algebraic Reichardt law) | "ode" (thin-boundary-layer).
+
+    // ── NSCBC outflow / inflow ─────────────────────────────────────────────────
+    // Set any face bc to "NSCBC" to use characteristic boundary conditions.
+    // Example: "bc_xhi": "NSCBC"  (subsonic outflow; other faces stay Periodic)
+    "nscbc_p_inf"        : 1.0,
+    // Subsonic outflow target static pressure [Pa or code units].
+
+    // ── BN two-phase EOS (model="bn") ──────────────────────────────────────────
+    "bn_gamma1"          : 1.4,
+    // γ₁ for phase 1. 1.4 for air/ideal gas.
+    "bn_gamma2"          : 4.4,
+    // γ₂ for phase 2. 4.4 for stiffened-gas water (use 1.6 for ideal-gas benchmark tests).
+    "bn_pinf1"           : 0.0,
+    // p∞₁ [Pa]. 0 for ideal gas.
+    "bn_pinf2"           : 6e8,
+    // p∞₂ [Pa]. 6e8 for stiffened-gas water.
+    "bn_cfl"             : 0.4,
+    // CFL for BNSolver (acoustic speeds are stiffer). Currently ignored — solver uses 0.4 internally.
+
     // ── Diagnostics & output ──────────────────────────────────────────────────
     "diag_interval"      : 10,      // Print step/time/CFL/KE/mass to stdout every N steps.
     "verbose"            : true,    // Enable extended per-step diagnostic output.
@@ -78,6 +157,9 @@
     //   "kelvin_helmholtz"  — 2D shear-layer instability (ic_du, ic_eps, ic_delta, ic_p0)
     //   "isentropic_vortex" — 2D isentropic vortex advection (ic_mach, ic_rc);
     //                         exact solution exists → use for convergence-rate tests
+    //   "bn_sod_x"          — BN two-phase 1D Sod tube (ic_bn_alpha1_l/r, ic_bn_p_l/r, ic_bn_rho1/2)
+    //   "bn_uniform"        — BN uniform state (ic_bn_alpha1, ic_bn_p_l, ic_bn_rho1/2)
+    //   "reactive_blast"    — spherical hot kernel (ic_blast_r, ic_blast_T_hot)
 
     // IC: uniform ──────────────────────────────────────────────────────────────
     "ic_rho"             : 1.0,     // Density [kg/m³]
@@ -107,6 +189,28 @@
     // IC: isentropic_vortex (2D convergence test) ──────────────────────────────
     "ic_mach"            : 0.3,     // Peak Mach number of the vortex
     "ic_rc"              : 0.1,     // Vortex core radius [m]
+
+    // IC: bn_sod_x (BN two-phase 1D Sod shock tube, x-aligned) ─────────────────
+    "ic_bn_alpha1_l"     : 0.9,
+    // Left-state volume fraction α₁ (used by bn_sod_x)
+    "ic_bn_alpha1_r"     : 0.1,
+    // Right-state volume fraction α₁
+    "ic_bn_alpha1"       : 0.5,
+    // Uniform volume fraction α₁ (used by bn_uniform)
+    "ic_bn_p_l"          : 1.0,
+    // Left-state / uniform pressure
+    "ic_bn_p_r"          : 0.1,
+    // Right-state pressure
+    "ic_bn_rho1"         : 1.0,
+    // Phase-1 density [kg/m³]
+    "ic_bn_rho2"         : 1.0,
+    // Phase-2 density [kg/m³]
+
+    // IC: reactive_blast (spherical hot kernel for Arrhenius ignition) ────────
+    "ic_blast_r"         : 0.1,
+    // Kernel radius as fraction of domain_L
+    "ic_blast_T_hot"     : 4.0,
+    // Hot-kernel temperature (cold exterior = 1.0)
 
     // ── Checkpointing ─────────────────────────────────────────────────────────
     "checkpoint_load"    : "",      // Path to a .bin restart file written by a previous run.
