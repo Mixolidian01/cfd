@@ -113,6 +113,20 @@
     "acdi_pinf_b"        : 0.0,
     // p∞ for fluid B [Pa]. 0 for air.
 
+    // ── Immersed Boundary Method (GPU ghost-cell, STL geometry) ───────────────
+    // "ibm_enabled"        : false,
+    // Activate GPU ghost-cell IBM. Requires a BVH-uploaded STL file.
+    // "ibm_stl_path"       : "body.stl",
+    // Path to binary or ASCII STL file.
+    // "ibm_wall_bc"        : "noslip",
+    // Wall BC type: "noslip" (no-slip + adiabatic dT/dn=0) or "isothermal" (prescribe T_wall).
+    // "ibm_u_wall"         : 0.0,
+    // Wall velocity u [m/s].
+    // "ibm_v_wall"         : 0.0,
+    // "ibm_w_wall"         : 0.0,
+    // "ibm_T_wall"         : 300.0,
+    // Wall temperature [K] (isothermal only).
+
     // ── Combustion / Arrhenius (GPU only) ──────────────────────────────────────
     "combustion"         : false,
     // Enable single-step Arrhenius chemistry. CPU path ignores with warning.

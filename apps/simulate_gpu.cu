@@ -11,6 +11,9 @@
 
 #include "solver/ns_solver.hpp"
 #include "cuda/gpu_graph.cuh"
+#include "cuda/gpu_ibm.cuh"
+#include "cuda/gpu_bvh.cuh"
+#include "models/stl_loader.hpp"
 #include "gpu_pool.hpp"
 #include "mesh/bc_types.hpp"        // bc_to_int()
 #include "io/live_streamer.hpp"
@@ -221,6 +224,15 @@ int main(int argc, char* argv[])
     sc.acdi.p_inf_a   = cfg.d("acdi_pinf_a",  0.0);
     sc.acdi.p_inf_b   = cfg.d("acdi_pinf_b",  0.0);
 
+    // === IBM ===
+    sc.ibm.enabled  = cfg.b("ibm_enabled",     false);
+    sc.ibm.stl_path = cfg.str("ibm_stl_path",  "");
+    sc.ibm.wall_bc  = cfg.str("ibm_wall_bc",   "noslip");
+    sc.ibm.u_wall   = cfg.d("ibm_u_wall",   0.0);
+    sc.ibm.v_wall   = cfg.d("ibm_v_wall",   0.0);
+    sc.ibm.w_wall   = cfg.d("ibm_w_wall",   0.0);
+    sc.ibm.T_wall   = cfg.d("ibm_T_wall",   300.0);
+
     // === Combustion / Arrhenius ===
     sc.physics.combustion_enabled = cfg.b("combustion",      false);
     sc.physics.arrhenius.A        = cfg.d("combustion_A",    1e4);
@@ -312,6 +324,20 @@ int main(int argc, char* argv[])
     }
     if (sc.acdi.use_acdi)
         graph_solver.set_gpu_acdi(sc.acdi.acdi_ceps);
+    std::unique_ptr<GpuBvh> ibm_bvh;
+    if (sc.ibm.enabled && !sc.ibm.stl_path.empty()) {
+        try {
+            uint8_t bc = 0; // NoSlip
+            if (sc.ibm.wall_bc == "isothermal") bc = 2;
+            ibm_bvh = std::make_unique<GpuBvh>();
+            ibm_bvh->build(load_stl(sc.ibm.stl_path));
+            graph_solver.set_gpu_ibm(ibm_bvh.get(), bc,
+                                     (float)sc.ibm.u_wall, (float)sc.ibm.v_wall,
+                                     (float)sc.ibm.w_wall, (float)sc.ibm.T_wall);
+        } catch (const std::exception& e) {
+            fprintf(stderr, "Warning: IBM STL load failed: %s\n", e.what());
+        }
+    }
     graph_solver.set_ducros(sc.numerics.ducros_p_threshold,
                             1.0 / sc.numerics.ducros_blend_width);
     auto gpu_build = [&]() {

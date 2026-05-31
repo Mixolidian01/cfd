@@ -27,8 +27,9 @@
 #include "physics/p1_radiation.hpp"
 #include "models/wall_model.hpp"
 
-// Forward declaration — full definition in gpu_pool.hpp (CUDA TU only).
+// Forward declarations — full definitions in CUDA TUs only.
 struct GpuPool;
+struct GpuBvh;
 
 // P10-A2: TimeIntegrator — common interface for all SSP-RK3 implementations.
 //
@@ -78,6 +79,11 @@ struct IGpuSolver : TimeIntegrator {
     // P-MPI-GPU: wire MPI partition for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_mpi(MpiPartition* /*p*/) {}
+
+    // GPU ghost-cell IBM (STL geometry, built once per regrid).
+    // Default no-op — only GpuGraphSolver overrides this.
+    virtual void   set_gpu_ibm(GpuBvh* /*bvh*/, uint8_t /*bc*/,
+                                float /*uw*/, float /*vw*/, float /*ww*/, float /*Tw*/) {}
 
     // Option A/C: wire GPU snapshot buffer for zero-copy slice + metric extraction.
     // Default no-op — only GpuGraphSolver overrides this.
@@ -218,7 +224,18 @@ struct SolverConfig {
         // Activate via bc.variant = ContactAngleBC{theta_deg}; requires acdi_ceps > 0.
     } acdi;
 
-    // ── 8. I/O ────────────────────────────────────────────────────────────
+    // ── 8. Immersed Boundary Method (GPU ghost-cell, STL geometry) ────────
+    struct IbmConfig {
+        bool        enabled  = false;
+        std::string stl_path = "";       // path to binary or ASCII STL file
+        std::string wall_bc  = "noslip"; // "noslip" (zero-vel + adiabatic) | "isothermal"
+        double      u_wall   = 0.0;
+        double      v_wall   = 0.0;
+        double      w_wall   = 0.0;
+        double      T_wall   = 300.0;
+    } ibm;
+
+    // ── 9. I/O ────────────────────────────────────────────────────────────
     struct IoConfig {
         bool verbose      = true;
         bool verbose_json = false;
