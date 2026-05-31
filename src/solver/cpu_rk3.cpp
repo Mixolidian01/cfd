@@ -5,6 +5,7 @@
 
 #include "solver/cpu_rk3.hpp"
 #include "physics/weno5_recon.hpp"
+#include "physics/teno5_recon.hpp"
 #include "physics/hllc_flux.hpp"
 #include "physics/stiffened_gas_eos.hpp"
 #include "mpi/mpi_comm.hpp"
@@ -41,8 +42,46 @@ void CpuRk3Integrator::select_scheme() {
     const bool sg = cfg.acdi.use_acdi &&
                     (cfg.acdi.gamma_a != cfg.acdi.gamma_b ||
                      cfg.acdi.p_inf_a != 0.0 || cfg.acdi.p_inf_b != 0.0);
-    const bool es = (cfg.exec.flux_scheme == SolverConfig::FluxScheme::HLLC_ES);
+    const bool es    = (cfg.exec.flux_scheme == SolverConfig::FluxScheme::HLLC_ES);
+    const bool teno5 = (cfg.exec.recon       == SolverConfig::ReconScheme::TENO5A)
+                    || (cfg.exec.recon       == SolverConfig::ReconScheme::TENO7A);
 
+    if (teno5) {
+        if (es && !sg) {
+            const IdealGasEOS eos{cfg.physics.gamma};
+            rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,
+                            const BCVariant& bc, double sw, int lf, bool cz,
+                            const DucrosConfig& d) noexcept {
+                tree_rhs_typed<HllcEsFlux, Teno5Recon, IdealGasEOS>(t, r, bc, sw, lf, cz, d, eos);
+            };
+        } else if (!es && !sg) {
+            const IdealGasEOS eos{cfg.physics.gamma};
+            rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,
+                            const BCVariant& bc, double sw, int lf, bool cz,
+                            const DucrosConfig& d) noexcept {
+                tree_rhs_typed<HllcFlux, Teno5Recon, IdealGasEOS>(t, r, bc, sw, lf, cz, d, eos);
+            };
+        } else if (es) {
+            const StiffenedGasEOS eos{cfg.acdi.gamma_a, cfg.acdi.gamma_b,
+                                       cfg.acdi.p_inf_a, cfg.acdi.p_inf_b};
+            rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,
+                            const BCVariant& bc, double sw, int lf, bool cz,
+                            const DucrosConfig& d) noexcept {
+                tree_rhs_typed<HllcEsFlux, Teno5Recon, StiffenedGasEOS>(t, r, bc, sw, lf, cz, d, eos);
+            };
+        } else {
+            const StiffenedGasEOS eos{cfg.acdi.gamma_a, cfg.acdi.gamma_b,
+                                       cfg.acdi.p_inf_a, cfg.acdi.p_inf_b};
+            rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,
+                            const BCVariant& bc, double sw, int lf, bool cz,
+                            const DucrosConfig& d) noexcept {
+                tree_rhs_typed<HllcFlux, Teno5Recon, StiffenedGasEOS>(t, r, bc, sw, lf, cz, d, eos);
+            };
+        }
+        return;
+    }
+
+    // WENO5Z (default)
     if (es && !sg) {
         const IdealGasEOS eos{cfg.physics.gamma};
         rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,

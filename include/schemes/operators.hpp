@@ -230,6 +230,29 @@ extern template void compute_rhs_typed<HllcEsFlux, Weno5Recon, StiffenedGasEOS>(
 extern template void compute_rhs_typed<HllcFlux, Weno5Recon, StiffenedGasEOS>(
     const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
 
+#include "physics/teno5_recon.hpp"
+extern template void tree_rhs_typed<HllcEsFlux, Teno5Recon, IdealGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, IdealGasEOS) noexcept;
+extern template void tree_rhs_typed<HllcFlux, Teno5Recon, IdealGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, IdealGasEOS) noexcept;
+extern template void tree_rhs_typed<HllcEsFlux, Teno5Recon, StiffenedGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, StiffenedGasEOS) noexcept;
+extern template void tree_rhs_typed<HllcFlux, Teno5Recon, StiffenedGasEOS>(
+    BlockTree&, std::vector<CellBlock>&, const BCVariant&, double, int, bool,
+    const DucrosConfig&, StiffenedGasEOS) noexcept;
+
+extern template void compute_rhs_typed<HllcEsFlux, Teno5Recon, IdealGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+extern template void compute_rhs_typed<HllcFlux, Teno5Recon, IdealGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+extern template void compute_rhs_typed<HllcEsFlux, Teno5Recon, StiffenedGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+extern template void compute_rhs_typed<HllcFlux, Teno5Recon, StiffenedGasEOS>(
+    const CellBlock&, CellBlock&, const DucrosConfig&, uint8_t) noexcept;
+
 // ── P14.1: ACDI phase-field advection RHS ────────────────────────────────────
 // Conservative 1st-order upwind: ∂φ/∂t = -∇·(φu).
 // Ghost phi must be filled (via fill_ghosts_periodic or equivalent) before call.
