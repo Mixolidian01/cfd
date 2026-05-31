@@ -43,10 +43,14 @@ void CpuRk3Integrator::select_scheme() {
                     (cfg.acdi.gamma_a != cfg.acdi.gamma_b ||
                      cfg.acdi.p_inf_a != 0.0 || cfg.acdi.p_inf_b != 0.0);
     const bool es    = (cfg.exec.flux_scheme == SolverConfig::FluxScheme::HLLC_ES);
-    const bool teno5 = (cfg.exec.recon       == SolverConfig::ReconScheme::TENO5A)
-                    || (cfg.exec.recon       == SolverConfig::ReconScheme::TENO7A);
+    // TENO5A and TENO7A both use Teno5Recon on CPU (TENO7A is a GPU-only 7th-order kernel)
+    const bool use_teno5_recon = (cfg.exec.recon       == SolverConfig::ReconScheme::TENO5A)
+                              || (cfg.exec.recon       == SolverConfig::ReconScheme::TENO7A);
 
-    if (teno5) {
+    if (cfg.exec.recon == SolverConfig::ReconScheme::TENO7A)
+        fprintf(stderr, "[CpuRk3] WARNING: TENO7A not available on CPU path — using TENO5A (5th-order).\n");
+
+    if (use_teno5_recon) {
         if (es && !sg) {
             const IdealGasEOS eos{cfg.physics.gamma};
             rhs_fn_ = [eos](BlockTree& t, std::vector<CellBlock>& r,
