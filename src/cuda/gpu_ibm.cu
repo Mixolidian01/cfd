@@ -5,7 +5,6 @@
 #include "mesh/cell_block.hpp"
 #include <vector>
 
-// k_ibm_classify: one thread per cell, compute SDF via BVH, write cell_type+sdf+wnorm.
 // gridDim.x = n_leaves, blockDim.x = 256
 __global__
 void k_ibm_classify(
@@ -36,7 +35,8 @@ void k_ibm_classify(
     }
 }
 
-// k_ibm_mark_ghosts: second pass — promote interior FLUID cells adjacent to SOLID to IBM_GHOST.
+// Second pass after k_ibm_classify — widening the solid boundary by one cell layer ensures
+// the interpolation stencil (Task 4) always has at least one fluid probe point.
 // gridDim.x = n_leaves, blockDim.x = 256
 __global__
 void k_ibm_mark_ghosts(const GpuIbmMeta* __restrict__ metas)
@@ -50,7 +50,7 @@ void k_ibm_mark_ghosts(const GpuIbmMeta* __restrict__ metas)
         if (i < GPU_NG || i >= GPU_NG+GPU_NB) continue;
         if (j < GPU_NG || j >= GPU_NG+GPU_NB) continue;
         if (k < GPU_NG || k >= GPU_NG+GPU_NB) continue;
-        // Check 6 face neighbors
+        // Face-connectivity only (no diagonal) keeps the ghost layer exactly one cell thick
         const int di[6]={-1,1,0,0,0,0};
         const int dj[6]={ 0,0,-1,1,0,0};
         const int dk[6]={ 0,0,0,0,-1,1};
