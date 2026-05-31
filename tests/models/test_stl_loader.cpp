@@ -3,7 +3,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
-#include <fstream>
 
 static int nfail = 0;
 static void check(bool ok, const char* tag, const char* msg) {
