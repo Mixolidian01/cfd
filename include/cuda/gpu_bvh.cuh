@@ -61,9 +61,86 @@ struct GpuBvh {
 // point into (out_nx, out_ny, out_nz).
 //
 // Traversal: iterative depth-first stack, max depth 64 levels.
+//
+// Implementation is header-inline so that any .cu TU that includes this header
+// gets the device code inlined (no -rdc / separate compilation required).
 
-__device__ float bvh_sdf(
-    const BvhNode* __restrict__ nodes, int n_nodes,
+// ── Device helper: AABB squared distance ─────────────────────────────────────
+__device__ __forceinline__ static float bvh_aabb_sq_dist(
+    const float* __restrict__ bmin,
+    const float* __restrict__ bmax,
+    float px, float py, float pz) noexcept
+{
+    const float coords[3] = { px, py, pz };
+    float d2 = 0.0f;
+    for (int a = 0; a < 3; ++a) {
+        const float d = fmaxf(bmin[a] - coords[a], 0.0f)
+                      + fmaxf(coords[a] - bmax[a], 0.0f);
+        d2 += d * d;
+    }
+    return d2;
+}
+
+// ── Device helper: closest point on triangle (Ericson §5.1.5) ────────────────
+__device__ __forceinline__ static void bvh_closest_on_triangle(
+    float ax, float ay, float az,
+    float bx, float by, float bz,
+    float cx, float cy, float cz,
+    float px, float py, float pz,
+    float& rx, float& ry, float& rz) noexcept
+{
+    const float abx = bx-ax, aby = by-ay, abz = bz-az;
+    const float acx = cx-ax, acy = cy-ay, acz = cz-az;
+    const float apx = px-ax, apy = py-ay, apz = pz-az;
+
+    const float d1 = abx*apx + aby*apy + abz*apz;
+    const float d2 = acx*apx + acy*apy + acz*apz;
+
+    if (d1 <= 0.0f && d2 <= 0.0f) { rx=ax; ry=ay; rz=az; return; }
+
+    const float bpx = px-bx, bpy = py-by, bpz = pz-bz;
+    const float d3  = abx*bpx + aby*bpy + abz*bpz;
+    const float d4  = acx*bpx + acy*bpy + acz*bpz;
+
+    if (d3 >= 0.0f && d4 <= d3) { rx=bx; ry=by; rz=bz; return; }
+
+    const float vc = d1*d4 - d3*d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f) {
+        const float v = d1 / (d1 - d3);
+        rx = ax + v*abx;  ry = ay + v*aby;  rz = az + v*abz;
+        return;
+    }
+
+    const float cpx = px-cx, cpy = py-cy, cpz = pz-cz;
+    const float d5  = abx*cpx + aby*cpy + abz*cpz;
+    const float d6  = acx*cpx + acy*cpy + acz*cpz;
+
+    if (d6 >= 0.0f && d5 <= d6) { rx=cx; ry=cy; rz=cz; return; }
+
+    const float vb = d5*d2 - d1*d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f) {
+        const float w = d2 / (d2 - d6);
+        rx = ax + w*acx;  ry = ay + w*acy;  rz = az + w*acz;
+        return;
+    }
+
+    const float va = d3*d6 - d5*d4;
+    if (va <= 0.0f && (d4-d3) >= 0.0f && (d5-d6) >= 0.0f) {
+        const float w = (d4-d3) / ((d4-d3) + (d5-d6));
+        rx = bx + w*(cx-bx);  ry = by + w*(cy-by);  rz = bz + w*(cz-bz);
+        return;
+    }
+
+    const float denom = 1.0f / (va + vb + vc);
+    const float v = vb * denom;
+    const float w = vc * denom;
+    rx = ax + v*abx + w*acx;
+    ry = ay + v*aby + w*acy;
+    rz = az + v*abz + w*acz;
+}
+
+__device__ __forceinline__ float bvh_sdf(
+    const BvhNode* __restrict__ nodes, int /*n_nodes*/,
     const float* __restrict__ v0x, const float* __restrict__ v0y,
     const float* __restrict__ v0z,
     const float* __restrict__ v1x, const float* __restrict__ v1y,
@@ -73,4 +150,64 @@ __device__ float bvh_sdf(
     const float* __restrict__ tnx, const float* __restrict__ tny,
     const float* __restrict__ tnz,
     float px, float py, float pz,
-    float& out_nx, float& out_ny, float& out_nz);
+    float& out_nx, float& out_ny, float& out_nz)
+{
+    float best_dist2 = 1e30f;
+    float best_cx = px, best_cy = py, best_cz = pz;
+    int   best_tri = 0;
+
+    int stack[64];
+    int sp = 0;
+    stack[sp++] = 0;
+
+    while (sp > 0) {
+        const int idx = stack[--sp];
+        const BvhNode& node = nodes[idx];
+
+        const float ad2 = bvh_aabb_sq_dist(node.aabb_min, node.aabb_max, px, py, pz);
+        if (ad2 >= best_dist2) continue;
+
+        if (node.left < 0) {
+            const int ti = ~node.left;
+            float rx, ry, rz;
+            bvh_closest_on_triangle(
+                v0x[ti], v0y[ti], v0z[ti],
+                v1x[ti], v1y[ti], v1z[ti],
+                v2x[ti], v2y[ti], v2z[ti],
+                px, py, pz,
+                rx, ry, rz);
+            const float dx = px-rx, dy = py-ry, dz = pz-rz;
+            const float d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 < best_dist2) {
+                best_dist2 = d2;
+                best_cx = rx;  best_cy = ry;  best_cz = rz;
+                best_tri = ti;
+            }
+        } else {
+            const float d2l = bvh_aabb_sq_dist(
+                nodes[node.left].aabb_min, nodes[node.left].aabb_max, px, py, pz);
+            const float d2r = bvh_aabb_sq_dist(
+                nodes[node.right].aabb_min, nodes[node.right].aabb_max, px, py, pz);
+
+            if (d2l <= d2r) {
+                stack[sp++] = node.right;
+                stack[sp++] = node.left;
+            } else {
+                stack[sp++] = node.left;
+                stack[sp++] = node.right;
+            }
+        }
+    }
+
+    const float dx = px - best_cx;
+    const float dy = py - best_cy;
+    const float dz = pz - best_cz;
+    const float sign = (dx*tnx[best_tri] + dy*tny[best_tri] + dz*tnz[best_tri] >= 0.0f)
+                       ? 1.0f : -1.0f;
+
+    out_nx = tnx[best_tri];
+    out_ny = tny[best_tri];
+    out_nz = tnz[best_tri];
+
+    return sign * sqrtf(best_dist2);
+}
