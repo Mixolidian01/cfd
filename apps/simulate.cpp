@@ -42,6 +42,40 @@
 //     "ic_p0"              : 2.5          background pressure (kelvin_helmholtz)
 //     "ic_mach"            : 0.3          vortex Mach number (isentropic_vortex)
 //     "ic_rc"              : 0.1          vortex core radius (isentropic_vortex)
+//   === Model / Execution ===
+//     "model"              : "ns"          solver model: "ns" (single-phase) | "bn" (two-phase)
+//     "gpu"                : false         informational: run simulate_gpu for GPU path
+//     "scheme"             : "weno5z"      reconstruction: "weno5z" | "teno5a" | "teno7a"
+//     "mu"                 : 0.0           dynamic viscosity [Pa*s]; 0 = inviscid (GPU only)
+//     "sutherland"         : false         Sutherland mu(T) law (GPU only)
+//   === ACDI phase field ===
+//     "acdi"               : false         enable ACDI compressible interface
+//     "acdi_ceps"          : 0.0           compression coefficient
+//     "acdi_gamma_a"       : 1.4           gamma for fluid A
+//     "acdi_gamma_b"       : 1.4           gamma for fluid B
+//     "acdi_pinf_a"        : 0.0           p_inf for fluid A [Pa]
+//     "acdi_pinf_b"        : 0.0           p_inf for fluid B [Pa]
+//   === Combustion (GPU only) ===
+//     "combustion"         : false         enable Arrhenius chemistry
+//     "combustion_A"       : 1e4           pre-exponential factor [1/s]
+//     "combustion_Tact"    : 10.0          activation temperature [code units]
+//     "combustion_Q"       : 10.0          heat release per unit mass
+//     "combustion_nsub"    : 8             chemistry substeps per fluid step
+//   === Radiation / P1 (GPU only) ===
+//     "radiation"          : false         enable P1 diffusion-limit radiation
+//     "radiation_kappa"    : 1.0           absorption opacity [1/length]
+//     "radiation_arad"     : 1.0           radiation constant a_rad
+//   === WMLES (GPU only) ===
+//     "wmles"              : false         enable wall-modelled LES
+//     "wmles_model"        : "reichardt"   wall model: "reichardt" | "ode"
+//   === NSCBC ===
+//     "nscbc_p_inf"        : 1.0           outflow target static pressure
+//   === BN two-phase (model="bn") ===
+//     "bn_gamma1"          : 1.4           gamma_1 for phase 1
+//     "bn_gamma2"          : 4.4           gamma_2 for phase 2
+//     "bn_pinf1"           : 0.0           p_inf_1 [Pa]
+//     "bn_pinf2"           : 6e8           p_inf_2 [Pa]
+//     "bn_cfl"             : 0.4           CFL for BNSolver
 //   Checkpointing:
 //     "checkpoint_load"    : ""           path to read restart file (empty = skip)
 //     "checkpoint_save"    : ""           path to write checkpoint (empty = disable)
@@ -221,6 +255,8 @@ int main(int argc, char* argv[])
     (void)model;    // used in Task 5 BN dispatch; suppress unused warning for now
     if (use_gpu)
         fprintf(stderr, "[INFO] simulate: gpu=true — run simulate_gpu for the GPU path\n");
+    if (model == "bn")
+        fprintf(stderr, "[WARN] simulate: model=bn not yet dispatched on CPU path — running NS\n");
 
     // Boundary conditions — per-face keys take precedence over global "bc"
     {
@@ -269,6 +305,8 @@ int main(int argc, char* argv[])
             sc.exec.recon = SolverConfig::ReconScheme::TENO5A;
         else if (sch == "teno7a")
             sc.exec.recon = SolverConfig::ReconScheme::TENO7A;
+        else if (sch != "weno5z")
+            fprintf(stderr, "[WARN] simulate: unknown scheme='%s', falling back to weno5z\n", sch.c_str());
         // else WENO5Z default
     }
 
@@ -276,6 +314,8 @@ int main(int argc, char* argv[])
     {
         const double mu         = cfg.d("mu",         0.0);
         const bool   sutherland = cfg.b("sutherland", false);
+        if (mu != 0.0 || sutherland)
+            fprintf(stderr, "[WARN] simulate: mu/sutherland not yet wired on CPU path (use simulate_gpu)\n");
         (void)mu; (void)sutherland;
     }
 
