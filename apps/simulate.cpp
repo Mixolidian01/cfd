@@ -354,6 +354,11 @@ int main(int argc, char* argv[])
     if (sc.physics.wmles_enabled)
         fprintf(stderr, "[WARN] simulate: wmles=true — use simulate_gpu (CPU path ignores wmles)\n");
 
+    // === Body force ===
+    sc.physics.body_force[0] = cfg.d("body_fx", 0.0);
+    sc.physics.body_force[1] = cfg.d("body_fy", 0.0);
+    sc.physics.body_force[2] = cfg.d("body_fz", 0.0);
+
     // === BN EOS (read regardless; used in BN dispatch in Task 5) ===
     const BNEosParams bn_eos{
         cfg.d("bn_gamma1", 1.4),

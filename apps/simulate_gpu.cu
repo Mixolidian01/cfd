@@ -255,6 +255,11 @@ int main(int argc, char* argv[])
     if (sc.physics.wmles_enabled)
         fprintf(stderr, "[WARN] simulate_gpu: wmles wired via gpu_wmles.cu — not yet in simulate_gpu.cu step loop\n");
 
+    // === Body force ===
+    sc.physics.body_force[0] = cfg.d("body_fx", 0.0);
+    sc.physics.body_force[1] = cfg.d("body_fy", 0.0);
+    sc.physics.body_force[2] = cfg.d("body_fz", 0.0);
+
     const double domain_L = cfg.d("domain_L", 1.0);
     const double Lx = cfg.has("domain_Lx") ? cfg.d("domain_Lx", domain_L) : domain_L;
     const double Ly = cfg.has("domain_Ly") ? cfg.d("domain_Ly", domain_L) : domain_L;
@@ -340,6 +345,9 @@ int main(int argc, char* argv[])
     }
     graph_solver.set_ducros(sc.numerics.ducros_p_threshold,
                             1.0 / sc.numerics.ducros_blend_width);
+    graph_solver.set_body_force(sc.physics.body_force[0],
+                                sc.physics.body_force[1],
+                                sc.physics.body_force[2]);
     auto gpu_build = [&]() {
         if (sc.bc.faces) {
             std::array<int,6> bt{};
