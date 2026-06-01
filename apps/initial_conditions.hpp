@@ -170,8 +170,46 @@ build_ic(const Config& cfg)
         };
     }
 
+    if (name == "channel") {
+        // Turbulent channel flow at Re_tau = 395, u_tau = 1, h = 1, nu = 1/Re_tau.
+        // Domain: x in [0, Lx], y in [0, Ly=2], z in [0, Lz]; walls at y=0 and y=Ly.
+        // Mean velocity via Reichardt log-law; sinusoidal perturbation to seed turbulence.
+        constexpr double Re_tau  = 395.0;
+        constexpr double kappa   = 0.41;
+        constexpr double C_reich = 7.8;
+        const double     Lx      = cfg.d("domain_Lx", 2.0 * M_PI);
+        const double     Ly      = cfg.d("domain_Ly", 2.0);
+        const double     Lz      = cfg.d("domain_Lz", 4.0 * M_PI / 3.0);
+        return [=](double x, double y, double z) -> Prim {
+            // Wall-normal distance from nearest wall, then y+
+            const double y_wd  = std::min(y, Ly - y);
+            const double y_p   = y_wd * Re_tau;          // y+ = y_wd * u_tau / nu
+            // Reichardt profile
+            const double u_mean = (1.0 / kappa) * std::log(1.0 + kappa * y_p)
+                                + C_reich * (1.0 - std::exp(-y_p / 11.0)
+                                           - (y_p / 11.0) * std::exp(-y_p / 3.0));
+            // Small sinusoidal perturbations to break symmetry
+            const double u_pert = 0.05 * u_mean
+                                * std::sin(2.0 * M_PI * x / Lx)
+                                * std::sin(M_PI * y_wd / Ly);
+            const double v_pert = 0.05 * u_mean
+                                * std::sin(2.0 * M_PI * z / Lz)
+                                * std::sin(M_PI * y_wd / Ly);
+            Prim q{};
+            q.rho = 1.0;
+            q.u   = u_mean + u_pert;
+            q.v   = v_pert;
+            q.w   = 0.0;
+            q.p   = 1.0 / GAMMA;          // p/rho = 1/gamma → c=1 (low-Mach reference)
+            q.T   = q.p / (q.rho * R_GAS);
+            q.c   = std::sqrt(GAMMA * q.p / q.rho);
+            return q;
+        };
+    }
+
     fprintf(stderr, "simulate: unknown ic '%s'. "
-            "Valid: uniform sod taylor_green kelvin_helmholtz isentropic_vortex reactive_blast\n",
+            "Valid: uniform sod taylor_green kelvin_helmholtz isentropic_vortex "
+            "reactive_blast channel\n",
             name.c_str());
     exit(1);
 }
