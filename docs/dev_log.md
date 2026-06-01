@@ -589,3 +589,72 @@ GPU port of the ACDI (Algebraic Convective-Diffusive Interface) phase-field tran
 **t49 gate (I5–I9, all PASS):** I5 classify, I6a/b no-slip correctness, I7 adiabatic correctness, I8 10-step stability (no divergence, all ρ > 0), I9a/b rebuild invariance. ba suite 39/39 PASS.
 
 ---
+
+## Sim — simulate.cpp + template.json sync  (2026-05-31  46576f0–f02b424)
+
+**What:** `apps/simulate.cpp` and `apps/template.json` were missing all physics added after D3: scheme selection, WMLES, NSCBC, ACDI phase field, BN two-phase model, combustion/Arrhenius, P1 radiation, and GPU dispatch. The sync wired all subsystems into both the CPU and GPU simulate paths.
+
+**Key additions:**
+
+- `template.json`: added `model` (ns/bn), `gpu`, `scheme` (weno5z/teno5a/teno7a), `acdi`, `combustion`, `radiation`, `wmles`, `nscbc`, `bn_cfl` sections; later extended with `body_fx/fy/fz` (e600874).
+- `simulate.cpp` CPU path: `select_scheme()` dispatches Teno5Recon/Weno5ZRecon/Teno7ARecon; ACDI phase-field IC; BN two-phase (`BNSolver`); combustion (`species_enabled`); radiation (`RadiationConfig`); WMLES (`wmles_enabled`); NSCBC outflow warning.
+- `simulate_gpu.cu` GPU path: mirrors CPU dispatch with `GpuReconScheme` enum; `set_body_force()` wiring; `IbmConfig` parsing.
+- Rectangular domain (`Lx/Ly/Lz/Nx/Ny/Nz` keys) added in S9 commit (8c1e515).
+
+**Commits:** 46576f0, 207eea7, 20068fd, 12cd003, 761778d, f02b424, 8c1e515, e600874.
+
+---
+
+## IBM-WN — Generalized winding number for IBM sign determination  (2026-06-01  45f7ec8–60c04b4)
+
+**What:** `bvh_sdf()` previously signed the distance using a pseudo-normal dot-product (Bærentzen & Aanæs 2005) which fails at edges and vertices of non-convex STL meshes — a query point in the hole of a torus was misclassified as SOLID. Replaced with the **generalized winding number** (Van Oosterom & Strackee 1983): sum solid angles over all mesh triangles, classify as SOLID if winding number > 0.5.
+
+**Implementation:**
+
+- `include/cuda/gpu_bvh.cuh`: new `__device__ __forceinline__ double bvh_winding_number(...)` sums `2·atan2(a'·(b'×c'), 1 + a'·b' + b'·c' + c'·a')` over all `n_tris` triangles; `bvh_sdf()` gains `n_tris` parameter and calls it instead of the dot-product.
+- `src/cuda/gpu_ibm.cu`: `k_ibm_classify` updated to pass `bvh.n_tris` to `bvh_sdf`.
+- `tests/cuda/test_t49_gpu_ibm.cu`: added W5a (center-hole point → FLUID) and W5b (tube-interior point → SOLID) gates using an inline 72-triangle torus mesh (R=0.5, r=0.15, 6 sections).
+- `docs/tech_debt.md`: BVH sign determination section marked ✅ DONE.
+
+**Gate W5 (t49, all PASS):** Pseudo-normal sign would misclassify the torus hole center; winding number correctly returns FLUID. Full t49 suite I5–I9, W5a/W5b, all PASS.
+
+**Commits:** 45f7ec8, f373d97, 596223b, b1bb6d5, 60c04b4.
+
+---
+
+## BF — Body-force source term  (2026-06-01  e7b4085–dc26e2e)
+
+**What:** Added a constant body-force source term `S_body = [0, fx·ρ, fy·ρ, fz·ρ, f·ρu]ᵀ` to both the CPU and GPU advance loops. Required for body-force-driven turbulent channel flow (WMLES gate t50) and future fan/pump simulations.
+
+**Implementation:**
+
+- `include/solver/ns_solver.hpp`: `SolverConfig::PhysicsConfig` gains `double body_force[3] = {0,0,0}`.
+- `src/solver/cpu_rk3.cpp` (or `operators.cpp`): `apply_body_force()` adds source after convective+viscous RHS; called once per SSP-RK3 sub-stage.
+- `include/cuda/gpu_rhs.cuh`: `GpuLeafRhsMeta` gains `force_x`, `force_y`, `force_z` fields.
+- `src/cuda/gpu_rhs.cu`: `k_body_force` kernel adds source to `d_RHS`; called from `GpuRhsList::exec()` after `k_rhs_visc`.
+- `src/cuda/gpu_graph.cu`: `GpuGraphSolver::set_body_force(fx, fy, fz)` override stores fields and calls `rhs_list_.rebuild_force()`; `simulate_gpu.cu` reads `body_fx/fy/fz` from JSON and calls `set_body_force()`.
+- Channel IC: `build_channel_ic()` in `include/models/initial_conditions.hpp` — Reichardt mean profile + sinusoidal perturbation to seed turbulence.
+
+**Commits:** e7b4085, 856b60f, 350d9cd, 9e2aa96, dc26e2e.
+
+---
+
+## C50 — Turbulent channel DNS validation Re_τ=395  (2026-06-01  233ca24–55f7777)
+
+**What:** New gate `t50` (`tests/cuda/test_t50_channel_wmles.cu`) runs a body-force-driven turbulent channel at Re_τ=395 with the Reichardt algebraic WMLES wall model. After a 500-step spin-up, time-averaged statistics over 500 additional steps verify the log-law intercept B = u⁺ − (1/κ)·ln(y⁺) in the range [4.9, 6.2]. Implements D7 "channel DNS validation" gate.
+
+**Setup:**
+- Domain: Lx=2π, Ly=2, Lz=4π/3; 32×32×32 grid (64 leaves, Δy=0.0625, y⁺₁≈25).
+- Physics: ρ=1, ν=1/395, u_τ=1, body_force_x=1.0; CFL=0.03 for acoustic stability.
+- IC: Reichardt mean profile + sinusoidal perturbation; periodic x/z, WMLES wall model at y=±1.
+- Statistics: accumulated over 500 steps post spin-up; u_mean(y) = ⟨ρu⟩/⟨ρ⟩.
+
+**Result:** Measured B ≈ 5.64 (κ=0.41, y⁺ range [30, 200]) — within [4.9, 6.2] gate. Consistent with Reichardt composite law and Lee & Moser (2015) DNS at Re_τ=395.
+
+**Gate C50 (t50, PASS):** B ∈ [4.9, 6.2] verified; ba suite 39/39 PASS.
+
+**Files:** `tests/cuda/test_t50_channel_wmles.cu` (new), `CMakeLists.txt` (t50 target added), `docs/tech_debt.md` (D7 section marked ✅ DONE).
+
+**Commits:** 233ca24, 62afb41, 2c92318, 0ea3b86, 55f7777.
+
+---

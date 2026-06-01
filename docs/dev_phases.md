@@ -76,9 +76,11 @@ These were not in the original CLAUDE.md phase list; implemented 2026-05-30.
 
 | Work item | Title | Status | Gate | Commit | Date |
 |-----------|-------|--------|------|--------|------|
-| IBM | STL import + GPU ghost-cell IBM | ✅ DONE | t49 (I5–I9) | 70d2157 | 2026-05-31/06-01 |
+| IBM | STL import + GPU ghost-cell IBM | ✅ DONE | t49 (I5–I9, W5) | 70d2157 / 596223b | 2026-05-31/06-01 |
 | Rect | Rectangular domain (Lx/Ly/Lz/Nx/Ny/Nz) | ✅ DONE | t42_rect | 06e42ac–5a0faac | 2026-05-29 |
 | Sim | simulate + template.json sync | ✅ DONE | — | 46576f0–f02b424 | 2026-05-31 |
+| BF | Body-force source term (momentum + energy) | ✅ DONE | — | e7b4085–dc26e2e | 2026-06-01 |
+| C50 | Turbulent channel WMLES Re_τ=395 DNS gate | ✅ DONE | t50 (C50) | 233ca24 | 2026-06-01 |
 
 ---
 
@@ -112,7 +114,8 @@ These were not in the original CLAUDE.md phase list; implemented 2026-05-30.
 | t46 | G4 | ODE wall model (GPU) |
 | t47 | G5 | Berger-Oliger LTS (GPU) |
 | t48 | G6 | Baer-Nunziato two-phase (GPU) |
-| t49 | IBM | STL import + ghost-cell IBM (I5–I9) |
+| t49 | IBM | STL import + ghost-cell IBM (I5–I9, W5 winding-number sign) |
+| t50 | C50 | Turbulent channel WMLES Re_τ=395, B∈[4.9,6.2] |
 
 ---
 

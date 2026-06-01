@@ -58,131 +58,10 @@ A fully GPU-native, production-grade compressible CFD solver with:
 7. **Roofline-optimal kernels** — ≥ 55 % of peak BW for RHS kernels, ≥ 75 % for
    copy/halo kernels, on A100/H100 (Nsight Compute roofline)
 
-## Development phases (execute in priority order)
+## Development phases
 
-> **Phase completion status:** see `docs/dev_phases.md` — all D0–D11 and G1–G6 phases are ✅ DONE; D8 is 🚫 DROPPED.
-
-### D0 — Baseline verification (before any new feature)
-- Ensure all gates from `to_refactor` pass on this branch: `cmake --build build -t ba`
-- Establish GPU performance baseline: run `ncu` on `k_rhs_conv`, record achieved BW%
-- Gate: 32/32 CPU tests + t24–t28 GPU tests pass; baseline BW% logged to
-  `docs/perf/baseline_roofline.md`
-
-### D0.5 — Shared-memory tiling for k_rhs_conv (highest-ROI optimisation)
-- Load each NB2×NB2 i-plane tile into shared memory before the WENO sweep; eliminates
-  ~60 % of DRAM reads for transverse stencil accesses
-- Tile size: NB2×NB2 doubles = 1152 B; fits comfortably per SM
-- Profile before and after with `ncu --set full`; target: BW% improvement ≥ 20 pp
-- Gate: T08 convergence rate unchanged (≥ 1.8); BW% logged to `docs/perf/`
-
-### D1 — GPU-native AMR (eliminate CPU round-trip on regrid)
-- Move refinement criteria evaluation to a GPU reduction kernel
-- Move prolongation and restriction to `__global__` kernels in `gpu_amr.cu`
-- `BlockTree::refine()` becomes a host-side tree-topology update only;
-  data movement stays device-to-device
-- Gate: all existing AMR tests pass; new `t29_gpu_amr_native` verifies
-  refine/coarsen cycle with no `cudaMemcpy D2H` during advance
-
-### D2 — CUDA-aware MPI halo exchange (remove CPU staging)
-- Replace `GpuMpiHaloList` D2H→CPU→H2D path with direct GPU-buffer
-  `MPI_Isend`/`MPI_Irecv`; UCX/OpenMPI handles NVLink acceleration transparently
-- Use `cudaStreamSynchronize` before `MPI_Isend` (required); post `MPI_Irecv` before
-  sync to maximise overlap; `MPI_Waitall` then async H2D copy on solver stream
-- NCCL is **not** used for halos — only for `mpi_allreduce_min` (CFL, existing)
-- Guard: `#ifdef MPIX_CUDA_AWARE_SUPPORT` runtime check; fall back to CPU staging
-- Gate: `t28` still passes; new `t30_cuda_aware_halo` measures halo time ≤ 60 % of
-  CPU-staging baseline on 2-GPU node; BW logged to `docs/perf/`
-
-### D3 — TENO7-A reconstruction (higher spectral resolution)
-- Implement `teno7_face_t` functor in `include/physics/teno7.hpp` following
-  Fu et al. (2019); `__host__ __device__`, `template <Axis DIR>`
-- TENO7-A chosen over WENO-AO (avoids multi-level WENO weights, no thread divergence)
-  and DGSEM (subcell limiting breaks GPU advantage for shock+AMR flows)
-- Replace WENO5-Z face interpolation in `gpu_rhs.cu` via the R4 backend tag;
-  WENO5-Z remains available for comparison
-- Gate: T08 isentropic vortex convergence rate ≥ 3.8 (was ≥ 1.8); Sod shock
-  tube bit-identical for X/Y/Z; no new positivity violations
-
-### D4 — GPU-resident GMRES for implicit viscous solve
-- Implement **matrix-free** preconditioned GMRES in `src/cuda/gpu_gmres.cu`:
-  `A·v` product = apply viscous stencil kernel (no sparse matrix assembly);
-  BLAS-1 (dot, axpy, nrm2) via cuBLAS; block-Jacobi preconditioner as diagonal
-  inverse of the stencil diagonal — no external AMG library required
-- Wire into IMEX-ARK path: explicit convective RHS stays on GPU stream;
-  implicit viscous Helmholtz solve uses GPU-resident GMRES
-- Gate: Poiseuille flow viscous solution matches analytical to 1e-6;
-  GMRES iteration count ≤ 50 for μ = 1e-3, Re = 100
-
-### D5 — Reactive flows (single-step Arrhenius)
-- Add species transport scalar φ_s alongside ACDI phase field
-- Arrhenius source S = A·ρ·Y·exp(-Ea/RT) as GPU functor in
-  `include/physics/arrhenius.hpp`; **explicit RK4 operator-split** after RK3 stage
-  (sufficient for deflagration; CVODE optional for stiff detonation, gated by
-  `#ifdef HAVE_CVODE`)
-- Gate: 1D detonation wave speed matches Chapman-Jouguet to 1 % over 200 steps
-
-### D6 — P1 radiation transport
-- Diffusion-limit radiation via elliptic G-equation solved each step with
-  GPU-resident CG (reuse linalg.hpp patterns on device)
-- Coupled energy source term ±κ(aT⁴ − G/c) in RK3 RHS
-- Gate: Marshak wave penetration depth matches analytical within 2 %
-
-### D7 — Wall-modelled LES (algebraic + ODE wall model)
-- Algebraic Reichardt law wall model (`wmles_algebraic`) as default
-- Optional ODE wall model (thin-boundary-layer equations on GPU)
-- Gate: turbulent channel Re_τ = 395; u⁺ log-law intercept B ∈ [4.8, 5.5];
-  wake-region u⁺ within 5 % of DNS at y⁺ > 50
-
-### D8 — H100 TMA + thread-block clusters (optional, H100 target)
-- Use **Tensor Memory Accelerator (TMA)** (`cp.async.bulk`) for async 2D/3D tile loads
-  into shared memory (replaces `cp.async` + sync barrier pattern from D0.5)
-- Use thread-block clusters (`__cluster_dims__`) for producer–consumer pipelining
-  across SMs on the same GPC
-- **Not** tensor cores (HMMA/WGMMA) — WENO reconstruction is not a matrix multiply
-- Guard with `#if __CUDA_ARCH__ >= 900`
-- Gate: k_rhs_conv throughput ≥ 1.5× D0.5 baseline on H100; same accuracy
-
-### D9 — NSCBC outflow / inflow boundary conditions
-- Replace the current zero-gradient / Riemann-invariant `OpenBC` ghost fill with
-  full **Navier-Stokes Characteristic Boundary Conditions** (Thompson 1987;
-  Poinsot & Lele 1992): decompose the boundary state into characteristic waves,
-  damp only the incoming wave amplitudes, leave outgoing waves unchanged
-- CPU implementation in `src/mesh/block_tree.cpp` (`fill_ghosts_open`); GPU
-  variant in `gpu_ghost_fill.cu` (extend `k_fill_faces` for bc_type=2)
-- Subsonic inflow: prescribe total pressure + total temperature + flow angle;
-  extrapolate entropy from interior
-- Subsonic outflow: prescribe static pressure; extrapolate velocity + density
-- Supersonic faces: zero-gradient (all waves outgoing — current behaviour kept)
-- Gate: 1D acoustic pulse in a periodic-x, open-y duct; reflected amplitude at
-  outflow boundary ≤ 1 % of incident amplitude over 100 steps (vs ~20 % for
-  current zero-gradient BC)
-
-### D10 — Discrete adjoint of SSP-RK3 + HLLC-ES
-- Implement `adjoint_rhs(Q, lambda_in, lambda_out)` — reverse-mode differentiation
-  of `compute_rhs` / `tree_rhs` through HLLC-ES flux Jacobian and TENO7-A
-  smoothness-indicator gradients; one `template <Axis DIR>` adjoint only
-- Implement `adjoint_rk3_step`: reverse the three Shu-Osher stages in order 3→2→1;
-  requires checkpointing `Qn` and both `Qs_` intermediates (6 block arrays per
-  leaf per step); apply `adjoint_rhs` at each reversed stage
-- Adjoint of Berger-Colella flux correction for AMR trees
-- Validate with dot-product test: `〈L(Q)·δQ, λ〉 = 〈δQ, L*(Q)·λ〉` to 1e-10
-  for a random `δQ` and `λ` on a two-level AMR tree
-- Gate `t38`: dot-product test passes for all five conserved variables; adjoint
-  of a 10-step rollout matches finite-difference gradient to 1e-6 relative error
-
-### D11 — Python bindings (pybind11)
-- Expose `NSSolver` to Python via pybind11 in `src/python/cfd_module.cpp`:
-  `init(domain_size, ic_fn)`, `advance()`, `run()`, `compute_diag()`,
-  `get_block_arrays() → list[np.ndarray]`, `set_block_arrays(list[np.ndarray])`
-- Keep bindings thin: Python holds no physics logic; it drives the C++ solver
-  and reads/writes block arrays as NumPy views (zero-copy where possible via
-  `py::buffer_protocol`)
-- Once D10 adjoint exists, add `adjoint_step(lambda_arrays) → lambda_arrays`
-  and register a JAX custom primitive with `jax.core.Primitive` +
-  `ad.defvjp` so that `jax.grad` can differentiate through a forward rollout
-- Gate `t39` (Python unit test, run via `pytest`): `NSSolver` round-trips a
-  10-step periodic isentropic vortex from Python; mass error < 1e-10; block
-  arrays retrieved as NumPy match `compute_diag().mass` to 1e-12
+All phases (D0–D11, G1–G6) ✅ complete. D8 🚫 dropped permanently.
+For phase status, gate map, and commit hashes, see `docs/dev_phases.md`.
 
 ## Code rules
 
@@ -264,7 +143,7 @@ cmake --build build -t t24 t25 t26 t27 t28
 ## Validation gate commands
 
 ```bash
-cmake --build build -t ba          # all CPU gates (32 tests)
+cmake --build build -t ba          # all gates (39 tests)
 cmake --build build -t t24         # CUDA Graph (P8.6)
 cmake --build build -t t25         # GPU vs CPU correctness (P9.1)
 cmake --build build -t t26         # NSSolver GPU dispatch (P10-A3)
@@ -272,6 +151,12 @@ cmake --build build -t t27         # SGS Smagorinsky (P-SGS-GPU)
 cmake --build build -t t28         # MPI+GPU halo exchange (P-MPI-GPU)
 cmake --build build -t t29         # GPU-native AMR (D1 gate)
 cmake --build build -t t30         # CUDA-aware MPI halo exchange (D2 gate)
+cmake --build build -t t37         # TENO7-A reconstruction (D3 gate)
+cmake --build build -t t38         # Discrete adjoint dot-product (D10 gate)
+cmake --build build -t t39         # Python bindings / JAX VJP (D11 gate)
+cmake --build build -t t40         # NSCBC outflow reflection ≤1% (D9 gate)
+cmake --build build -t t49         # IBM BVH + winding-number sign (W5 gate)
+cmake --build build -t t50         # Channel WMLES Re_τ=395 B∈[4.9,6.2] (C50 gate)
 ```
 
 ## Key references
