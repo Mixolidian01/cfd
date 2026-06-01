@@ -9,7 +9,7 @@
 __global__
 void k_ibm_classify(
     const GpuIbmMeta* __restrict__ metas,
-    const BvhNode*    __restrict__ d_nodes,  int n_nodes,
+    const BvhNode*    __restrict__ d_nodes,  int n_nodes, int n_tris,
     const float* __restrict__ v0x, const float* __restrict__ v0y, const float* __restrict__ v0z,
     const float* __restrict__ v1x, const float* __restrict__ v1y, const float* __restrict__ v1z,
     const float* __restrict__ v2x, const float* __restrict__ v2y, const float* __restrict__ v2z,
@@ -24,7 +24,7 @@ void k_ibm_classify(
         float y = m.oy + (j - GPU_NG + 0.5f) * m.hy;
         float z = m.oz + (k - GPU_NG + 0.5f) * m.hz;
         float nx, ny, nz;
-        float sdf = bvh_sdf(d_nodes, n_nodes,
+        float sdf = bvh_sdf(d_nodes, n_nodes, n_tris,
                              v0x,v0y,v0z, v1x,v1y,v1z, v2x,v2y,v2z,
                              tnx,tny,tnz, x, y, z, nx, ny, nz);
         m.d_sdf[flat]       = sdf;
@@ -331,7 +331,7 @@ void GpuIbmList::build(const BlockTree& tree, const GpuPool& pool, const GpuBvh&
 
     constexpr int TPB = 256;
     k_ibm_classify<<<n_leaves, TPB>>>(
-        d_metas, bvh.d_nodes, bvh.n_nodes,
+        d_metas, bvh.d_nodes, bvh.n_nodes, bvh.n_tris,
         bvh.d_v0x, bvh.d_v0y, bvh.d_v0z,
         bvh.d_v1x, bvh.d_v1y, bvh.d_v1z,
         bvh.d_v2x, bvh.d_v2y, bvh.d_v2z,

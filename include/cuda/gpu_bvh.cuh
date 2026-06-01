@@ -144,8 +144,30 @@ __device__ __forceinline__ void bvh_closest_on_triangle(
     rz = az + v*abz + w*acz;
 }
 
+__device__ __forceinline__ float bvh_winding_number(
+    int n_tris,
+    const float* __restrict__ v0x, const float* __restrict__ v0y, const float* __restrict__ v0z,
+    const float* __restrict__ v1x, const float* __restrict__ v1y, const float* __restrict__ v1z,
+    const float* __restrict__ v2x, const float* __restrict__ v2y, const float* __restrict__ v2z,
+    float px, float py, float pz) noexcept
+{
+    float w = 0.0f;
+    for (int ti = 0; ti < n_tris; ++ti) {
+        float ax=v0x[ti]-px, ay=v0y[ti]-py, az=v0z[ti]-pz;
+        float bx=v1x[ti]-px, by=v1y[ti]-py, bz=v1z[ti]-pz;
+        float cx=v2x[ti]-px, cy=v2y[ti]-py, cz=v2z[ti]-pz;
+        const float ra=sqrtf(ax*ax+ay*ay+az*az), rb=sqrtf(bx*bx+by*by+bz*bz), rc=sqrtf(cx*cx+cy*cy+cz*cz);
+        if (ra<1e-8f||rb<1e-8f||rc<1e-8f) continue;
+        ax/=ra; ay/=ra; az/=ra; bx/=rb; by/=rb; bz/=rb; cx/=rc; cy/=rc; cz/=rc;
+        const float num = ax*(by*cz-bz*cy)+ay*(bz*cx-bx*cz)+az*(bx*cy-by*cx);
+        const float den = 1.0f+ax*bx+ay*by+az*bz+bx*cx+by*cy+bz*cz+cx*ax+cy*ay+cz*az;
+        w += 2.0f * atan2f(num, den);
+    }
+    return w * (1.0f / (4.0f * 3.14159265358979323846f));
+}
+
 __device__ __forceinline__ float bvh_sdf(
-    const BvhNode* __restrict__ nodes, int /*n_nodes*/,
+    const BvhNode* __restrict__ nodes, int /*n_nodes*/, int n_tris,
     const float* __restrict__ v0x, const float* __restrict__ v0y,
     const float* __restrict__ v0z,
     const float* __restrict__ v1x, const float* __restrict__ v1y,
@@ -204,11 +226,8 @@ __device__ __forceinline__ float bvh_sdf(
         }
     }
 
-    const float dx = px - best_cx;
-    const float dy = py - best_cy;
-    const float dz = pz - best_cz;
-    const float sign = (dx*tnx[best_tri] + dy*tny[best_tri] + dz*tnz[best_tri] >= 0.0f)
-                       ? 1.0f : -1.0f;
+    const float wn = bvh_winding_number(n_tris, v0x,v0y,v0z, v1x,v1y,v1z, v2x,v2y,v2z, px,py,pz);
+    const float sign = (wn > 0.5f) ? -1.0f : 1.0f;
 
     out_nx = tnx[best_tri];
     out_ny = tny[best_tri];
