@@ -20,10 +20,17 @@ Check this before treating something as a bug to fix.
 **Risk:** `build()` latency increases linearly with leaf count on regrid.
 
 ### D0.5 shared-memory tiling reverted
-**File:** `src/cuda/gpu_rhs.cu` — `k_rhs_conv_tiled` exists but `exec()` calls `k_rhs_conv`
-**What:** The tiled kernel was implemented and verified correct but regressed latency 1.5× (3.80 ms vs 2.51 ms). Root cause: `k_rhs_conv` is latency-bound at 4.2% peak BW — L2 already serves the stencil re-reads; shmem addresses the wrong bottleneck.
-**Why kept:** Reference for future D8-class optimisations. Do not re-enable unless profiling shows BW has become the bottleneck (e.g., after moving to H100 or increasing block count significantly).
-**Current BW:** 4.2% of peak (RTX 3070 Laptop, 448 GB/s). Target ≥ 55% remains unmet for `k_rhs_conv`.
+**File:** `src/cuda/gpu_rhs.cu` — `k_rhs_conv_tiled` exists but `exec()` calls `k_rhs_conv_teno`
+**What:** The tiled kernel was implemented and verified correct but regressed latency 1.5× (3.80 ms vs 2.51 ms). Root cause: `k_rhs_conv_teno` is FP64-compute-bound at 4.2% peak BW — L2 already serves the stencil re-reads; shmem addresses the wrong bottleneck.
+**Why kept:** Reference for future optimisations. Do not re-enable unless profiling shows BW has become the bottleneck (e.g., after moving to H100 or increasing block count significantly).
+**WENO5Z BW:** 4.2% of peak (RTX 3070 Laptop, 448 GB/s) — measured at D0.5 before D3 added TENO7A. With TENO7A (current default), BW drops to 0.2% because TENO7A is 25× more FP64-compute-intensive. Target ≥ 55% is unachievable for either scheme on this GPU (see below).
+
+### k_rhs_conv roofline gap is a hardware mismatch, not a software gap
+**File:** `src/cuda/gpu_rhs.cu` — `k_rhs_conv_cell` exists but `exec()` calls `k_rhs_conv_teno`
+**What:** The D0 baseline 2.51 ms/stage figure was measured with WENO5Z (before D3). With TENO7A (current default), the measured stage time is ~63 ms on a 512-leaf tree — 25× slower than WENO5Z due to ~25× more FLOPs per face (Roe decomposition + 7-point char decomposition vs simple scalar WENO). `k_rhs_conv_teno<true>` is FP64-compute-bound at near-peak for the RTX 3070 Laptop (~200 GFLOPS FP64). The 0.2% DRAM BW figure is not a software deficiency — the kernel simply does a lot of arithmetic per byte fetched. The ≥55% BW roofline target was written for A100/H100 (high FP64 throughput + high BW) where TENO7A would become BW-limited.
+**Cell-based kernel attempt:** `k_rhs_conv_cell<USE_TENO7>` was implemented and verified correct (t31, t37 pass) but was 25× slower than `k_rhs_conv_teno`. Root cause: inlining `gpu_teno7_face` 6 times per thread requires ~120+ doubles of local state per call (Q[7][5], GpuRoeState, wL_w/wR_w/QL/QR), exhausting the register file and causing massive local-memory spills. Also note: compiling the explicit template instantiations of `k_rhs_conv_cell<true/false>` degrades ptxas register allocation for the entire TU, so the instantiations are commented out.
+**bench_d0 fix:** The benchmark was previously broken (link errors — missing gpu_amr.cu, gpu_ibm.cu etc.). Fixed to use `_GPU_NS`.
+**Conclusion:** TENO7A is permanently FP64-compute-bound on RTX 3070 Laptop. The ≥55% BW target is only meaningful on A100/H100. Do not attempt to optimise BW% for this kernel on this hardware.
 
 ### Adjoint uses frozen TENO7-A weights
 **Files:** `include/physics/adjoint_teno7.hpp`, `include/physics/adjoint_hllc.hpp`

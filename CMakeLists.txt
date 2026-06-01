@@ -399,11 +399,7 @@ if(NVCC)
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
         ${_T}/bench_d0_roofline.cu
-        ${_S}/cuda/gpu_graph.cu    ${_S}/cuda/gpu_ghost_fill.cu
-        ${_S}/cuda/gpu_rhs.cu      ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_pool.cu
-        ${_S}/cuda/gpu_cf.cu       ${_S}/cuda/gpu_sgs.cu
-        ${_S}/cuda/gpu_mpi_halo.cu
-        ${_GPU_BASE} ${_GPU_OPS}
+        ${_GPU_NS}
     )
     set(_D0_BIN ${CMAKE_BINARY_DIR}/bench_d0_roofline)
     add_custom_command(

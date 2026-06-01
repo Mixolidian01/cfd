@@ -783,6 +783,145 @@ template __global__ void k_rhs_conv_teno<false>(const GpuLeafRhsMeta*);
 template __global__ void k_rhs_conv_teno<true> (const GpuLeafRhsMeta*);
 
 // ─────────────────────────────────────────────────────────────────────────────
+// gpu_face_flux<USE_TENO7>: single-face flux helper for k_rhs_conv_cell.
+// fn = left-cell normal index; ta, tb = tangential cell indices; axis = 0/1/2.
+// Mirrors k_rhs_conv_teno loop body exactly; result written to F[GPU_NVAR].
+// ─────────────────────────────────────────────────────────────────────────────
+template<bool USE_TENO7>
+__device__ __forceinline__
+void gpu_face_flux(const double* __restrict__ sp,
+                   int fn, int ta, int tb, int axis,
+                   bool is_periodic, uint8_t cf_bnd_mask,
+                   double F[GPU_NVAR]) noexcept
+{
+    const int ilo = GPU_NG, ihi = GPU_NG + GPU_NB - 1;
+    constexpr double kep_thr = 1.0e-8;
+
+    int idxL, idxR;
+    if      (axis == 0) { idxL = gpu_cell_idx(fn,   ta, tb); idxR = gpu_cell_idx(fn+1, ta, tb); }
+    else if (axis == 1) { idxL = gpu_cell_idx(ta, fn,   tb); idxR = gpu_cell_idx(ta, fn+1, tb); }
+    else                { idxL = gpu_cell_idx(ta, tb, fn  ); idxR = gpu_cell_idx(ta, tb, fn+1); }
+
+    GPrim pL, pR;
+    pL.rho=sp[0*GPU_NCELL+idxL]; pL.u=sp[1*GPU_NCELL+idxL]; pL.v=sp[2*GPU_NCELL+idxL];
+    pL.w  =sp[3*GPU_NCELL+idxL]; pL.p=sp[4*GPU_NCELL+idxL]; pL.T=sp[5*GPU_NCELL+idxL]; pL.c=sp[6*GPU_NCELL+idxL];
+    pR.rho=sp[0*GPU_NCELL+idxR]; pR.u=sp[1*GPU_NCELL+idxR]; pR.v=sp[2*GPU_NCELL+idxR];
+    pR.w  =sp[3*GPU_NCELL+idxR]; pR.p=sp[4*GPU_NCELL+idxR]; pR.T=sp[5*GPU_NCELL+idxR]; pR.c=sp[6*GPU_NCELL+idxR];
+
+    const double ducL  = sp[8*GPU_NCELL+idxL];
+    const double ducR  = sp[8*GPU_NCELL+idxR];
+    const double theta = fmax(ducL, ducR);
+    const bool at_bnd  = (fn < ilo || fn+1 > ihi);
+    const int  face_d  = 2*axis + (fn < ilo ? 0 : 1);
+    const bool at_cf   = at_bnd && ((cf_bnd_mask >> face_d) & 1u);
+    const bool is_bnd  = USE_TENO7 ? (at_cf || (!is_periodic && at_bnd)) : at_bnd;
+
+    double Fk[GPU_NVAR];
+    gpu_kep_flux(pL, pR, axis, Fk);
+
+    if (!is_bnd && theta < kep_thr) {
+        for (int v = 0; v < GPU_NVAR; ++v) F[v] = Fk[v];
+        return;
+    }
+
+    double Fs[GPU_NVAR];
+    bool wall = is_bnd;
+    if (wall) {
+        auto antisym = [](double a, double b) {
+            return fabs(a+b) < 1.0e-8*(fabs(a)+fabs(b)+1.0e-300);
+        };
+        wall = (pL.p == pR.p) && antisym(pL.u,pR.u) && antisym(pL.v,pR.v) && antisym(pL.w,pR.w);
+    }
+    if (wall) {
+        for (int v = 0; v < GPU_NVAR; ++v) Fs[v] = Fk[v];
+    } else if (!is_bnd) {
+        GPrim qL, qR;
+        if constexpr (USE_TENO7) {
+            if      (axis == 0) gpu_teno7_face(sp, fn, ta, tb, 0, qL, qR);
+            else if (axis == 1) gpu_teno7_face(sp, ta, fn, tb, 1, qL, qR);
+            else                gpu_teno7_face(sp, ta, tb, fn, 2, qL, qR);
+        } else {
+            if      (axis == 0) gpu_teno5_face(sp, fn, ta, tb, 0, qL, qR);
+            else if (axis == 1) gpu_teno5_face(sp, ta, fn, tb, 1, qL, qR);
+            else                gpu_teno5_face(sp, ta, tb, fn, 2, qL, qR);
+        }
+        gpu_hllc_es_flux(qL, qR, axis, Fs);
+    } else {
+        gpu_hllc_es_flux(pL, pR, axis, Fs);
+    }
+    const double th = is_bnd ? 1.0 : theta;
+    const double om = 1.0 - th;
+    for (int v = 0; v < GPU_NVAR; ++v) F[v] = om*Fk[v] + th*Fs[v];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// k_rhs_conv_cell<USE_TENO7> — cell-centric convective RHS; no atomics.
+// NOT USED in exec() — retained as a reference and for future experimentation.
+//
+// Intended benefit: eliminates 30 FP64 atomicAdds per cell.
+// Measured result: 25× SLOWER than k_rhs_conv_teno on RTX 3070 Laptop.
+// Root cause: TENO7 per-face reconstruction inlines Q[7][5]+GpuRoeState 6 times
+// per thread, exhausting the register file → massive local-memory spills.
+// k_rhs_conv_teno is already FP64-compute-bound at near-peak GFLOPS; the
+// atomicAdd overhead is negligible compared to Roe/TENO7 arithmetic.
+// See docs/tech_debt.md "k_rhs_conv_cell reverted" for the full analysis.
+// ─────────────────────────────────────────────────────────────────────────────
+template<bool USE_TENO7>
+__global__
+void k_rhs_conv_cell(const GpuLeafRhsMeta* __restrict__ metas)
+{
+    const GpuLeafRhsMeta& m = metas[blockIdx.x];
+    const double* sp  = m.d_scratch;
+    double*       rhs = m.d_RHS;
+    const double  ihx = 1.0 / m.hx;
+    const double  ihy = 1.0 / m.hy;
+    const double  ihz = 1.0 / m.hz;
+    const bool    ip  = (m.is_periodic != 0);
+    const uint8_t cfm = m.cf_bnd_mask;
+
+    const int i = GPU_NG + (int)threadIdx.x;
+    const int j = GPU_NG + (int)threadIdx.y;
+
+    for (int k = GPU_NG; k < GPU_NG + GPU_NB; ++k) {
+        double acc[GPU_NVAR] = {};
+        double F[GPU_NVAR];
+
+        // X-left face (i-1 | i): this cell is right → +F/hx
+        gpu_face_flux<USE_TENO7>(sp, i-1, j, k, 0, ip, cfm, F);
+        for (int v = 0; v < GPU_NVAR; ++v) acc[v] += ihx * F[v];
+
+        // X-right face (i | i+1): this cell is left → -F/hx
+        gpu_face_flux<USE_TENO7>(sp, i,   j, k, 0, ip, cfm, F);
+        for (int v = 0; v < GPU_NVAR; ++v) acc[v] -= ihx * F[v];
+
+        // Y-left face (j-1 | j): this cell is right → +F/hy
+        gpu_face_flux<USE_TENO7>(sp, j-1, i, k, 1, ip, cfm, F);
+        for (int v = 0; v < GPU_NVAR; ++v) acc[v] += ihy * F[v];
+
+        // Y-right face (j | j+1): this cell is left → -F/hy
+        gpu_face_flux<USE_TENO7>(sp, j,   i, k, 1, ip, cfm, F);
+        for (int v = 0; v < GPU_NVAR; ++v) acc[v] -= ihy * F[v];
+
+        // Z-left face (k-1 | k): this cell is right → +F/hz
+        gpu_face_flux<USE_TENO7>(sp, k-1, i, j, 2, ip, cfm, F);
+        for (int v = 0; v < GPU_NVAR; ++v) acc[v] += ihz * F[v];
+
+        // Z-right face (k | k+1): this cell is left → -F/hz
+        gpu_face_flux<USE_TENO7>(sp, k,   i, j, 2, ip, cfm, F);
+        for (int v = 0; v < GPU_NVAR; ++v) acc[v] -= ihz * F[v];
+
+        const int flat = gpu_cell_idx(i, j, k);
+        for (int v = 0; v < GPU_NVAR; ++v)
+            rhs[v * GPU_NCELL + flat] = acc[v];
+    }
+}
+// Not instantiated: exec() uses k_rhs_conv_teno for TENO5A/TENO7A.
+// Explicit instantiation would compile the TENO7A path, which spills ~120 doubles
+// to local memory and inflates ptxas register usage for the entire translation unit.
+// template __global__ void k_rhs_conv_cell<false>(const GpuLeafRhsMeta*);
+// template __global__ void k_rhs_conv_cell<true> (const GpuLeafRhsMeta*);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // D0.5 — k_rhs_conv_tiled<USE_TENO>: Y/Z faces use i-plane shmem (bank-conflict-free).
 // USE_TENO=false → WENO5-Z;  USE_TENO=true → TENO5-A.
 //

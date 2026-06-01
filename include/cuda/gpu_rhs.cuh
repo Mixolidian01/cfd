@@ -7,9 +7,9 @@
 //                                  (after GpuGhostFillList::exec)
 //
 // Kernel pipeline per leaf:
-//   k_prim_duc   — primitive variables + Ducros sensor → d_scratch
-//   k_rhs_conv_teno<S> — convective flux (S=0:WENO5Z, S=1:TENO5A, S=2:TENO7A; atomicAdd)
-//   k_rhs_visc   — viscous stress divergence (direct write, no atomics)
+//   k_prim_duc        — primitive variables + Ducros sensor → d_scratch
+//   k_rhs_conv_teno<S>— convective flux (TENO5A/TENO7A; atomicAdd; FP64-compute-bound)
+//   k_rhs_visc        — viscous stress divergence (direct write, no atomics)
 //
 // Scratch layout: d_scratch[comp * NCELL + flat]
 //   comp 0..6 : rho, u, v, w, p, T, c
