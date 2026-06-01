@@ -154,6 +154,109 @@ void GpuSurfaceList::exec(cudaStream_t s, float mu) const {
                                cudaMemcpyDeviceToHost, s));
 }
 
+// ── k_probe_interp ────────────────────────────────────────────────────────────
+// One thread per probe point; linear scan over leaf metas.
+__global__ void k_probe_interp(
+    const SnapLeafMeta* __restrict__ metas, int n_leaves,
+    const GpuProbeEntry* __restrict__ probes, int n_probes,
+    double* __restrict__ results)
+{
+    const int pid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (pid >= n_probes) return;
+
+    const GpuProbeEntry& p = probes[pid];
+    double val = 0.0;
+    bool   found = false;
+
+    for (int li = 0; li < n_leaves && !found; ++li) {
+        const SnapLeafMeta& m = metas[li];
+        const float hi_x = m.ox + GPU_NB * m.h;
+        const float hi_y = m.oy + GPU_NB * m.hy;
+        const float hi_z = m.oz + GPU_NB * m.hz;
+        if (p.px < m.ox || p.px >= hi_x) continue;
+        if (p.py < m.oy || p.py >= hi_y) continue;
+        if (p.pz < m.oz || p.pz >= hi_z) continue;
+
+        const int ci = GPU_NG + max(0, min(GPU_NB - 1, (int)((p.px - m.ox) / m.h)));
+        const int cj = GPU_NG + max(0, min(GPU_NB - 1, (int)((p.py - m.oy) / m.hy)));
+        const int ck = GPU_NG + max(0, min(GPU_NB - 1, (int)((p.pz - m.oz) / m.hz)));
+
+        val   = (double)snap_scalar_val(m.d_Q, p.var_id, ci, cj, ck, m.h);
+        found = true;
+    }
+    results[pid] = val;
+}
+
+// Stub for Task 5
+__global__ void k_plane_avg(
+    const SnapLeafMeta* /*metas*/, int /*n_leaves*/,
+    int /*axis*/, int /*n_slabs*/, float /*slab_lo*/, float /*slab_hi*/, int /*var_id*/,
+    double* /*d_sum*/, int* /*d_cnt*/)
+{}
+
+// ── GpuProbeList ──────────────────────────────────────────────────────────────
+GpuProbeList::~GpuProbeList() {
+    if (d_probes)   { cudaFree(d_probes);       d_probes   = nullptr; }
+    if (d_results)  { cudaFree(d_results);      d_results  = nullptr; }
+    if (h_results)  { cudaFreeHost(h_results);  h_results  = nullptr; }
+    if (d_slab_sum) { cudaFree(d_slab_sum);     d_slab_sum = nullptr; }
+    if (d_slab_cnt) { cudaFree(d_slab_cnt);     d_slab_cnt = nullptr; }
+    if (h_slab_sum) { cudaFreeHost(h_slab_sum); h_slab_sum = nullptr; }
+    if (h_slab_cnt) { cudaFreeHost(h_slab_cnt); h_slab_cnt = nullptr; }
+}
+
+void GpuProbeList::build_point(float px, float py, float pz, int var_id) {
+    n_probes = 1;
+    GpuProbeEntry h_probe = {px, py, pz, var_id};
+
+    if (d_probes)  { cudaFree(d_probes);      d_probes  = nullptr; }
+    if (d_results) { cudaFree(d_results);     d_results = nullptr; }
+    if (h_results) { cudaFreeHost(h_results); h_results = nullptr; }
+
+    CUDA_CHECK(cudaMalloc(&d_probes, sizeof(GpuProbeEntry)));
+    CUDA_CHECK(cudaMemcpy(d_probes, &h_probe, sizeof(GpuProbeEntry), cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMalloc(&d_results, sizeof(double)));
+    CUDA_CHECK(cudaMallocHost(&h_results, sizeof(double)));
+}
+
+void GpuProbeList::build_plane(int n_slabs_in, int axis, float slab_lo, float slab_hi, int var_id) {
+    plane_axis   = axis;
+    n_slabs      = n_slabs_in;
+    plane_var_id = var_id;
+    slab_lo_     = slab_lo;
+    slab_hi_     = slab_hi;
+
+    if (d_slab_sum) { cudaFree(d_slab_sum);     d_slab_sum = nullptr; }
+    if (d_slab_cnt) { cudaFree(d_slab_cnt);     d_slab_cnt = nullptr; }
+    if (h_slab_sum) { cudaFreeHost(h_slab_sum); h_slab_sum = nullptr; }
+    if (h_slab_cnt) { cudaFreeHost(h_slab_cnt); h_slab_cnt = nullptr; }
+
+    CUDA_CHECK(cudaMalloc(&d_slab_sum, n_slabs * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_slab_cnt, n_slabs * sizeof(int)));
+    CUDA_CHECK(cudaMallocHost(&h_slab_sum, n_slabs * sizeof(double)));
+    CUDA_CHECK(cudaMallocHost(&h_slab_cnt, n_slabs * sizeof(int)));
+}
+
+void GpuProbeList::exec(const SnapLeafMeta* d_metas, int n_leaves, cudaStream_t s) const {
+    if (!n_probes) return;
+    k_probe_interp<<<1, 32, 0, s>>>(d_metas, n_leaves, d_probes, n_probes, d_results);
+    CUDA_CHECK(cudaMemcpyAsync(h_results, d_results, n_probes * sizeof(double),
+                               cudaMemcpyDeviceToHost, s));
+}
+
+void GpuProbeList::exec_plane(const SnapLeafMeta* d_metas, int n_leaves, cudaStream_t s) const {
+    if (!n_slabs) return;
+    CUDA_CHECK(cudaMemsetAsync(d_slab_sum, 0, n_slabs * sizeof(double), s));
+    CUDA_CHECK(cudaMemsetAsync(d_slab_cnt, 0, n_slabs * sizeof(int), s));
+    k_plane_avg<<<n_leaves, 64, 0, s>>>(d_metas, n_leaves, plane_axis, n_slabs,
+                                         slab_lo_, slab_hi_, plane_var_id,
+                                         d_slab_sum, d_slab_cnt);
+    CUDA_CHECK(cudaMemcpyAsync(h_slab_sum, d_slab_sum, n_slabs * sizeof(double),
+                               cudaMemcpyDeviceToHost, s));
+    CUDA_CHECK(cudaMemcpyAsync(h_slab_cnt, d_slab_cnt, n_slabs * sizeof(int),
+                               cudaMemcpyDeviceToHost, s));
+}
+
 void GpuSurfaceList::build(const GpuIbmList& ibm, const SolverConfig::SurfaceConfig& cfg) {
     name      = cfg.name;
     ref_point = cfg.ref_point;

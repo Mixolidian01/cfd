@@ -121,6 +121,60 @@ static void test_m2_surface() {
     printf("M2 PASS\n");
 }
 
+static void test_m3a_probe_point() {
+    // IC: rho = 1 + 0.1 * sin(pi*x)*sin(pi*y)*sin(pi*z) on [0,1]^3
+    // Single leaf: origin (0,0,0), h = 1/GPU_NB, NB interior cells.
+    // Probe at cell-3 centre in each axis: (3+0.5)/GPU_NB.
+    // Kernel lookup: (int)((probe - ox) / h) = (int)(3.5) = 3, so ci = GPU_NG + 3.
+    constexpr double pi    = 3.14159265358979323846;
+    const double hcell = 1.0 / GPU_NB;
+
+    std::vector<double> h_Q(GPU_NVAR * GPU_NCELL, 0.0);
+    for (int k = 0; k < GPU_NB; ++k)
+    for (int j = 0; j < GPU_NB; ++j)
+    for (int i = 0; i < GPU_NB; ++i) {
+        const double x   = (i + 0.5) * hcell;
+        const double y   = (j + 0.5) * hcell;
+        const double z   = (k + 0.5) * hcell;
+        const int flat   = gpu_cell_idx(GPU_NG+i, GPU_NG+j, GPU_NG+k);
+        const double rho = 1.0 + 0.1 * sin(pi*x) * sin(pi*y) * sin(pi*z);
+        h_Q[0 * GPU_NCELL + flat] = rho;
+        h_Q[4 * GPU_NCELL + flat] = 1.0 / (GPU_GAMMA - 1.0);  // E, p=1
+    }
+    double* d_Q;
+    CUDA_CHECK(cudaMalloc(&d_Q, GPU_NVAR * GPU_NCELL * sizeof(double)));
+    CUDA_CHECK(cudaMemcpy(d_Q, h_Q.data(), GPU_NVAR * GPU_NCELL * sizeof(double),
+                          cudaMemcpyHostToDevice));
+
+    SnapLeafMeta h_meta = {};
+    h_meta.d_Q = d_Q;
+    h_meta.ox = 0.f; h_meta.oy = 0.f; h_meta.oz = 0.f;
+    h_meta.h = (float)hcell; h_meta.hy = (float)hcell; h_meta.hz = (float)hcell;
+    SnapLeafMeta* d_metas;
+    CUDA_CHECK(cudaMalloc(&d_metas, sizeof(SnapLeafMeta)));
+    CUDA_CHECK(cudaMemcpy(d_metas, &h_meta, sizeof(SnapLeafMeta), cudaMemcpyHostToDevice));
+
+    // Probe at cell-3 centre: (3+0.5)*hcell = 0.4375 in each axis, var_id=0 (rho)
+    const float probe_x = (float)((3 + 0.5) * hcell);
+    GpuProbeList pl;
+    pl.build_point(probe_x, probe_x, probe_x, 0);
+
+    pl.exec(d_metas, 1, nullptr);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    const double result   = pl.h_results[0];
+    const double cell_x   = (3 + 0.5) * hcell;
+    const double expected = 1.0 + 0.1 * sin(pi * cell_x)
+                                      * sin(pi * cell_x)
+                                      * sin(pi * cell_x);
+    // snap_scalar_val returns float; tolerance accommodates float precision
+    assert(fabs(result - expected) < 1e-6 && "M3a: probe value mismatch");
+
+    CUDA_CHECK(cudaFree(d_Q));
+    CUDA_CHECK(cudaFree(d_metas));
+    printf("M3a PASS\n");
+}
+
 int main() {
     // M0: config structs compile and have correct defaults
     SurfaceConfig sc;
@@ -141,5 +195,6 @@ int main() {
 
     test_m1_residual();
     test_m2_surface();
+    test_m3a_probe_point();
     return 0;
 }

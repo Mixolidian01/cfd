@@ -2,6 +2,8 @@
 #include "gpu_constants.cuh"
 #include "gpu_rhs.cuh"
 #include "gpu_ibm.cuh"
+#include "gpu_scalars.cuh"
+#include "gpu_snapshot.hpp"
 #include "solver/ns_solver.hpp"
 #include <cuda_runtime.h>
 #include <array>
@@ -79,3 +81,56 @@ __global__ void k_surface_forces(
     double* __restrict__ acc,
     float mu,
     double ref_x, double ref_y, double ref_z);
+
+// ── GpuProbeEntry ─────────────────────────────────────────────────────────────
+struct GpuProbeEntry {
+    float px, py, pz;  // physical probe location
+    int   var_id;       // snap_scalar_val var_id (0-11)
+};
+
+// ── GpuProbeList ─────────────────────────────────────────────────────────────
+struct GpuProbeList {
+    GpuProbeEntry* d_probes   = nullptr;
+    double*        d_results  = nullptr;  // device [n_probes]
+    double*        h_results  = nullptr;  // pinned [n_probes]
+    int            n_probes   = 0;
+
+    // For plane_avg (Task 5):
+    double* d_slab_sum   = nullptr;
+    int*    d_slab_cnt   = nullptr;
+    double* h_slab_sum   = nullptr;
+    int*    h_slab_cnt   = nullptr;
+    int     n_slabs      = 0;
+    int     plane_axis   = 1;
+    int     plane_var_id = 0;
+    float   slab_lo_     = 0.f;
+    float   slab_hi_     = 1.f;
+
+    GpuProbeList() = default;
+    ~GpuProbeList();
+    GpuProbeList(const GpuProbeList&) = delete;
+    GpuProbeList& operator=(const GpuProbeList&) = delete;
+
+    // Point probe: single point at (px, py, pz), quantity var_id.
+    void build_point(float px, float py, float pz, int var_id);
+
+    // Plane-averaged profile (Task 5 — stub only for now).
+    void build_plane(int n_slabs, int axis, float slab_lo, float slab_hi, int var_id);
+
+    // Launch k_probe_interp on stream; no sync.
+    void exec(const SnapLeafMeta* d_metas, int n_leaves, cudaStream_t s) const;
+
+    // Launch k_plane_avg on stream; no sync (Task 5).
+    void exec_plane(const SnapLeafMeta* d_metas, int n_leaves, cudaStream_t s) const;
+};
+
+// GPU kernel declarations
+__global__ void k_probe_interp(
+    const SnapLeafMeta* __restrict__ metas, int n_leaves,
+    const GpuProbeEntry* __restrict__ probes, int n_probes,
+    double* __restrict__ results);
+
+__global__ void k_plane_avg(
+    const SnapLeafMeta* __restrict__ metas, int n_leaves,
+    int axis, int n_slabs, float slab_lo, float slab_hi, int var_id,
+    double* __restrict__ d_sum, int* __restrict__ d_cnt);
