@@ -23,26 +23,9 @@ You **do** pause and explain before:
 - Deleting an entire subsystem with no replacement ready
 - Making an irreversible architectural decision that touches > 5 files
 
-## Reference architecture (to_refactor baseline)
+## Architecture
 
-```
-Layer 0  linalg.hpp/cpp          — Kahan BLAS-1, CG, multigrid
-Layer 1  cell_block.hpp          — CellBlock SoA (NB=8, NG=2, NCELL=1728)
-         block_tree.hpp/cpp      — BlockTree octree AMR
-         amr_operators.cpp       — fill_cf_ghosts (C/F prolongation/restriction)
-Layer 2  operators.hpp/cpp       — HLLC-ES, WENO5-Z, compute_rhs, tree_rhs
-Layer 3  ns_solver.hpp/cpp       — SSP-RK3, regrid, BC dispatch
-         gpu_graph.cu            — CUDA Graph SSP-RK3, positivity floor
-         gpu_ghost_fill.cu       — GPU ghost fill, is_mpi_face, local-leaf filter
-         gpu_rhs.cu              — WENO5-Z GPU RHS
-         gpu_cf.cu               — Berger-Colella C/F correction
-         gpu_sgs.cu              — Smagorinsky SGS operator-split
-         gpu_mpi_halo.cu         — D2H → mpi_exchange_halos → H2D per stage
-```
-
-Constants (do not change without updating both CPU and GPU headers):
-
-| NB=8 | NG=2 | NB2=12 | NCELL=1728 | NVAR=5 | GAMMA=1.4 |
+Full layer map, key constants, and GPU subsystem detail: see `docs/reference.md §0`.
 
 ## Development target
 
