@@ -62,6 +62,65 @@ static void test_m1_residual() {
     printf("M1 PASS\n");
 }
 
+static void test_m2_surface() {
+    // Build 6 ghost entries with ±x, ±y, ±z face normals and uniform pressure P0=1.
+    // With no shear (u_wall=0, u_I=0), net force = sum(-p*n*A) = 0 by symmetry.
+    constexpr int N = 6;
+    constexpr double P0 = 1.0;
+    constexpr float H  = 0.25f;
+
+    // Fake Q array: rho=1, rhou=rhov=rhow=0, E=P0/(gamma-1)
+    constexpr double E0 = P0 / (1.4 - 1.0);
+    std::vector<double> h_Q(GPU_NVAR * GPU_NCELL, 0.0);
+    for (int i = 0; i < GPU_NCELL; ++i) {
+        h_Q[0 * GPU_NCELL + i] = 1.0;
+        h_Q[4 * GPU_NCELL + i] = E0;
+    }
+    double* d_Q;
+    CUDA_CHECK(cudaMalloc(&d_Q, GPU_NVAR * GPU_NCELL * sizeof(double)));
+    CUDA_CHECK(cudaMemcpy(d_Q, h_Q.data(), GPU_NVAR * GPU_NCELL * sizeof(double),
+                          cudaMemcpyHostToDevice));
+
+    float normals[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    std::vector<GpuSurfaceEntry> h_entries(N);
+    for (int i = 0; i < N; ++i) {
+        h_entries[i] = {};
+        h_entries[i].ghost_ptr = d_Q;
+        h_entries[i].stencil[0] = d_Q;
+        h_entries[i].w[0] = 1.0f;
+        h_entries[i].nx = normals[i][0];
+        h_entries[i].ny = normals[i][1];
+        h_entries[i].nz = normals[i][2];
+        h_entries[i].d  = 0.5f;
+        h_entries[i].h  = H;
+        // cx=cy=cz=0: moment arm is zero, so moments also zero
+        h_entries[i].u_wall = 0.f; h_entries[i].v_wall = 0.f; h_entries[i].w_wall = 0.f;
+    }
+    GpuSurfaceEntry* d_entries;
+    CUDA_CHECK(cudaMalloc(&d_entries, N * sizeof(GpuSurfaceEntry)));
+    CUDA_CHECK(cudaMemcpy(d_entries, h_entries.data(), N * sizeof(GpuSurfaceEntry),
+                          cudaMemcpyHostToDevice));
+
+    double* d_acc;
+    CUDA_CHECK(cudaMalloc(&d_acc, 6 * sizeof(double)));
+    CUDA_CHECK(cudaMemset(d_acc, 0, 6 * sizeof(double)));
+
+    k_surface_forces<<<1, 256>>>(d_entries, N, d_acc, 1.8e-5f, 0.0, 0.0, 0.0);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    double h_acc[6];
+    CUDA_CHECK(cudaMemcpy(h_acc, d_acc, 6 * sizeof(double), cudaMemcpyDeviceToHost));
+
+    double A_sphere = (double)N * H * H;
+    double force_mag = sqrt(h_acc[0]*h_acc[0] + h_acc[1]*h_acc[1] + h_acc[2]*h_acc[2]);
+    assert(force_mag < 0.01 * P0 * A_sphere && "M2: net force not near zero");
+
+    CUDA_CHECK(cudaFree(d_Q));
+    CUDA_CHECK(cudaFree(d_entries));
+    CUDA_CHECK(cudaFree(d_acc));
+    printf("M2 PASS\n");
+}
+
 int main() {
     // M0: config structs compile and have correct defaults
     SurfaceConfig sc;
@@ -81,5 +140,6 @@ int main() {
     printf("M0 PASS\n");
 
     test_m1_residual();
+    test_m2_surface();
     return 0;
 }

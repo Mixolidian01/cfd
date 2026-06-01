@@ -204,6 +204,7 @@ if(NVCC)
         ${_S}/cuda/gpu_cf.cu       ${_S}/cuda/gpu_sgs.cu
         ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
         ${_S}/cuda/gpu_snapshot.cu ${_S}/cuda/gpu_acdi.cu
+        ${_S}/cuda/gpu_metrics.cu  ${_S}/metrics/metrics_bus.cpp
         ${_S}/models/stl_loader.cpp ${_S}/cuda/gpu_bvh.cu ${_S}/cuda/gpu_ibm.cu
         ${_S}/cuda/gpu_wmles.cu    ${_S}/models/wall_model.cpp
         ${_GPU_BASE}
@@ -396,6 +397,13 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}
         SRCS ${_T}/test_t50_channel_wmles.cu
              ${_GPU_NS}
+    )
+    add_nvcc_gate(TARGET t51 BIN t51_metrics COMMENT "G7-M0/M1/M2 Metrics & Monitoring (config+CsvWriter+residual+surface-force)"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t51_metrics.cu
+             ${_S}/cuda/gpu_metrics.cu
+             ${_S}/cuda/gpu_snapshot.cu
+             ${_S}/metrics/metrics_bus.cpp
     )
 
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
