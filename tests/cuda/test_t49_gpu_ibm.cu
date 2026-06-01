@@ -29,6 +29,49 @@ static void check(bool ok, const char* tag, const char* msg, double v = -1.0) {
 
 // NB, NG, NB2, NCELL, GAMMA, R_GAS, cell_idx() all come from cell_block.hpp
 
+// Generates a binary STL torus centred at (0.5, 0.5, 0.5): major radius R, minor r,
+// n_phi x n_theta quad patches → 2*n_phi*n_theta triangles.
+static void write_torus_stl(const char* path, float R, float r, int n_phi, int n_theta) {
+    FILE* f = fopen(path, "wb");
+    char header[80] = {};
+    std::snprintf(header, sizeof(header), "torus R=%.2f r=%.2f", R, r);
+    fwrite(header, 1, 80, f);
+    uint32_t n_tris = 2u * (uint32_t)n_phi * (uint32_t)n_theta;
+    fwrite(&n_tris, 4, 1, f);
+    // Torus centred at (0.5, 0.5, 0.5) in the unit-cube domain
+    auto torus_pt = [&](int ip, int it) -> std::array<float,3> {
+        float phi   = 2.0f * 3.14159265f * ip / n_phi;
+        float theta = 2.0f * 3.14159265f * it / n_theta;
+        float x = (R + r * cosf(theta)) * cosf(phi) + 0.5f;
+        float y = (R + r * cosf(theta)) * sinf(phi) + 0.5f;
+        float z = r * sinf(theta)                   + 0.5f;
+        return {x, y, z};
+    };
+    float norm[3] = {0, 0, 0};
+    uint16_t attr = 0;
+    for (int ip = 0; ip < n_phi; ++ip) {
+        for (int it = 0; it < n_theta; ++it) {
+            auto p00 = torus_pt(ip,             it);
+            auto p10 = torus_pt((ip+1) % n_phi, it);
+            auto p01 = torus_pt(ip,             (it+1) % n_theta);
+            auto p11 = torus_pt((ip+1) % n_phi, (it+1) % n_theta);
+            // tri 1: p00, p10, p11
+            fwrite(norm,        4, 3, f);
+            fwrite(p00.data(),  4, 3, f);
+            fwrite(p10.data(),  4, 3, f);
+            fwrite(p11.data(),  4, 3, f);
+            fwrite(&attr, 2, 1, f);
+            // tri 2: p00, p11, p01
+            fwrite(norm,        4, 3, f);
+            fwrite(p00.data(),  4, 3, f);
+            fwrite(p11.data(),  4, 3, f);
+            fwrite(p01.data(),  4, 3, f);
+            fwrite(&attr, 2, 1, f);
+        }
+    }
+    fclose(f);
+}
+
 static GpuPool g_pool;
 
 static void upload_block(CellBlock* blk) {
@@ -185,6 +228,55 @@ int main() {
     check(ng1 > 0,     "I9a", "n_ghosts > 0 after build()", (double)ng1);
     check(ng1 == ng2,  "I9b", "n_ghosts unchanged after rebuild",
           (double)std::abs(ng1 - ng2));
+
+    // ── W5: winding-number sign on a non-convex torus ─────────────────────────
+    // Torus: major radius R=0.30, minor radius r=0.09, centred at (0.5,0.5,0.5).
+    // Domain [0,1]^3, 1 leaf block → h = 1/NB = 0.125.
+    // Cell(i,j,k) centre: ((i+0.5)*h, (j+0.5)*h, (k+0.5)*h)
+    //
+    // SOLID cell (inside tube): i=6,j=3,k=3 → centre=(0.8125, 0.4375, 0.4375)
+    //   Nearest ring point at phi=0: (0.80, 0.50, 0.50).
+    //   Dist ≈ sqrt(0.0125²+0.0625²+0.0625²) ≈ 0.0893 < r=0.09 → inside tube.
+    //
+    // FLUID cell (in central hole): i=3,j=3,k=3 → centre=(0.4375, 0.4375, 0.4375)
+    //   r_xy = sqrt(2*(0.4375-0.5)²) ≈ 0.0884; dist_from_ring ≈ 0.221 > r → outside.
+    {
+        const char* torus_stl = "/tmp/torus_w5.stl";
+        write_torus_stl(torus_stl, 0.30f, 0.09f, 12, 8);
+        StlMesh torus_mesh = load_stl(torus_stl);
+        GpuBvh  torus_bvh;
+        torus_bvh.build(torus_mesh);
+
+        BlockTree torus_tree; torus_tree.init(1.0);
+        CellBlock* tblk = torus_tree.nodes[0].block.get();
+        g_pool.alloc(tblk);
+        // zero-init Q
+        for (int fv = 0; fv < 5; ++fv)
+            for (int fi = 0; fi < NCELL; ++fi) tblk->Q[fv][fi] = 1.0;
+        g_pool.upload(tblk);
+
+        GpuIbmList torus_ibm; torus_ibm.wall_bc = 0;
+        torus_ibm.build(torus_tree, g_pool, torus_bvh);
+
+        std::vector<int8_t> h_tct(NCELL);
+        cudaMemcpy(h_tct.data(), torus_ibm.d_cell_type_pool, NCELL, cudaMemcpyDeviceToHost);
+
+        // flat index: cell_idx(i,j,k) uses (k*NB2 + j)*NB2 + i with ghost offset
+        int f_solid = cell_idx(6+NG, 3+NG, 3+NG);  // interior coords 6,3,3
+        int f_fluid = cell_idx(3+NG, 3+NG, 3+NG);  // interior coords 3,3,3
+
+        bool solid_ok = (h_tct[f_solid] == 1);  // IBM_SOLID
+        bool fluid_ok = (h_tct[f_fluid] != 1);  // not SOLID (FLUID or IBM_GHOST)
+
+        check(solid_ok, "W5a",
+              "Winding-number sign: tube interior cell is SOLID",
+              (double)h_tct[f_solid]);
+        check(fluid_ok, "W5b",
+              "Winding-number sign: torus hole cell is FLUID (not SOLID)",
+              (double)h_tct[f_fluid]);
+
+        g_pool.free(tblk);
+    }
 
     // ── Summary ───────────────────────────────────────────────────────────────
     g_pool.free(blk);
