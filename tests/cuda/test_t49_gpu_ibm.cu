@@ -40,8 +40,8 @@ static void write_torus_stl(const char* path, float R, float r, int n_phi, int n
     fwrite(&n_tris, 4, 1, f);
     // Torus centred at (0.5, 0.5, 0.5) in the unit-cube domain
     auto torus_pt = [&](int ip, int it) -> std::array<float,3> {
-        float phi   = 2.0f * 3.14159265f * ip / n_phi;
-        float theta = 2.0f * 3.14159265f * it / n_theta;
+        float phi   = 2.0f * (float)M_PI * ip / n_phi;
+        float theta = 2.0f * (float)M_PI * it / n_theta;
         float x = (R + r * cosf(theta)) * cosf(phi) + 0.5f;
         float y = (R + r * cosf(theta)) * sinf(phi) + 0.5f;
         float z = r * sinf(theta)                   + 0.5f;
@@ -235,8 +235,7 @@ int main() {
     // Cell(i,j,k) centre: ((i+0.5)*h, (j+0.5)*h, (k+0.5)*h)
     //
     // SOLID cell (inside tube): i=6,j=3,k=3 → centre=(0.8125, 0.4375, 0.4375)
-    //   Nearest ring point at phi=0: (0.80, 0.50, 0.50).
-    //   Dist ≈ sqrt(0.0125²+0.0625²+0.0625²) ≈ 0.0893 < r=0.09 → inside tube.
+    //   Nearest ring point: phi≈-11°, dist≈0.065 < r=0.09 (margin≈0.2 h) → SOLID.
     //
     // FLUID cell (in central hole): i=3,j=3,k=3 → centre=(0.4375, 0.4375, 0.4375)
     //   r_xy = sqrt(2*(0.4375-0.5)²) ≈ 0.0884; dist_from_ring ≈ 0.221 > r → outside.
@@ -250,7 +249,7 @@ int main() {
         BlockTree torus_tree; torus_tree.init(1.0);
         CellBlock* tblk = torus_tree.nodes[0].block.get();
         g_pool.alloc(tblk);
-        // zero-init Q
+        // uniform Q=1
         for (int fv = 0; fv < 5; ++fv)
             for (int fi = 0; fi < NCELL; ++fi) tblk->Q[fv][fi] = 1.0;
         g_pool.upload(tblk);
