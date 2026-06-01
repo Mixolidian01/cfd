@@ -194,9 +194,11 @@ void GpuSurfaceList::build(const GpuIbmList& ibm, const SolverConfig::SurfaceCon
             const int k_ijk = flat / (GPU_NB2 * GPU_NB2);
             const int j_ijk = (flat / GPU_NB2) % GPU_NB2;
             const int i_ijk = flat % GPU_NB2;
-            const float cx = m.ox + (i_ijk + 0.5f) * m.hx;
-            const float cy = m.oy + (j_ijk + 0.5f) * m.hy;
-            const float cz = m.oz + (k_ijk + 0.5f) * m.hz;
+            // i_ijk is the NB2-padded index (0=first ghost, GPU_NG=first interior).
+            // ox is the interior-cell origin, so subtract GPU_NG to get physical centre.
+            const float cx = m.ox + (i_ijk - GPU_NG + 0.5f) * m.hx;
+            const float cy = m.oy + (j_ijk - GPU_NG + 0.5f) * m.hy;
+            const float cz = m.oz + (k_ijk - GPU_NG + 0.5f) * m.hz;
 
             const float sdf_v = h_sdf[(size_t)li * NC + flat];
             const float nx_v  = h_wn[(size_t)(li * NC * 3 + 0 * NC + flat)];
