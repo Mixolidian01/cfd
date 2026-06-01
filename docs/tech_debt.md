@@ -7,11 +7,11 @@ Check this before treating something as a bug to fix.
 
 ## Numerical / Physics
 
-### BVH sign determination uses pseudo-normal, not winding number
+### BVH sign determination — generalized winding number ✅ DONE
 **File:** `include/cuda/gpu_bvh.cuh`, `bvh_sdf()`
-**What:** Sign of the SDF is determined by dot-product of the displacement vector with the closest-triangle face normal. Robust for smooth convex bodies; can mis-sign near sharp edges or vertices of arbitrary (non-convex, non-watertight) STL meshes.
-**Why deferred:** Generalised winding number requires an O(n log n) GPU BVH traversal that is significantly more complex. The pseudo-normal test is correct for the smooth geometries in the current test suite.
-**Risk:** IBM will silently mis-classify cells near sharp concavities in complex STL files. No runtime warning is emitted.
+**What:** Sign of the SDF is now determined by the generalized winding number (Van Oosterom & Strackee 1983), summing solid angles over all mesh triangles. Robust for non-convex and non-watertight STL meshes.
+**Note:** O(n_tris) per cell query — suitable for small meshes (< ~2k tris). For large STL files, a BVH-accelerated winding-number traversal would reduce cost.
+**Gate:** W5 (torus) in t49 verifies correct SOLID/FLUID classification for a non-convex geometry.
 
 ### IBM SolidFill uses linear scan — O(n_leaves × NCELL)
 **File:** `src/cuda/gpu_ibm.cu`, `GpuIbmList::build()`
