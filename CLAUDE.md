@@ -220,7 +220,13 @@ A fully GPU-native, production-grade compressible CFD solver with:
     performance work.
 18. Commit granularity: one commit per gate-green milestone, message format
     `D<n>: <title>; t<gate> pass`.
-19. Run `cmake --build build -t ba` before every push; abort push if any test fails.
+19. Test granularity: during development run only the specific gate(s) affected by the
+    current change (`cmake --build build -t tNN`). Run `cmake --build build -t ba` exactly
+    once, immediately before `git push`, not after every commit. The full suite takes ~30 min;
+    running it multiple times per task wastes wall time.
+19a. Background builds: always append `2>&1` to cmake commands run in background
+    (`cmake --build build -t ba 2>&1`); cmake writes progress to stderr which is otherwise
+    silently dropped, producing an empty output file that requires a manual re-launch.
 20. Use sub-agents freely for: literature search, independent code review,
     parallel benchmark runs, and Nsight log analysis.
 
