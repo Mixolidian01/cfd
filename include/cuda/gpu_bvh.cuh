@@ -57,10 +57,8 @@ struct GpuBvh {
 //   positive  →  query point is on the outward-normal side (fluid / exterior)
 //   negative  →  query point is on the inward-normal side  (solid / interior)
 //
-// Sign determination: face-normal dot-product with the displacement to the
-// closest surface point (classic pseudo-normal test).  Robust for smooth
-// convex bodies; may mis-sign near sharp edges/vertices of arbitrary STL meshes.
-// A generalised winding number would give full robustness but is not implemented.
+// Sign determination: generalised winding number (Van Oosterom & Strackee 1983).
+// Robust for non-convex and non-watertight STL meshes.
 //
 // Also writes the outward wall normal (from the STL) at the closest surface
 // point into (out_nx, out_ny, out_nz).
@@ -152,6 +150,7 @@ __device__ __forceinline__ float bvh_winding_number(
     float px, float py, float pz) noexcept
 {
     float w = 0.0f;
+    // O(n_tris): suitable for small meshes (< ~2k tris); no BVH acceleration here
     for (int ti = 0; ti < n_tris; ++ti) {
         float ax=v0x[ti]-px, ay=v0y[ti]-py, az=v0z[ti]-pz;
         float bx=v1x[ti]-px, by=v1y[ti]-py, bz=v1z[ti]-pz;
