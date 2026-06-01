@@ -9,6 +9,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <sys/stat.h>
 #include <vector>
 
 static void test_m1_residual() {
@@ -225,6 +226,44 @@ static void test_m3b_plane_avg() {
     printf("M3b PASS\n");
 }
 
+static void test_m4_field_dump() {
+    constexpr int NL   = 1;
+    constexpr int NVAR = GPU_NVAR;
+
+    std::vector<double> h_Q(NVAR * GPU_NCELL, 0.0);
+    for (int v = 0; v < NVAR; ++v)
+        for (int c = 0; c < GPU_NCELL; ++c)
+            h_Q[(size_t)v * GPU_NCELL + c] = v * 1000.0 + c;
+
+    double origins[3] = {0.0, 0.0, 0.0};
+    double hs[1]      = {0.125};
+
+    const std::string path = "/tmp/t51_field_0000000.bin";
+    BinDumper::write(path, 0, 0.0, NL, NVAR, h_Q.data(), origins, hs);
+
+    // File size: 64-byte header + NL * (3*8 + 8 + NVAR*NCELL*8)
+    const size_t expected_sz = 64 + (size_t)NL * (3*8 + 8 + (size_t)NVAR * GPU_NCELL * 8);
+    struct stat st;
+    stat(path.c_str(), &st);
+    assert((size_t)st.st_size == expected_sz && "M4: file size mismatch");
+
+    // Re-read: check magic, then Q arrays bit-identical
+    FILE* f = fopen(path.c_str(), "rb");
+    uint32_t magic; fread(&magic, 4, 1, f);
+    assert(magic == BinDumper::MAGIC && "M4: magic mismatch");
+    fseek(f, 64, SEEK_SET);
+    double ori_r[3], h_r;
+    fread(ori_r, 8, 3, f); fread(&h_r, 8, 1, f);
+    std::vector<double> q_r(NVAR * GPU_NCELL);
+    fread(q_r.data(), 8, (size_t)NVAR * GPU_NCELL, f);
+    fclose(f);
+    for (int v = 0; v < NVAR; ++v)
+        for (int c = 0; c < GPU_NCELL; ++c)
+            assert(q_r[(size_t)v * GPU_NCELL + c] == h_Q[(size_t)v * GPU_NCELL + c] && "M4: Q mismatch");
+
+    printf("M4 PASS\n");
+}
+
 int main() {
     // M0: config structs compile and have correct defaults
     SurfaceConfig sc;
@@ -247,5 +286,6 @@ int main() {
     test_m2_surface();
     test_m3a_probe_point();
     test_m3b_plane_avg();
+    test_m4_field_dump();
     return 0;
 }
