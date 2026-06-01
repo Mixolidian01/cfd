@@ -96,6 +96,8 @@ struct IGpuSolver : TimeIntegrator {
     // G7: metrics bus wiring — default no-ops, GpuGraphSolver overrides.
     virtual void set_metrics_bus(struct MetricsBus* /*bus*/) noexcept {}
     virtual void set_metrics_step(int /*s*/, double /*t*/) noexcept {}
+    // Write collected metrics to CSV (called by NSSolver after advance step; no-op by default).
+    virtual void write_metrics(int /*step*/, double /*t*/, double /*dt*/) noexcept {}
 
     // D1: GPU-native AMR regrid.  Default returns false (fall back to CPU regrid).
     // GpuGraphSolver overrides this to run refinement sensor on GPU and do D2D
@@ -329,9 +331,6 @@ struct NSSolver {
     // Requires: advance() called at least once via CPU path since init() or last regrid.
     std::vector<CellBlock> adjoint_step(const std::vector<CellBlock>& lam_f) const;
 
-    // User-declared so unique_ptr<MetricsBus> compiles against a forward declaration.
-    ~NSSolver();
-
     // Phase 6: optional in-situ browser live feed.
     // Set via set_streamer() before run()/advance().  Null = disabled.
     LiveStreamer* streamer_ = nullptr;
@@ -370,8 +369,11 @@ struct NSSolver {
         if (gpu_solver_) gpu_solver_->set_snapshot_buffer(b);
     }
 
-    // G7: optional metrics & monitoring bus (owned; complete type only needed in ns_solver.cpp).
-    MetricsBus* metrics_bus_ = nullptr;
+    // G7: optional metrics & monitoring bus.
+    // Custom deleter body in ns_solver.cpp so MetricsBus stays forward-declared here
+    // (NVCC eagerly instantiates unique_ptr<T> static_assert(sizeof) even with user-declared dtor).
+    struct MetricsBusDeleter { void operator()(MetricsBus*) const noexcept; };
+    std::unique_ptr<MetricsBus, MetricsBusDeleter> metrics_bus_;
 
     int  scratch_leaf_count_ = -1;  ///< FIX P5: tracks last alloc size
     void alloc_scratch();

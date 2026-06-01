@@ -191,6 +191,7 @@ struct GpuGraphSolver : IGpuSolver {
     void set_metrics_step(int s, double t) noexcept override {
         metrics_step_ = s; metrics_t_ = t;
     }
+    void write_metrics(int step, double t, double dt) noexcept override;
     // Builds bus with internal rhs_list/ibm_list pointers, then wires it.
     void build_metrics(MetricsBus* bus, const SolverConfig::MetricsConfig& cfg,
                        const SnapLeafMeta* snap_metas) noexcept;

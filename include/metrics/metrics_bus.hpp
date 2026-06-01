@@ -5,6 +5,11 @@
 #include <memory>
 #include <vector>
 #include <string>
+#ifdef __CUDACC__
+#  include <cuda_runtime.h>
+#else
+typedef struct CUstream_st* cudaStream_t;
+#endif
 
 // Forward declarations
 struct GpuRhsList;

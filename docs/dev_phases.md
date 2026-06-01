@@ -81,6 +81,7 @@ These were not in the original CLAUDE.md phase list; implemented 2026-05-30.
 | Sim | simulate + template.json sync | ✅ DONE | — | 46576f0–f02b424 | 2026-05-31 |
 | BF | Body-force source term (momentum + energy) | ✅ DONE | — | e7b4085–dc26e2e | 2026-06-01 |
 | C50 | Turbulent channel WMLES Re_τ=395 DNS gate | ✅ DONE | t50 (C50) | 233ca24 | 2026-06-01 |
+| M | Metrics & monitoring system | ✅ DONE | t51 (M0–M4) | 77223f2 | 2026-06-02 |
 
 ---
 
@@ -116,7 +117,8 @@ These were not in the original CLAUDE.md phase list; implemented 2026-05-30.
 | t48 | G6 | Baer-Nunziato two-phase (GPU) |
 | t49 | IBM | STL import + ghost-cell IBM (I5–I9, W5 winding-number sign) |
 | t50 | C50 | Turbulent channel WMLES Re_τ=395, B∈[4.9,6.2] |
+| t51 | M | Metrics & monitoring (residual, surface forces, probes, field dump) |
 
 ---
 
-*Last updated: 2026-06-01*
+*Last updated: 2026-06-02*

@@ -249,6 +249,16 @@ int main(int argc, char* argv[])
     sc.time.max_steps       = cfg.i("max_steps",       1000000);
     sc.io.diag_interval   = cfg.i("diag_interval",   10);
     sc.io.verbose         = cfg.b("verbose",         true);
+
+    // G7: metrics — flat keys (Config parser flattens nested JSON blocks)
+    sc.metrics.global_interval   = cfg.i("global_interval",   10);
+    sc.metrics.residual_interval = cfg.i("residual_interval",  0);
+    sc.metrics.surface_interval  = cfg.i("surface_interval",   0);
+    sc.metrics.probe_interval    = cfg.i("probe_interval",     0);
+    sc.metrics.dump_interval     = cfg.i("dump_interval",      0);
+    sc.metrics.dump_derived      = cfg.b("dump_derived",       false);
+    sc.metrics.output_dir        = cfg.str("metrics_output_dir", ".");
+
     sc.amr.regrid_interval = cfg.i("regrid_interval", 0);
     sc.amr.max_level       = cfg.i("max_level",       2);
     sc.amr.use_lts         = cfg.b("use_lts",         false);

@@ -771,3 +771,7 @@ void GpuGraphSolver::build_metrics(MetricsBus* bus, const SolverConfig::MetricsC
     metrics_step_ = 0;
     metrics_t_    = 0.0;
 }
+
+void GpuGraphSolver::write_metrics(int step, double t, double dt) noexcept {
+    if (metrics_bus_) metrics_bus_->write(step, t, dt);
+}

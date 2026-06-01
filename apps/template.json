@@ -271,8 +271,19 @@
                                     // 0.5 = mid-plane.
     "stream_stride"      : 1,       // Stream a frame every N solver steps.
                                     // Increase to reduce network/CPU overhead on fast runs.
-    "volume_size"        : 32       // Resolution of the N³ uniform grid used by the 3D viewer.
+    "volume_size"        : 32,      // Resolution of the N³ uniform grid used by the 3D viewer.
                                     // Coarser AMR data is upsampled; finer overwrites coarser.
                                     // 32 (32768 voxels) is fast; 64 or 128 for higher fidelity.
                                     // Max is 128 (GPU pinned buffer limit).
+
+    // ── Metrics & monitoring (G7) ─────────────────────────────────────────────
+    // All intervals in solver steps. 0 = disabled.
+    "global_interval"    : 10,      // Write all active monitors every N steps.
+    "residual_interval"  : 0,       // L2 residual norm → metrics/residuals.csv (0=disabled).
+    "surface_interval"   : 0,       // Surface forces → metrics/<name>_forces.csv (0=disabled).
+    "probe_interval"     : 0,       // Probe / plane-avg → metrics/<name>.csv (0=disabled).
+    "dump_interval"      : 0,       // Binary Q field dump every N steps (0=disabled).
+    "dump_derived"       : false,   // Append |ω| (var 9) and Q-criterion (var 10) to dumps.
+    "metrics_output_dir" : "."      // Directory for CSV and binary metric output.
+    // Surface and probe arrays are configured in simulate_gpu (GPU path only).
 }
