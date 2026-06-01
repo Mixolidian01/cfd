@@ -1353,6 +1353,33 @@ void k_zero_rhs(double* __restrict__ pool, int n) {
         pool[i] = 0.0;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// k_body_force: add uniform body-force acceleration (fx, fy, fz) to the RHS.
+// Grid: (n_leaves)  Block: 256 flat threads
+// Only interior cells [NG..NG+NB)³ are updated; ghost cells are skipped.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__ static void k_body_force(const GpuLeafRhsMeta* __restrict__ metas,
+                                     double fx, double fy, double fz)
+{
+    const GpuLeafRhsMeta& m = metas[blockIdx.x];
+    for (int flat = threadIdx.x; flat < GPU_NCELL; flat += blockDim.x) {
+        const int k_ = flat / (GPU_NB2 * GPU_NB2);
+        const int j_ = (flat / GPU_NB2) % GPU_NB2;
+        const int i_ = flat % GPU_NB2;
+        if (i_ < GPU_NG || i_ >= GPU_NG + GPU_NB ||
+            j_ < GPU_NG || j_ >= GPU_NG + GPU_NB ||
+            k_ < GPU_NG || k_ >= GPU_NG + GPU_NB) continue;
+        const double rho  = m.d_Q[0 * GPU_NCELL + flat];
+        const double rhou = m.d_Q[1 * GPU_NCELL + flat];
+        const double rhov = m.d_Q[2 * GPU_NCELL + flat];
+        const double rhow = m.d_Q[3 * GPU_NCELL + flat];
+        m.d_RHS[1 * GPU_NCELL + flat] += fx * rho;
+        m.d_RHS[2 * GPU_NCELL + flat] += fy * rho;
+        m.d_RHS[3 * GPU_NCELL + flat] += fz * rho;
+        m.d_RHS[4 * GPU_NCELL + flat] += fx * rhou + fy * rhov + fz * rhow;
+    }
+}
+
 void GpuRhsList::exec(cudaStream_t stream, bool zero_rhs) const {
     if (n_leaves == 0) return;
 
@@ -1384,6 +1411,8 @@ void GpuRhsList::exec(cudaStream_t stream, bool zero_rhs) const {
         break;
     }
     k_rhs_visc<<<dim3(n_leaves), dim3(GPU_NB, GPU_NB), 0, stream>>>(d_metas);
+    if (force_x_ != 0.0 || force_y_ != 0.0 || force_z_ != 0.0)
+        k_body_force<<<dim3(n_leaves), 256, 0, stream>>>(d_metas, force_x_, force_y_, force_z_);
 }
 
 void GpuRhsList::download_rhs(const BlockTree& tree) const {

@@ -63,6 +63,10 @@ struct GpuRhsList {
     double          duc_p_thr_     = 0.1;   // matches DucrosConfig defaults
     double          duc_blend_inv_ = 10.0;  // 1/0.1
 
+    double force_x_ = 0.0;
+    double force_y_ = 0.0;
+    double force_z_ = 0.0;
+
     GpuRhsList() = default;
     GpuRhsList(const GpuRhsList&) = delete;
     GpuRhsList& operator=(const GpuRhsList&) = delete;
