@@ -239,7 +239,7 @@ void GpuProbeList::build_plane(int n_slabs_in, int axis, float slab_lo, float sl
 
 void GpuProbeList::exec(const SnapLeafMeta* d_metas, int n_leaves, cudaStream_t s) const {
     if (!n_probes) return;
-    k_probe_interp<<<1, 32, 0, s>>>(d_metas, n_leaves, d_probes, n_probes, d_results);
+    k_probe_interp<<<(n_probes + 31) / 32, 32, 0, s>>>(d_metas, n_leaves, d_probes, n_probes, d_results);
     CUDA_CHECK(cudaMemcpyAsync(h_results, d_results, n_probes * sizeof(double),
                                cudaMemcpyDeviceToHost, s));
 }
