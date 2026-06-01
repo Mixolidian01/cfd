@@ -25,6 +25,10 @@
 #include "gpu_snapshot.hpp"
 #include "mpi/mpi_comm.hpp"
 #include "mesh/block_tree.hpp"
+#include "metrics/metrics_bus.hpp"
+#include "metrics/residual_monitor.hpp"
+#include "metrics/surface_monitor.hpp"
+#include "metrics/probe_monitor.hpp"
 #include <vector>
 
 // ── Forward declarations for symbols defined in gpu_snapshot.cu ──────────────
@@ -492,9 +496,13 @@ double GpuGraphSolver::_advance_amr(double cfl) {
     }
 
     // Option A/C: GPU slice + metric kernels (before final sync so they're covered).
+    if (metrics_bus_)
+        metrics_bus_->launch(rhs_list, snap_buf_ ? snap_buf_->h_metas : nullptr,
+                             n_leaves, metrics_step_, stream);
     _do_launch_snapshot(snap_buf_, n_leaves, stream);
 
     CUDA_CHECK(cudaStreamSynchronize(stream));
+    if (metrics_bus_) metrics_bus_->collect(metrics_step_, metrics_t_, dt);
 
     // G1: copy device phi back to CPU CellBlocks.
     if (acdi_enabled_) {
@@ -540,8 +548,12 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
             if (dyn_sgs_enabled_) dyn_sgs_list_.exec(cfl_list.d_dt, stream);
         }
         // Option A/C: GPU slice + metric kernels (before sync so they're covered).
+        if (metrics_bus_)
+            metrics_bus_->launch(rhs_list, snap_buf_ ? snap_buf_->h_metas : nullptr,
+                                 n_leaves, metrics_step_, stream);
         _do_launch_snapshot(snap_buf_, n_leaves, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
+        if (metrics_bus_) metrics_bus_->collect(metrics_step_, metrics_t_, dt);
         // Capture graphs only for single-rank runs without ACDI or dynamic SGS
         // (both use dynamic state that cannot be captured in a static graph).
         // IBM and WMLES use dynamic pointers rebuilt on regrid — skip graph capture
@@ -562,8 +574,12 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
             if (dyn_sgs_enabled_) dyn_sgs_list_.exec(cfl_list.d_dt, stream);
         }
         // Option A/C: GPU slice + metric kernels (before sync so they're covered).
+        if (metrics_bus_)
+            metrics_bus_->launch(rhs_list, snap_buf_ ? snap_buf_->h_metas : nullptr,
+                                 n_leaves, metrics_step_, stream);
         _do_launch_snapshot(snap_buf_, n_leaves, stream);
         CUDA_CHECK(cudaStreamSynchronize(stream));
+        if (metrics_bus_) metrics_bus_->collect(metrics_step_, metrics_t_, dt);
     }
 
     // G1: copy device phi back to CPU CellBlocks so host tests can read phi.
@@ -743,4 +759,15 @@ void GpuGraphSolver::upload_q() const {
         CUDA_CHECK(cudaMemcpy(dptr, h_buf, NVAR * NCELL * sizeof(double),
                               cudaMemcpyHostToDevice));
     }
+}
+
+// G7: build MetricsBus using internal rhs_list/ibm_list, then wire it.
+void GpuGraphSolver::build_metrics(MetricsBus* bus, const SolverConfig::MetricsConfig& cfg,
+                                    const SnapLeafMeta* snap_metas) noexcept {
+    if (!bus) return;
+    bus->build(cfg, n_leaves, &rhs_list, snap_metas,
+               ibm_enabled_ ? &ibm_list_ : nullptr);
+    metrics_bus_  = bus;
+    metrics_step_ = 0;
+    metrics_t_    = 0.0;
 }

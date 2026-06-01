@@ -2,6 +2,7 @@
 // gpu_constants.cuh — compile-time constants mirroring cell_block.hpp
 // Must stay in sync with cell_block.hpp (static_assert enforced in gpu_graph.cu).
 
+#include <cuda_runtime.h>
 #include <cstdint>
 
 // Block geometry — must match cell_block.hpp

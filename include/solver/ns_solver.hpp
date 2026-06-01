@@ -93,6 +93,10 @@ struct IGpuSolver : TimeIntegrator {
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_snapshot_buffer(struct GpuSnapshotBuffer* /*buf*/) {}
 
+    // G7: metrics bus wiring — default no-ops, GpuGraphSolver overrides.
+    virtual void set_metrics_bus(struct MetricsBus* /*bus*/) noexcept {}
+    virtual void set_metrics_step(int /*s*/, double /*t*/) noexcept {}
+
     // D1: GPU-native AMR regrid.  Default returns false (fall back to CPU regrid).
     // GpuGraphSolver overrides this to run refinement sensor on GPU and do D2D
     // prolongation/restriction without large D2H Q transfers.
@@ -325,6 +329,9 @@ struct NSSolver {
     // Requires: advance() called at least once via CPU path since init() or last regrid.
     std::vector<CellBlock> adjoint_step(const std::vector<CellBlock>& lam_f) const;
 
+    // User-declared so unique_ptr<MetricsBus> compiles against a forward declaration.
+    ~NSSolver();
+
     // Phase 6: optional in-situ browser live feed.
     // Set via set_streamer() before run()/advance().  Null = disabled.
     LiveStreamer* streamer_ = nullptr;
@@ -363,8 +370,8 @@ struct NSSolver {
         if (gpu_solver_) gpu_solver_->set_snapshot_buffer(b);
     }
 
-    // G7: optional metrics & monitoring bus.
-    std::unique_ptr<MetricsBus> metrics_bus_;
+    // G7: optional metrics & monitoring bus (owned; complete type only needed in ns_solver.cpp).
+    MetricsBus* metrics_bus_ = nullptr;
 
     int  scratch_leaf_count_ = -1;  ///< FIX P5: tracks last alloc size
     void alloc_scratch();

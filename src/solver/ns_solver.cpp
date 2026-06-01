@@ -28,10 +28,14 @@
 #include "schemes/operators.hpp"
 #include "linalg/linalg.hpp"
 #include "gpu_snapshot.hpp"
+#include "metrics/metrics_bus.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+
+// NSSolver destructor: MetricsBus complete type required here.
+NSSolver::~NSSolver() { delete metrics_bus_; }
 
 // R3: overloaded helper for std::visit dispatch (C++17 deduction-guide, C++20 compatible).
 template<class... Ts>
@@ -332,6 +336,15 @@ double NSSolver::advance() {
             gpu_snap_->volume_N   = std::max(4, std::min(128, sc.volume_size));
         }
 
+        // G7: initialise MetricsBus lazily on the first advance() call.
+        // build_metrics() is non-virtual on GpuGraphSolver; app code (simulate.cpp)
+        // calls it directly. Here we only wire the pointer so launch/collect hooks fire.
+        if (!metrics_bus_ && cfg.metrics.global_interval > 0) {
+            metrics_bus_ = new MetricsBus();
+            gpu_solver_->set_metrics_bus(metrics_bus_);
+        }
+        if (metrics_bus_) gpu_solver_->set_metrics_step(step, t);
+
         dt = gpu_solver_->advance(tree, cfg.time.cfl);
         // advance() now includes slice + metric kernels and the final stream sync.
         // CPU Q is only needed at diag_interval; skip the expensive full download
@@ -355,6 +368,7 @@ double NSSolver::advance() {
     last_dt_ = dt;
     t    += dt;
     step += 1;
+    if (metrics_bus_) metrics_bus_->write(step, t, dt);
 
     // P12.1/P12.3/P12.4: compute per-step diagnostics (both CPU and GPU paths).
     if (cfg.io.verbose_json || streamer_) {

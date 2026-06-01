@@ -1,23 +1,18 @@
 #pragma once
 #include "solver/ns_solver.hpp"
 #include "field_dumper.hpp"
+#include "metrics/imonitor.hpp"
 #include <memory>
 #include <vector>
 #include <string>
-#include <cuda_runtime.h>
 
 // Forward declarations
 struct GpuRhsList;
 struct SnapLeafMeta;
 struct GpuIbmList;
-
-// ── IMonitor — interface for all monitor categories ──────────────────────────
-struct IMonitor {
-    virtual ~IMonitor() = default;
-    virtual void launch([[maybe_unused]] cudaStream_t s) {}
-    virtual void collect([[maybe_unused]] int step, [[maybe_unused]] double t,
-                         [[maybe_unused]] double dt) {}
-};
+struct ResidualMonitor;
+struct SurfaceMonitor;
+struct ProbeMonitor;
 
 // ── MetricsBus ────────────────────────────────────────────────────────────────
 struct MetricsBus {
@@ -42,6 +37,15 @@ struct MetricsBus {
     [[nodiscard]] bool active() const { return !monitors_.empty(); }
 
 private:
-    MetricsConfig cfg_;
+    MetricsConfig                          cfg_;
     std::vector<std::unique_ptr<IMonitor>> monitors_;
+    ResidualMonitor*                       residual_mon_ = nullptr;
+    std::vector<SurfaceMonitor*>           surface_mons_;
+    std::vector<ProbeMonitor*>             probe_mons_;
+    const GpuRhsList*                      rhs_list_     = nullptr;
+    const SnapLeafMeta*                    snap_metas_   = nullptr;
+    int                                    n_leaves_     = 0;
+    int                                    collect_step_ = 0;
+    double                                 collect_t_    = 0.0;
+    double                                 collect_dt_   = 0.0;
 };

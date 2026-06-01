@@ -186,6 +186,15 @@ struct GpuGraphSolver : IGpuSolver {
     // Re-upload snap metadata after regrid (called from build()).
     void _upload_snap_metas(const BlockTree& tree);
 
+    // G7: MetricsBus hooks — set/step are called by NSSolver each advance().
+    void set_metrics_bus(MetricsBus* b) noexcept override { metrics_bus_ = b; }
+    void set_metrics_step(int s, double t) noexcept override {
+        metrics_step_ = s; metrics_t_ = t;
+    }
+    // Builds bus with internal rhs_list/ibm_list pointers, then wires it.
+    void build_metrics(MetricsBus* bus, const SolverConfig::MetricsConfig& cfg,
+                       const SnapLeafMeta* snap_metas) noexcept;
+
     // Rebuild all component lists from the tree; invalidates any captured graphs.
     // bc_type: 0=periodic, 1=wall, 2=open (all faces same).
     void build(const BlockTree& tree, const GpuPool& pool, int bc_type = 0) override;
@@ -225,6 +234,11 @@ struct GpuGraphSolver : IGpuSolver {
     bool gpu_regrid(BlockTree& tree, GpuPool& pool, int bc_type,
                     int cfg_max_level,
                     float refine_thr = 0.05f, float coarsen_thr = 0.01f);
+
+    // G7: metrics bus (optional; null = disabled).
+    MetricsBus* metrics_bus_  = nullptr;
+    int         metrics_step_ = 0;
+    double      metrics_t_    = 0.0;
 
 private:
     void _run_rk3_explicit(cudaStream_t s);
