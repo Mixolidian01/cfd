@@ -232,7 +232,7 @@ int main() {
 
     if (!stable) {
         check(false, "C50b", "log-law intercept B (skipped — diverged in spinup)");
-        check(false, "C50c", "solver stable for all 5000 steps (diverged in spinup)");
+        check(false, "C50c", "solver stable for all 1000 steps with body force (diverged in spinup)");
         printf("\n=== %s  %d gate(s) failed ===\n",
                n_fail == 0 ? "PASS" : "FAIL", n_fail);
         return n_fail;
