@@ -153,6 +153,12 @@
     "wmles_model"        : "reichardt",
     // Wall model: "reichardt" (algebraic Reichardt law) | "ode" (thin-boundary-layer).
 
+    // ── Body force ────────────────────────────────────────────────────────────
+    "body_fx"            : 0.0,    // Constant body-force acceleration in x [m/s²]. Use for channel
+                                   // flow pressure-gradient driving: body_fx = dP/dx / rho.
+    "body_fy"            : 0.0,    // Body force in y [m/s²].
+    "body_fz"            : 0.0,    // Body force in z [m/s²].
+
     // ── NSCBC outflow / inflow ─────────────────────────────────────────────────
     // Set any face bc to "NSCBC" to use characteristic boundary conditions.
     // Example: "bc_xhi": "NSCBC"  (subsonic outflow; other faces stay Periodic)
