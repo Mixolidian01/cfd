@@ -57,6 +57,11 @@ struct GpuBvh {
 //   positive  →  query point is on the outward-normal side (fluid / exterior)
 //   negative  →  query point is on the inward-normal side  (solid / interior)
 //
+// Sign determination: face-normal dot-product with the displacement to the
+// closest surface point (classic pseudo-normal test).  Robust for smooth
+// convex bodies; may mis-sign near sharp edges/vertices of arbitrary STL meshes.
+// A generalised winding number would give full robustness but is not implemented.
+//
 // Also writes the outward wall normal (from the STL) at the closest surface
 // point into (out_nx, out_ny, out_nz).
 //
@@ -66,7 +71,7 @@ struct GpuBvh {
 // gets the device code inlined (no -rdc / separate compilation required).
 
 // ── Device helper: AABB squared distance ─────────────────────────────────────
-__device__ __forceinline__ static float bvh_aabb_sq_dist(
+__device__ __forceinline__ float bvh_aabb_sq_dist(
     const float* __restrict__ bmin,
     const float* __restrict__ bmax,
     float px, float py, float pz) noexcept
@@ -82,7 +87,7 @@ __device__ __forceinline__ static float bvh_aabb_sq_dist(
 }
 
 // ── Device helper: closest point on triangle (Ericson §5.1.5) ────────────────
-__device__ __forceinline__ static void bvh_closest_on_triangle(
+__device__ __forceinline__ void bvh_closest_on_triangle(
     float ax, float ay, float az,
     float bx, float by, float bz,
     float cx, float cy, float cz,
