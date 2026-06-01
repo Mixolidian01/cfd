@@ -1,5 +1,4 @@
 #include "cuda/gpu_metrics.cuh"
-#include "cuda/gpu_scalars.cuh"
 #include "cuda/gpu_check.cuh"
 #include <cooperative_groups.h>
 #include <cmath>
@@ -14,10 +13,11 @@ namespace cg = cooperative_groups;
 __global__ void k_residual_norm(
     const GpuLeafRhsMeta* __restrict__ metas,
     double* __restrict__ d_out,
-    int /*n_leaves*/)
+    int n_leaves)
 {
     const int li  = blockIdx.x;
     const int var = blockIdx.y;
+    if (li >= n_leaves) return;
 
     const double* rhs_v = metas[li].d_RHS + (size_t)var * GPU_NCELL;
 
