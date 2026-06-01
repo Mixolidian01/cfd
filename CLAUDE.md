@@ -60,6 +60,8 @@ A fully GPU-native, production-grade compressible CFD solver with:
 
 ## Development phases (execute in priority order)
 
+> **Phase completion status:** see `docs/dev_phases.md` — all D0–D11 and G1–G6 phases are ✅ DONE; D8 is 🚫 DROPPED.
+
 ### D0 — Baseline verification (before any new feature)
 - Ensure all gates from `to_refactor` pass on this branch: `cmake --build build -t ba`
 - Establish GPU performance baseline: run `ncu` on `k_rhs_conv`, record achieved BW%
