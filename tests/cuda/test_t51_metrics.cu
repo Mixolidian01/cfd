@@ -175,6 +175,56 @@ static void test_m3a_probe_point() {
     printf("M3a PASS\n");
 }
 
+static void test_m3b_plane_avg() {
+    // IC: rho=1, rhou = tanh(y) on [0,1]^3, one leaf.
+    // Plane-average rhou (var_id=4) along y-axis (axis=1), GPU_NB slabs covering [0,1].
+    // Each slab j contains exactly GPU_NB*GPU_NB interior cells with y = (j+0.5)/GPU_NB.
+    // Expected mean rhou in slab j = tanh((j+0.5)/GPU_NB).
+
+    const double hcell = 1.0 / GPU_NB;
+    std::vector<double> h_Q(GPU_NVAR * GPU_NCELL, 0.0);
+    for (int k = 0; k < GPU_NB; ++k)
+    for (int j = 0; j < GPU_NB; ++j)
+    for (int i = 0; i < GPU_NB; ++i) {
+        const double y    = (j + 0.5) * hcell;
+        const int flat    = gpu_cell_idx(GPU_NG+i, GPU_NG+j, GPU_NG+k);
+        h_Q[0 * GPU_NCELL + flat] = 1.0;           // rho
+        h_Q[1 * GPU_NCELL + flat] = tanh(y);       // rhou
+        h_Q[4 * GPU_NCELL + flat] = 1.0 / (GPU_GAMMA - 1.0);
+    }
+    double* d_Q;
+    CUDA_CHECK(cudaMalloc(&d_Q, GPU_NVAR * GPU_NCELL * sizeof(double)));
+    CUDA_CHECK(cudaMemcpy(d_Q, h_Q.data(), GPU_NVAR * GPU_NCELL * sizeof(double),
+                          cudaMemcpyHostToDevice));
+
+    SnapLeafMeta h_meta = {};
+    h_meta.d_Q = d_Q;
+    h_meta.h = (float)hcell; h_meta.hy = (float)hcell; h_meta.hz = (float)hcell;
+    h_meta.ox = 0.f; h_meta.oy = 0.f; h_meta.oz = 0.f;
+    SnapLeafMeta* d_metas;
+    CUDA_CHECK(cudaMalloc(&d_metas, sizeof(SnapLeafMeta)));
+    CUDA_CHECK(cudaMemcpy(d_metas, &h_meta, sizeof(SnapLeafMeta), cudaMemcpyHostToDevice));
+
+    GpuProbeList pl;
+    // NOTE: build_plane takes 5 params (n_slabs, axis, slab_lo, slab_hi, var_id)
+    pl.build_plane(GPU_NB, /*axis=*/1, /*slab_lo=*/0.f, /*slab_hi=*/1.f, /*var_id=*/4 /*rhou*/);
+
+    pl.exec_plane(d_metas, 1, nullptr);
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    for (int j = 0; j < GPU_NB; ++j) {
+        double mean_rhou = (pl.h_slab_cnt[j] > 0)
+                         ? pl.h_slab_sum[j] / pl.h_slab_cnt[j]
+                         : 0.0;
+        double expected = tanh((j + 0.5) * hcell);
+        assert(fabs(mean_rhou - expected) < 1e-6 && "M3b: plane_avg mismatch");
+    }
+
+    CUDA_CHECK(cudaFree(d_Q));
+    CUDA_CHECK(cudaFree(d_metas));
+    printf("M3b PASS\n");
+}
+
 int main() {
     // M0: config structs compile and have correct defaults
     SurfaceConfig sc;
@@ -196,5 +246,6 @@ int main() {
     test_m1_residual();
     test_m2_surface();
     test_m3a_probe_point();
+    test_m3b_plane_avg();
     return 0;
 }

@@ -187,12 +187,42 @@ __global__ void k_probe_interp(
     results[pid] = val;
 }
 
-// Stub for Task 5
+// ── k_plane_avg ───────────────────────────────────────────────────────────────
+// gridDim = n_leaves, blockDim = 64
+// Each block processes one leaf; stride-64 loop over all GPU_NB^3 interior cells.
+// Finds each cell's slab index along 'axis', atomicAdds to d_sum/d_cnt.
 __global__ void k_plane_avg(
-    const SnapLeafMeta* /*metas*/, int /*n_leaves*/,
-    int /*axis*/, int /*n_slabs*/, float /*slab_lo*/, float /*slab_hi*/, int /*var_id*/,
-    double* /*d_sum*/, int* /*d_cnt*/)
-{}
+    const SnapLeafMeta* __restrict__ metas, int n_leaves,
+    int axis, int n_slabs, float slab_lo, float slab_hi, int var_id,
+    double* __restrict__ d_sum, int* __restrict__ d_cnt)
+{
+    const int li = blockIdx.x;
+    if (li >= n_leaves) return;
+    const SnapLeafMeta& m = metas[li];
+
+    const float h_ax  = (axis == 0) ? m.h : (axis == 1) ? m.hy : m.hz;
+    const float o_ax  = (axis == 0) ? m.ox : (axis == 1) ? m.oy : m.oz;
+    const float inv_w = (float)n_slabs / (slab_hi - slab_lo);
+
+    for (int idx = threadIdx.x; idx < GPU_NB * GPU_NB * GPU_NB; idx += blockDim.x) {
+        const int kk = idx / (GPU_NB * GPU_NB);
+        const int jj = (idx / GPU_NB) % GPU_NB;
+        const int ii = idx % GPU_NB;
+        const int ci = GPU_NG + ii;
+        const int cj = GPU_NG + jj;
+        const int ck = GPU_NG + kk;
+
+        // Physical coordinate along the averaging axis
+        const int   ax_idx = (axis == 0) ? ii : (axis == 1) ? jj : kk;
+        const float pos    = o_ax + (ax_idx + 0.5f) * h_ax;
+        const int   slab   = (int)((pos - slab_lo) * inv_w);
+        if (slab < 0 || slab >= n_slabs) continue;
+
+        const double val = (double)snap_scalar_val(m.d_Q, var_id, ci, cj, ck, m.h);
+        atomicAdd(&d_sum[slab], val);
+        atomicAdd(&d_cnt[slab], 1);
+    }
+}
 
 // ── GpuProbeList ──────────────────────────────────────────────────────────────
 GpuProbeList::~GpuProbeList() {
