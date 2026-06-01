@@ -30,6 +30,7 @@
 // Forward declarations — full definitions in CUDA TUs only.
 struct GpuPool;
 struct GpuBvh;
+struct MetricsBus;
 
 // P10-A2: TimeIntegrator — common interface for all SSP-RK3 implementations.
 //
@@ -249,8 +250,43 @@ struct SolverConfig {
         int  diag_interval = 10;
     } io;
 
+    // ── 10. Metrics & monitoring ─────────────────────────────────────────
+    struct SurfaceConfig {
+        std::string name;
+        std::array<double,3> ref_point = {0,0,0};
+        double rho_ref = 0.0, u_ref = 0.0, A_ref = 0.0;
+    };
+
+    struct ProbeConfig {
+        enum class Type { POINT, LINE, PLANE_AVG, VOLUME_INTEGRAL };
+        Type        type      = Type::POINT;
+        std::string name;
+        std::string quantity  = "rho";
+        std::array<double,3> p0 = {}, p1 = {};
+        int N       = 1;
+        int axis    = 1;      // 0=x, 1=y, 2=z for PLANE_AVG
+        int n_slabs = 32;
+    };
+
+    struct MetricsConfig {
+        int  global_interval   = 10;
+        int  residual_interval = 0;   // 0 = disabled
+        int  surface_interval  = 0;
+        int  probe_interval    = 0;
+        int  dump_interval     = 0;
+        bool dump_derived      = false;
+        std::string output_dir = ".";
+        std::vector<SurfaceConfig> surfaces;
+        std::vector<ProbeConfig>   probes;
+    };
+    MetricsConfig metrics;
+
     void validate() const;
 };
+
+using SurfaceConfig  = SolverConfig::SurfaceConfig;
+using ProbeConfig    = SolverConfig::ProbeConfig;
+using MetricsConfig  = SolverConfig::MetricsConfig;
 
 // ── NSSolver ──────────────────────────────────────────────────────────────────────────────────────
 struct NSSolver {
@@ -326,6 +362,9 @@ struct NSSolver {
         gpu_snap_ = b;
         if (gpu_solver_) gpu_solver_->set_snapshot_buffer(b);
     }
+
+    // G7: optional metrics & monitoring bus.
+    std::unique_ptr<MetricsBus> metrics_bus_;
 
     int  scratch_leaf_count_ = -1;  ///< FIX P5: tracks last alloc size
     void alloc_scratch();
