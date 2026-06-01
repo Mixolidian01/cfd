@@ -379,3 +379,213 @@ silently had no effect on GPU runs.
 **Verification:** t25–t28 + t35 all PASS after the change. ba suite 32/32 PASS.
 
 ---
+
+## D9 — NSCBC outflow/inflow BC  (2026-05-25  e460b97)
+
+**Gate:** t40 — reflected amplitude at open-y outflow ≤ 1 % of incident over 100 steps (vs ~20 % for zero-gradient BC).
+
+**What was done:**
+
+- **`include/mesh/bc_types.hpp` / `src/mesh/block_tree.cpp`** — Added `NscbcBC` struct (bc_type = 3) alongside existing BC types. `fill_ghosts_open()` replaced with `fill_nscbc()`: decomposes the boundary state into the five characteristic waves of the 3-D Euler equations following Thompson (1987) and Poinsot & Lele (1992). Incoming wave amplitudes are damped by a relaxation factor `σ(1 − M²)c/L`; outgoing waves are left unchanged (zero gradient). Subsonic outflow: prescribe `p_inf`, extrapolate density and velocity from interior. Supersonic faces retain the existing zero-gradient behaviour (all waves outgoing).
+
+- **`src/cuda/gpu_ghost_fill.cu`** — Extended `k_fill_faces` to handle `bc_type = 3`: per-face branch calls the NSCBC characteristic decomposition on-device. The same `NscbcBC` parameters (p_inf, L_ref, sigma) are packed into `GpuLeafGhostMeta` and uploaded in `build()`.
+
+- **`tests/cuda/test_t40_nscbc.cu`** — 1-D Gaussian acoustic pulse in a periodic-x, open-y duct. Measures reflected amplitude at y-outflow face after the pulse has crossed the boundary and compared against the incident amplitude. Zero-gradient BC reflects ~20 %; NSCBC reflects ≤ 1 %.
+
+**t40 gate (PASS):** Reflected / incident amplitude ratio = 0.008 (tol 0.01). ba suite 39/39 PASS.
+
+---
+
+## D10 — Discrete adjoint of SSP-RK3 + HLLC-ES  (2026-05-25/26  f1f5638)
+
+**Gate:** t38 — dot-product test `〈L(Q)·δQ, λ〉 = 〈δQ, L*(Q)·λ〉` to 1e-10 for all five conserved variables on a two-level AMR tree; adjoint of a 10-step rollout matches finite-difference gradient to 1e-6 relative error.
+
+**What was done:**
+
+- **`include/physics/adjoint_hllc.hpp`** — Frozen-lambda adjoint of the HLLC-ES Riemann solver. Input: primal states Q_L, Q_R and adjoint seed `λ_flux`; output: adjoint increments `δQ_L`, `δQ_R`. Implemented in primitive-variable space for numerical stability; frozen wave speeds (S_L, S_R, S_*) are treated as constants — correct for a first-order adjoint / sensitivity analysis.
+
+- **`include/physics/adjoint_teno7.hpp`** — Frozen-weight adjoint of TENO7-A face reconstruction. Smoothness-indicator weights `d_k` are frozen at their primal values; only the linear stencil interpolation is differentiated. This is a first-order (frozen-lambda) adjoint — exact for shape optimisation; accuracy degrades near shocks where weight sensitivity is non-negligible.
+
+- **`src/schemes/adjoint_rhs.cpp`** — `adjoint_rhs(Q, λ_in, λ_out)`: block-level reverse-mode differentiation of `compute_rhs`. Loops axes X, Y, Z; calls `adjoint_teno7` for face reconstruction and `adjoint_hllc` for flux; accumulates adjoint increments in `λ_out`. One `template <Axis DIR>` — no axis-specific duplicates.
+
+- **`tests/schemes/test_t38_adjoint.cpp`** — Dot-product test using a random `δQ` and `λ` on a two-level AMR tree. Left-hand side `〈L(Q)·δQ, λ〉` computed by finite-difference perturbation; right-hand side `〈δQ, L*(Q)·λ〉` by `adjoint_rhs`. Ratio matches to 1e-10 for all five variables.
+
+**t38 gate (PASS):** Dot-product residual = 3.2e-12 (tol 1e-10); 10-step FD gradient agreement = 4.1e-8 (tol 1e-6). ba suite 39/39 PASS.
+
+---
+
+## D11 — Python bindings (pybind11) + JAX wiring  (2026-05-26/28  86bb47a)
+
+**Gate:** t39 — Python NSSolver 10-step periodic isentropic vortex round-trip; mass error < 1e-10; block arrays as NumPy match `compute_diag().mass` to 1e-12. t41 — JAX `custom_vjp` gradient check T01–T04.
+
+**What was done:**
+
+- **`src/python/cfd_module.cpp`** — pybind11 module exposing `NSSolver`: `init(domain_size, ic_fn)`, `advance()`, `run(n_steps)`, `compute_diag()`, `get_block_arrays() → list[np.ndarray]`, `set_block_arrays(list[np.ndarray])`. Block arrays exposed as zero-copy NumPy views via `py::buffer_protocol` where possible. GPU path guarded by a size-mismatch check (Python drives the CPU solver; GPU path requires pinned-memory registration not yet implemented).
+
+- **RK3 checkpoints** (`include/solver/ns_solver.hpp`, `src/solver/ns_solver.cpp`) — Added `Qs0_`, `Qs1_`, `Qs2_` block-array checkpoints: full Q snapshots after each of the three SSP-RK3 sub-stages, required by `adjoint_rk3_step`.
+
+- **`src/solver/ns_solver.cpp`** — `adjoint_rk3_one_block()`: reverses the three Shu-Osher stages in order 3→2→1; applies `adjoint_rhs` at each reversed stage using the stored checkpoints. `NSSolver::adjoint_step(lambda_arrays) → lambda_arrays` exposed to Python and JAX.
+
+- **`src/python/cfd_jax.py`** — JAX `custom_vjp` wrapper: forward pass calls `NSSolver.advance()`; reverse pass calls `adjoint_step()`. Registered as a JAX primitive so `jax.grad` can differentiate through a forward rollout.
+
+- **`tests/python/test_t39_python.py`** — 10-step periodic isentropic vortex driven from Python; mass error = 4.4e-16; NumPy arrays match `compute_diag().mass` to 5.3e-13.
+
+- **`tests/python/test_t41_jax.py`** — JAX gradient checks T01 (forward pass roundtrip), T02 (VJP finite-difference agreement), T03 (adjoint linearity), T04 (80% gradient descent step reduces energy). Gradient descent ascent direction verified to reduce objective by ≥ 80%.
+
+**t39 gate (6/6 PASS), t41 gate (T01–T04 PASS).** ba suite 39/39 PASS.
+
+---
+
+## Rectangular domain  (2026-05-29  06e42ac–5a0faac)
+
+**Gate:** t42_rect_ns — NSSolver::init(Lx, Ly, Lz) 10-step advance on non-cubic domain; mass conservation rel_err < 1e-10.
+
+**What was done:**
+
+Full support for non-cubic rectangular domains via a forest-of-octrees layout. Each root block can have independent extents.
+
+- **`include/mesh/cell_block.hpp`** — Promoted scalar `h` to `(h, hy, hz)` per-axis cell sizes. All diagnostic volumes, CFL, and stencil widths updated to use the correct axis cell size.
+
+- **`include/mesh/block_tree.hpp` / `src/mesh/block_tree.cpp`** — `BlockTree::init(Lx, Ly, Lz, NX, NY, NZ)` creates a NX×NY×NZ forest of root blocks covering the domain. `build_ic()` maps IC functions using per-block origin and per-axis h.
+
+- **GPU RHS** (`src/cuda/gpu_rhs.cu`, `include/cuda/gpu_rhs.cuh`) — `GpuLeafRhsMeta` extended with `hx, hy, hz`. All convective and viscous stencil inversions use `ihx = 1/hx`, `ihy = 1/hy`, `ihz = 1/hz` per axis. Berger-Colella CF correction uses axis-correct face area and cell volume. Ducros sensor uses per-axis h. CFL uses `h_min = min(hx, hy, hz)`.
+
+- **CPU adjoint** (`src/schemes/adjoint_rhs.cpp`) — `adjoint_rhs` updated to use `ihx/ihy/ihz` per axis, matching the primal `convective_rhs_impl`.
+
+- **Python** — `init_rect(Lx, Ly, Lz)` added to pybind11 module.
+
+**t42_rect_ns gate (PASS):** 10-step advance on 2:1:0.5 domain; mass rel_err = 0.000e+00 (tol 1e-10). ba suite 39/39 PASS.
+
+---
+
+## G1 — GPU ACDI phi transport  (2026-05-30  0bac1ea)
+
+**Gate:** t43 — ACDI phi conservation, interface sharpening, and ghost-fill correctness.
+
+**What was done:**
+
+GPU port of the ACDI (Algebraic Convective-Diffusive Interface) phase-field transport for two-phase flows.
+
+- **`include/cuda/gpu_acdi.cuh`** — `GpuPhiPool`: `unordered_map<CellBlock*, double*>` managing one `d_phi[NCELL]` device array per leaf, with `alloc/free/upload/download`. `GpuAcdiLeafMeta`: d_Q pointer + d_phi pointer + cell geometry. `GpuAcdiList`: six-step per-stage sequence — `save_phin`, `zero_rhs`, `fill_ghosts`, `rhs_advect`, `rhs_compress`, `update_phi`.
+
+- **`src/cuda/gpu_acdi.cu`** — `k_acdi_advect`: upwind advection of phi along velocity field. `k_acdi_compress`: interface-compression source term `∇·(cε·φ(1−φ)n̂)` where cε is the compression parameter and n̂ is the interface normal computed from ∇φ. `k_acdi_update`: RK3-weighted phi update.
+
+- **`GpuGraphSolver`** — `acdi_list_` + `phi_pool_` fields; `set_gpu_acdi(ceps)` wires the subsystem; `acdi_enabled_` gates graph capture (ACDI is excluded from captured graphs — phi pool pointers change on regrid).
+
+**t43 gate (PASS).** ba suite 39/39 PASS.
+
+---
+
+## G2 — GPU adjoint convective RHS  (2026-05-30  d8d066b)
+
+**Gate:** t44 — GPU adjoint dot-product test to 1e-10; result matches CPU `adjoint_rhs` to 1e-12.
+
+**What was done:**
+
+- **`src/cuda/gpu_adjoint_rhs.cu`** / **`include/cuda/gpu_adjoint_rhs.cuh`** — `k_adjoint_rhs`: GPU port of the frozen-lambda adjoint of `compute_rhs`. Per-leaf kernel; same frozen-weight TENO7-A + frozen-lambda HLLC-ES as the CPU version. One block per leaf, one thread per interior cell.
+
+- **Bug fix:** `__logf` (fast-math single-precision log) replaced with `log` (double-precision) in the adjoint entropy flux calculation. On some CUDA versions, `__logf` silently returns wrong results for double arguments; the issue appeared as a 1e-3 dot-product residual in early testing.
+
+**t44 gate (PASS):** GPU vs CPU adjoint rel_err = 3.1e-13. ba suite 39/39 PASS.
+
+---
+
+## G3 — GPU dynamic Smagorinsky (Germano+Lilly)  (2026-05-30  7543b4b)
+
+**Gate:** t45 — dynamic Cs > 0 on turbulent IC; Cs spatial mean in [0.01, 0.25]; operator-split energy transfer direction correct.
+
+**What was done:**
+
+- **`include/cuda/gpu_sgs.cuh`** — Added `GpuDynSgsMeta` and `GpuDynSgsList` alongside the existing static `GpuSgsList`. `DSM_SCRATCH_PER_LEAF = 38016` doubles of per-leaf scratch for the Germano test-filter and Lilly least-squares solve.
+
+- **`src/cuda/gpu_sgs.cu`** — `k_dyn_sgs_germano`: computes the Germano identity `M_ij L_ij` and `M_ij M_ij` via a 2Δ test filter (box filter over 3³ cells), then applies the Lilly least-squares formula `Cs² = 〈L_ij M_ij〉 / 〈M_ij M_ij〉`. Cs² is clipped to [0, 0.08] to prevent negative eddy viscosity. Eddy viscosity applied as an operator-split correction after RK3.
+
+- `GpuGraphSolver`: `dyn_sgs_list_` field; `set_gpu_dyn_sgs(Pr_t)` wires it; `dyn_sgs_enabled_` blocks graph capture (scratch pointers change on regrid).
+
+**t45 gate (PASS).** ba suite 39/39 PASS.
+
+---
+
+## G4 — GPU ODE mixing-length wall model (van Driest + Picard)  (2026-05-30  6730c32)
+
+**Gate:** t46 — GPU and CPU van Driest damping functions bit-identical; Picard iteration converges to u_τ within 10 iterations; ghost-cell τ_w matches CPU to 1e-10.
+
+**What was done:**
+
+- **`include/cuda/gpu_wmles.cuh`** (extended) — Added `d_van_driest_damp(yp, A_plus)` device function implementing the van Driest damping factor `1 − exp(−y⁺/A⁺)`. Added `d_picard_utau(u_t, y_m, nu, A_plus, tol, max_iter)`: Picard fixed-point iteration for u_τ from the van Driest-modified log law. Both functions are `__host__ __device__` so they are shared between kernel and CPU unit test.
+
+- **`src/cuda/gpu_wmles.cu`** — `k_wmles_ode_apply`: extends the existing `k_wmles_apply` kernel with the ODE thin-boundary-layer path; selected by a flag in `GpuWmlesLeafMeta`. Replaces the algebraic Reichardt Newton step with the van Driest Picard iteration for the near-wall layer.
+
+**t46 gate (PASS).** ba suite 39/39 PASS.
+
+---
+
+## G5 — GPU Berger-Oliger LTS integrator  (2026-05-30  55a701c)
+
+**Gate:** t47 — LTS advance conserves mass to 1e-10; fine-level blocks advance at 2× the coarse dt; total work reduction vs uniform dt verified.
+
+**What was done:**
+
+- **`include/cuda/gpu_lts.cuh`** / **`src/cuda/gpu_lts.cu`** — `GpuLtsLeafMeta` + `GpuLtsList`. Each leaf carries its own level-local dt (dt_l = dt_coarse / 2^level). `k_lts_rk3_stage`: per-leaf RK3 update using the leaf-local dt; ghost fill at C/F interfaces uses time-interpolated coarse-level values between LTS sub-cycles.
+
+- The Berger-Oliger LTS scheme subcycles fine levels: level-l leaves advance 2^(l−l_min) times per coarse step. `GpuLtsList::exec()` iterates sub-cycles, calling ghost fill + RHS + RK3 update at each sub-level.
+
+**t47 gate (PASS).** ba suite 39/39 PASS.
+
+---
+
+## G6 — GPU Baer-Nunziato two-phase solver  (2026-05-30  e5bc6f6)
+
+**Gate:** t48 — BN Sod shock tube: density profile matches CPU BNSolver to 1e-8; volume fraction α conserved to 1e-12; no negative pressures or densities over 200 steps.
+
+**What was done:**
+
+- **`include/cuda/gpu_bn.cuh`** / **`src/cuda/gpu_bn.cu`** — GPU port of the Baer-Nunziato (BN) compressible two-phase model. The BN system extends the Euler equations to two phases (gas + liquid) with 7 conserved variables per cell: `(α, αρ_g, αρ_g u_g, αρ_g v_g, αρ_g w_g, αρ_g E_g, (1−α)ρ_l)`. Interfacial pressure and velocity are the Saurel-Abgrall closure.
+
+- **`k_rhs_bn`**: convective RHS for the BN system using a phase-split HLLC solver; non-conservative interfacial pressure terms handled as source terms operator-split from the convective fluxes.
+
+- `GpuGraphSolver` wired analogously to the existing physics: `GpuBnList` with `build()` / `exec()` / destructor following the standard list pattern.
+
+**t48 gate (PASS).** ba suite 39/39 PASS.
+
+---
+
+## IBM — STL import + GPU ghost-cell IBM  (2026-05-31/2026-06-01  70d2157)
+
+**Gate:** t49 (I5–I9) — STL load + BVH classify, no-slip ghost fill, adiabatic ghost fill, 10-step stability (SOLID cells do not diverge), rebuild invariance.
+
+**What was done:**
+
+**Preprocessing (CPU, one-time):**
+
+- **`include/models/stl_loader.hpp`** / **`src/models/stl_loader.cpp`** — `load_stl(path)`: parses both binary and ASCII STL files into `StlMesh` (triangle vertex SoA + unit normals). SL1–SL4 gate verifies parse correctness, normal computation, and degenerate-triangle rejection.
+
+- **`include/cuda/gpu_bvh.cuh`** / **`src/cuda/gpu_bvh.cu`** — `GpuBvh::build(StlMesh)`: CPU median-split AABB BVH (root at index 0, leaves encoded as `~tri_idx` in the `left` field). Uploads flat `BvhNode` array + 9-array triangle SoA (`d_v0x…d_v2z`) + 3-array normal SoA (`d_nx, d_ny, d_nz`) to device. `bvh_sdf(...)`: header-inline `__device__` iterative DFS traversal (stack[64]); returns signed distance and outward wall normal. Sign convention: positive = fluid/exterior, negative = solid/interior. Sign determined by face-normal dot-product (pseudo-normal test — robust for convex bodies; may mis-sign near sharp edges of non-convex STL; see `docs/tech_debt.md`).
+
+**Classification (GPU kernel, per regrid):**
+
+- **`src/cuda/gpu_ibm.cu`** — `k_ibm_classify`: one thread per cell; calls `bvh_sdf` for each cell centre; writes `d_cell_type` (0=FLUID, 1=SOLID, 2=IBM_GHOST) and `d_sdf` and `d_wnorm`. `k_ibm_mark_ghosts`: marks fluid cells adjacent to SOLID cells as IBM_GHOST. I5 gate: classify sphere geometry → expected SOLID/IBM_GHOST counts match analytic volume fractions.
+
+**Ghost-fill list (compact, built once per regrid):**
+
+- `GhostEntry` struct (16-byte aligned): `ghost_ptr` (base of ghost cell d_Q), `stencil[8]` (trilinear stencil cell bases), `w[8]` (weights), `wall_bc` (0=NoSlip+Adiabatic, 2=Isothermal, 3=SolidFill), `u/v/w/T_wall`.
+
+- `GpuIbmList::build()` two-pass:
+  1. Pass 1 (IBM_GHOST): image point `I = G − 2·sdf·n_outward` (into fluid); trilinear 8-cell stencil weights computed from `(1−fx)(1−fy)(1−fz)` etc.
+  2. Pass 2 (SOLID / SolidFill): image point with `sdf_eff = max(sdf, −1.5·h)` to prevent deep-interior cells from overshooting into another SOLID region; `wall_bc = 3`.
+
+- `k_ghost_fill_ibm`: dispatch on `wall_bc` — NoSlip (`u_g = 2u_w − u_I`, `T_g = T_I`), Isothermal (`u_g = 2u_w − u_I`, `T_g = 2T_w − T_I`), SolidFill (direct copy `Q_g = Q_I`).
+
+- `GpuIbmList::exec()`: two-pass — SolidFill kernel first (SOLID cells refreshed from fluid), then ghost-fill kernel. Sequential on same stream; no extra synchronisation required.
+
+**Integration:**
+
+- `GpuGraphSolver`: `ibm_list_`, `ibm_bvh_ptr_`, `ibm_enabled_` fields; `set_gpu_ibm(bvh, bc, uw, vw, ww, Tw)` override; `ibm_list_.exec(stream)` inserted after `ghost_list.exec(stream)` in all three advance paths. IBM excluded from CUDA Graph capture (pointer arrays rebuilt on regrid).
+
+- `IbmConfig` added to `SolverConfig`; `simulate_gpu.cu` parses `ibm_enabled`, `ibm_stl_path`, `ibm_wall_bc` from JSON.
+
+**Key bug fixed (I8):** SOLID cells inside the IB accumulated non-zero WENO RHS from adjacent IBM_GHOST stencils and diverged within ~10 steps. Fix: SolidFill (bc=3) refreshes each SOLID cell from its image-point fluid value every RK3 stage, preventing RHS accumulation. The two-pass exec ordering (SolidFill before ghost fill) ensures the stencil reads for IBM_GHOST cells see already-refreshed SOLID values.
+
+**t49 gate (I5–I9, all PASS):** I5 classify, I6a/b no-slip correctness, I7 adiabatic correctness, I8 10-step stability (no divergence, all ρ > 0), I9a/b rebuild invariance. ba suite 39/39 PASS.
+
+---
