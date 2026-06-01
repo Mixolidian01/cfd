@@ -16,6 +16,37 @@
 // P11.3: Zhang-Shu positivity floor — ρ ≥ ε, p ≥ ε (interior cells only).
 static constexpr double EPS_POS = 1e-12;
 
+// BF1: add constant body acceleration f[3] to the RHS (momentum + energy).
+// Source terms: dρu/dt += f[0]*ρ,  dρv/dt += f[1]*ρ,  dρw/dt += f[2]*ρ,
+//               dE/dt  += f·(ρu,ρv,ρw) = f[0]*ρu + f[1]*ρv + f[2]*ρw.
+// Early-returns when f == 0 so zero-force runs have no overhead.
+static void apply_body_force(const BlockTree& tree,
+                              std::vector<CellBlock>& rhs,
+                              const double* f) {
+    if (f[0] == 0.0 && f[1] == 0.0 && f[2] == 0.0) return;
+    const auto& leaves = tree.leaf_indices();
+    const int NL = (int)leaves.size();
+#pragma omp parallel for
+    for (int ii = 0; ii < NL; ++ii) {
+        if (!tree.nodes[leaves[ii]].has_block()) continue;
+        const CellBlock& blk = *tree.nodes[leaves[ii]].block;
+        CellBlock& r = rhs[ii];
+        for (int k = NG; k < NG+NB; ++k)
+        for (int j = NG; j < NG+NB; ++j)
+        for (int i = NG; i < NG+NB; ++i) {
+            const int flat = cell_idx(i, j, k);
+            const double rho  = blk.Q[0][flat];
+            const double rhou = blk.Q[1][flat];
+            const double rhov = blk.Q[2][flat];
+            const double rhow = blk.Q[3][flat];
+            r.Q[1][flat] += f[0] * rho;
+            r.Q[2][flat] += f[1] * rho;
+            r.Q[3][flat] += f[2] * rho;
+            r.Q[4][flat] += f[0]*rhou + f[1]*rhov + f[2]*rhow;
+        }
+    }
+}
+
 static void apply_positivity_floor(std::vector<CellBlock>& stage) noexcept {
 #pragma omp parallel for
     for (int bi = 0; bi < (int)stage.size(); ++bi) {
@@ -183,6 +214,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
       mpi_exchange_halos(tree, solver.mpi_);
       solver.copy_tree_to_stage(solver.Qs0_);  // checkpoint Qn+ghosts
       rhs_call(1.0/6.0);
+      apply_body_force(tree, solver.rhs_, cfg.physics.body_force);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for collapse(3) schedule(static)
       for (int ii = 0; ii < NL; ++ii)
@@ -205,6 +237,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
       mpi_exchange_halos(tree, solver.mpi_);
       solver.copy_tree_to_stage(solver.Qs1_);  // checkpoint Q1+ghosts
       rhs_call(1.0/6.0);
+      apply_body_force(tree, solver.rhs_, cfg.physics.body_force);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for collapse(3) schedule(static)
       for (int ii = 0; ii < NL; ++ii)
@@ -227,6 +260,7 @@ double CpuRk3Integrator::step(BlockTree& tree, double cfl) {
       mpi_exchange_halos(tree, solver.mpi_);
       solver.copy_tree_to_stage(solver.Qs2_);  // checkpoint Q2+ghosts
       rhs_call(2.0/3.0);
+      apply_body_force(tree, solver.rhs_, cfg.physics.body_force);
       if (use_sat) tree_sat_penalty(tree, solver.rhs_, cfg.numerics.sat_tau);
 #pragma omp parallel for collapse(3) schedule(static)
       for (int ii = 0; ii < NL; ++ii)

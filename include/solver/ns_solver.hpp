@@ -76,6 +76,9 @@ struct IGpuSolver : TimeIntegrator {
     // R9-D fix: propagate Ducros sensor config to GPU path for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_ducros(double /*p_thr*/, double /*blend_inv*/) {}
+    // BF1: propagate constant body force to GPU path for subsequent build() calls.
+    // Default no-op — GpuGraphSolver overrides this when the GPU body-force kernel is wired.
+    virtual void   set_body_force(double /*fx*/, double /*fy*/, double /*fz*/) {}
     // P-MPI-GPU: wire MPI partition for subsequent build() calls.
     // Default no-op — only GpuGraphSolver overrides this.
     virtual void   set_mpi(MpiPartition* /*p*/) {}
@@ -181,6 +184,10 @@ struct SolverConfig {
         // D7 WMLES (GPU path; CPU path ignores with warning)
         bool            wmles_enabled = false;
         WallModelCfg    wall_model{};
+
+        // BF1: constant body acceleration [m/s²] applied every RK3 stage.
+        // Default {0,0,0} → no body force (zero overhead: early-return check).
+        double body_force[3] = {0.0, 0.0, 0.0};
     } physics;
 
     // ── 6. Numerical sensors ──────────────────────────────────────────────
