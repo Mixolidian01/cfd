@@ -10,7 +10,7 @@
 //   C50a: u_mean > 0 for all y+ > 1 (IC sanity)
 //   C50b: time-averaged log-law intercept B ∈ [4.9, 6.2] at y+ ∈ [30, 200]
 //          after N_SPINUP spinup steps (Reichardt κ=0.41 → B ≈ 5.6-5.7)
-//   C50c: solver stable for all 5000 steps with body force (dt < 1.0 always)
+//   C50c: solver stable for all 1000 steps with body force (dt < 1.0 always)
 //
 // Low-Mach IC: c_ref=50 → Ma_max~0.36; p_ref=c_ref²/γ≈1785.7.
 // Domain: Lx=2π, Ly=2, Lz=π; 4×2×2 root blocks (NB=8 → 32×16×16 cells).
@@ -124,8 +124,8 @@ int main() {
         q.v   = 0.0;
         q.w   = 0.0;
         q.p   = P_REF;
-        q.T   = P_REF / (1.0 * R_GAS);
-        q.c   = std::sqrt(GAMMA * P_REF / 1.0);
+        q.T   = P_REF / (q.rho * R_GAS);
+        q.c   = std::sqrt(GAMMA * P_REF / q.rho);
         return q;
     };
 
