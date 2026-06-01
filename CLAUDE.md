@@ -198,6 +198,7 @@ A fully GPU-native, production-grade compressible CFD solver with:
 
 ### C++
 6. No raw owning pointers — `std::unique_ptr` or `GpuArray<T>`.
+6a. Minimum code that solves the problem — prefer 20 lines over 200. Touch only what the task requires; do not modify surrounding code unless it is directly in the way.
 7. No axis-specific duplicate functions — one `template <Axis DIR>` only.
 8. No scheme-selection branches inside `__global__` kernels — dispatch at launch.
 9. No `virtual` in device-callable code — use CRTP or `std::variant`.
