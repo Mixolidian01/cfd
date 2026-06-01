@@ -631,6 +631,10 @@ void NSSolver::regrid() {
         }
         gpu_solver_->set_ducros(cfg.numerics.ducros_p_threshold,
                                 1.0 / cfg.numerics.ducros_blend_width);
+        gpu_solver_->set_body_force(
+            cfg.physics.body_force[0],
+            cfg.physics.body_force[1],
+            cfg.physics.body_force[2]);
         gpu_solver_->build_faces(tree, *gpu_pool_, make_bc_types(cfg.bc));
     }
 }

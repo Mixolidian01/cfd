@@ -82,6 +82,11 @@ struct GpuGraphSolver : IGpuSolver {
     bool          dyn_sgs_enabled_ = false;
     double        dyn_sgs_Pr_t_    = 0.9;
 
+    // Body force — set via set_body_force() before build().
+    double force_x_ = 0.0;
+    double force_y_ = 0.0;
+    double force_z_ = 0.0;
+
     // Ducros sensor config — set via set_ducros() before build().
     double duc_p_thr_     = 0.1;
     double duc_blend_inv_ = 10.0;
@@ -139,6 +144,10 @@ struct GpuGraphSolver : IGpuSolver {
         ibm_list_.v_wall  = vw;
         ibm_list_.w_wall  = ww;
         ibm_list_.T_wall  = Tw;
+    }
+
+    void set_body_force(double fx, double fy, double fz) override {
+        force_x_ = fx; force_y_ = fy; force_z_ = fz;
     }
 
     // Propagate Ducros sensor config to rhs_list for subsequent build() calls.

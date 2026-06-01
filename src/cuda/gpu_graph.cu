@@ -166,6 +166,9 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
     ghost_list.build(tree, pool, bc_type, mpi_part_);
     rhs_list.duc_p_thr_     = duc_p_thr_;
     rhs_list.duc_blend_inv_ = duc_blend_inv_;
+    rhs_list.force_x_ = force_x_;
+    rhs_list.force_y_ = force_y_;
+    rhs_list.force_z_ = force_z_;
     rhs_list.build(tree, pool);
     cfl_list.build(tree, pool);
     cf_list.build(tree, pool, rhs_list.d_rhs_pool, rhs_list.d_scratch_pool);
