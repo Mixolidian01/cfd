@@ -205,6 +205,7 @@ if(NVCC)
         ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
         ${_S}/cuda/gpu_snapshot.cu ${_S}/cuda/gpu_acdi.cu
         ${_S}/models/stl_loader.cpp ${_S}/cuda/gpu_bvh.cu ${_S}/cuda/gpu_ibm.cu
+        ${_S}/cuda/gpu_wmles.cu    ${_S}/models/wall_model.cpp
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
@@ -338,8 +339,6 @@ if(NVCC)
     add_nvcc_gate(TARGET t35 BIN t35_wmles_gpu COMMENT "D7 GPU-resident WMLES algebraic wall model"
         EXTRA_FLAGS ${_WNO}
         SRCS ${_T}/test_t35_wmles_gpu.cu
-             ${_S}/cuda/gpu_wmles.cu
-             ${_S}/models/wall_model.cpp
              ${_GPU_NS}
     )
     add_nvcc_gate(TARGET t36 BIN t36_gpu_snapshot COMMENT "Option A/C GPU snapshot (slice + metric reduction)"
@@ -369,8 +368,6 @@ if(NVCC)
     add_nvcc_gate(TARGET t46 BIN t46_wmles_ode_gpu COMMENT "G4 GPU ODE mixing-length wall model"
         EXTRA_FLAGS ${_WNO}
         SRCS ${_T}/test_t46_wmles_ode_gpu.cu
-             ${_S}/cuda/gpu_wmles.cu
-             ${_S}/models/wall_model.cpp
              ${_GPU_NS}
     )
     add_nvcc_gate(TARGET t47 BIN t47_gpu_lts COMMENT "G5 GPU Berger-Oliger LTS integrator"
@@ -393,6 +390,11 @@ if(NVCC)
         EXTRA_FLAGS ${_WNO}
         SRCS ${_T}/test_t49_gpu_ibm.cu
              ${_S}/models/ibm.cpp
+             ${_GPU_NS}
+    )
+    add_nvcc_gate(TARGET t50 BIN t50_channel_wmles COMMENT "C50 turbulent channel Re_tau=395 WMLES log-law gate"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t50_channel_wmles.cu
              ${_GPU_NS}
     )
 

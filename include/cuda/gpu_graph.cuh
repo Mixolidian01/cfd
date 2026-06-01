@@ -40,6 +40,8 @@
 #include "gpu_snapshot.hpp"
 #include "cuda/gpu_acdi.cuh"
 #include "cuda/gpu_ibm.cuh"
+#include "cuda/gpu_wmles.cuh"
+#include "models/wall_model.hpp"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -71,6 +73,16 @@ struct GpuGraphSolver : IGpuSolver {
     GpuIbmList   ibm_list_;
     GpuBvh*      ibm_bvh_ptr_ = nullptr;  // non-owning; caller manages BVH lifetime
     bool         ibm_enabled_ = false;
+
+    // D7 WMLES: algebraic Reichardt wall model applied after ghost fill each stage.
+    // Two lists: wmles_lo_ for low-y wall (side=0), wmles_hi_ for high-y wall (side=1).
+    // Only wall-adjacent leaves (neighbours[YMINUS]==-1 or neighbours[YPLUS]==-1) are registered.
+    GpuWmlesList wmles_lo_;   // bottom wall leaves (side=0)
+    GpuWmlesList wmles_hi_;   // top wall leaves    (side=1)
+    bool         wmles_enabled_ = false;
+    double       wmles_nu_      = 0.0;
+    WallModelCfg wmles_cfg_{};
+    int          wmles_wall_ax_ = 1;  // axis perpendicular to wall (1=y for channel)
 
     // Static Smagorinsky SGS
     bool   sgs_enabled = false;
@@ -148,6 +160,16 @@ struct GpuGraphSolver : IGpuSolver {
 
     void set_body_force(double fx, double fy, double fz) override {
         force_x_ = fx; force_y_ = fy; force_z_ = fz;
+    }
+
+    // D7: enable GPU WMLES Reichardt wall model.
+    // wall_ax: axis perpendicular to wall (0=x, 1=y, 2=z); nu: kinematic viscosity.
+    // Only leaves at domain-boundary wall faces on that axis are registered.
+    void set_gpu_wmles(int wall_ax, double nu, const WallModelCfg& cfg = {}) {
+        wmles_enabled_ = true;
+        wmles_wall_ax_ = wall_ax;
+        wmles_nu_      = nu;
+        wmles_cfg_     = cfg;
     }
 
     // Propagate Ducros sensor config to rhs_list for subsequent build() calls.

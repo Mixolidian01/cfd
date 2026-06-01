@@ -192,6 +192,28 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
     if (ibm_enabled_ && ibm_bvh_ptr_ && ibm_bvh_ptr_->ready())
         ibm_list_.build(tree, pool, *ibm_bvh_ptr_);
 
+    // D7: WMLES — register only wall-adjacent leaves on the specified wall axis.
+    if (wmles_enabled_) {
+        wmles_lo_.metas.clear();
+        wmles_hi_.metas.clear();
+        const int face_lo = wmles_wall_ax_ * 2;      // XMINUS/YMINUS/ZMINUS
+        const int face_hi = wmles_wall_ax_ * 2 + 1;  // XPLUS/YPLUS/ZPLUS
+        for (int idx : tree.leaf_indices()) {
+            if (!tree.nodes[idx].has_block()) continue;
+            const BlockNode& nd = tree.nodes[idx];
+            double* dptr = pool.d_Q(nd.block.get());
+            // Use wall-normal cell size (not isotropic h) so y_m = h_wn/2 is correct
+            // for non-cubic domains (e.g. y-walls need hy, not hx).
+            const double h_wn = (wmles_wall_ax_ == 0) ? nd.block->h
+                              : (wmles_wall_ax_ == 1) ? nd.block->hy
+                              :                         nd.block->hz;
+            if (nd.neighbours[face_lo] == -1)
+                wmles_lo_.add_leaf(dptr, h_wn, wmles_wall_ax_, 0);
+            if (nd.neighbours[face_hi] == -1)
+                wmles_hi_.add_leaf(dptr, h_wn, wmles_wall_ax_, 1);
+        }
+    }
+
     // Only process local leaves (those with an allocated block; remote MPI leaves have null).
     std::vector<int> local;
     for (int idx : tree.leaf_indices())
@@ -338,6 +360,10 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
         mpi_halo_.exchange(s);
         ghost_list.exec(s);
+        if (wmles_enabled_) {
+            wmles_lo_.exec_apply(wmles_nu_, wmles_cfg_, s);
+            wmles_hi_.exec_apply(wmles_nu_, wmles_cfg_, s);
+        }
         if (ibm_enabled_) ibm_list_.exec(s);
         rhs_list.exec(s, false);
         if (s1) k_rk3s1 <<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
@@ -431,6 +457,10 @@ double GpuGraphSolver::_advance_amr(double cfl) {
         if (save_qn) k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
         mpi_halo_.exchange(stream);
         ghost_list.exec(stream);
+        if (wmles_enabled_) {
+            wmles_lo_.exec_apply(wmles_nu_, wmles_cfg_, stream);
+            wmles_hi_.exec_apply(wmles_nu_, wmles_cfg_, stream);
+        }
         if (ibm_enabled_) ibm_list_.exec(stream);
         rhs_list.exec(stream, false);
         cf_list.undo_coarse_flux(stream);
@@ -514,8 +544,9 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
         CUDA_CHECK(cudaStreamSynchronize(stream));
         // Capture graphs only for single-rank runs without ACDI or dynamic SGS
         // (both use dynamic state that cannot be captured in a static graph).
-        // IBM uses dynamic d_ghosts pointers rebuilt on regrid — skip graph capture
-        if (!mpi_halo_.active() && !acdi_enabled_ && !dyn_sgs_enabled_ && !ibm_enabled_) _capture_graphs();
+        // IBM and WMLES use dynamic pointers rebuilt on regrid — skip graph capture
+        if (!mpi_halo_.active() && !acdi_enabled_ && !dyn_sgs_enabled_
+            && !ibm_enabled_ && !wmles_enabled_) _capture_graphs();
     } else {
         // Graph replay: zero RHS on stream before each sub-graph launch
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
