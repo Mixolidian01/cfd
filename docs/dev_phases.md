@@ -85,6 +85,18 @@ These were not in the original CLAUDE.md phase list; implemented 2026-05-30.
 
 ---
 
+## FSI + Visualization Roadmap
+
+| Phase | Title | Status | Gate | Commit | Date |
+|-------|-------|--------|------|--------|------|
+| C1 | VTK XML binary writer + MetricsBus VtkChannel | ⬜ TODO | t52 | — | — |
+| FSI-1 | Moving-wall IBM + rigid 6-DOF ODE | ⬜ TODO | t53 | — | — |
+| FSI-2 | Corotational beam FEM (JAX) + Aitken partitioned coupling | ⬜ TODO | t54 | — | — |
+
+> Plan: `docs/superpowers/plans/2026-06-02-fsi-viz-roadmap.md`
+
+---
+
 ## Gate Map Summary
 
 | Gate | Phase | Description |
@@ -118,6 +130,9 @@ These were not in the original CLAUDE.md phase list; implemented 2026-05-30.
 | t49 | IBM | STL import + ghost-cell IBM (I5–I9, W5 winding-number sign) |
 | t50 | C50 | Turbulent channel WMLES Re_τ=395, B∈[4.9,6.2] |
 | t51 | M | Metrics & monitoring (residual, surface forces, probes, field dump) |
+| t52 | C1 | VTK XML binary writer — file written and valid XML |
+| t53 | FSI-1 | Prescribed pitching NACA0012, Cl amplitude within 15% of Theodorsen |
+| t54 | FSI-2 | Dowell 2D flat-plate flutter onset U* ∈ [5.3, 7.3] (±15% of theory) |
 
 ---
 

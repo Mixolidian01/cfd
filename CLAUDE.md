@@ -140,6 +140,9 @@ cmake --build build -t t39         # Python bindings / JAX VJP (D11 gate)
 cmake --build build -t t40         # NSCBC outflow reflection ≤1% (D9 gate)
 cmake --build build -t t49         # IBM BVH + winding-number sign (W5 gate)
 cmake --build build -t t50         # Channel WMLES Re_τ=395 B∈[4.9,6.2] (C50 gate)
+cmake --build build -t t52         # VTK XML binary writer (C1 gate)
+cmake --build build -t t53         # Moving-wall IBM + rigid 6-DOF, Theodorsen Cl (FSI-1 gate)
+cmake --build build -t t54         # Dowell flutter onset U* ∈ [5.3,7.3] (FSI-2 gate)
 ```
 
 ## Key references
@@ -158,6 +161,12 @@ cmake --build build -t t50         # Channel WMLES Re_τ=395 B∈[4.9,6.2] (C50 
 - cuBLAS, Cooperative Groups, CUDA-aware MPI programming guides
 - Romero et al. (2023) — STREAmS-2: CUDA-aware MPI halo reference
 - Mengaldo et al. (2021) — PyFR: multi-GPU CFD best practices
+
+**FSI**
+- Dowell (1975) — Aeroelasticity of Plates and Shells (flutter benchmark reference)
+- Farhat et al. (2006) — Provably second-order accurate time-marching for partitioned FSI
+- Küttler & Wall (2008) — Fixed-point fluid-structure interaction solvers with dynamic relaxation (Aitken Δ²)
+- Bathe & Bolourchi (1979) — Large displacement analysis of three-dimensional beam structures (corotational FEM)
 
 **Physics**
 - Pope (2000) — Turbulent Flows (LES/DNS reference)
