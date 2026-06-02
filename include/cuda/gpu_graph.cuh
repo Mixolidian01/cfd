@@ -42,6 +42,7 @@
 #include "cuda/gpu_ibm.cuh"
 #include "cuda/gpu_wmles.cuh"
 #include "models/wall_model.hpp"
+#include "fsi/rigid_body.hpp"
 #include <cuda_runtime.h>
 #include <vector>
 #include <cstdint>
@@ -69,6 +70,14 @@ struct GpuGraphSolver : IGpuSolver {
     GpuIbmList   ibm_list_;
     GpuBvh*      ibm_bvh_ptr_ = nullptr;  // non-owning; caller manages BVH lifetime
     bool         ibm_enabled_ = false;
+
+    // FSI-1: optional rigid body (non-owning; caller manages lifetime).
+    // When non-null, surface forces are accumulated each RK3 stage and fed
+    // to rigid_body_->step(); the IBM wall velocity is updated accordingly.
+    // FSI is always run in explicit mode (no CUDA graph capture).
+    RigidBody6DOF* rigid_body_ = nullptr;
+    double*        d_wrench_   = nullptr;  // [6]: {Fx,Fy,Fz,Tx,Ty,Tz} on device
+    GpuIbmForceMeta* d_rhs_leaf_metas_ = nullptr;  // [n_leaves] for k_surface_forces_ibm
 
     // D7 WMLES: algebraic Reichardt wall model applied after ghost fill each stage.
     // Two lists: wmles_lo_ for low-y wall (side=0), wmles_hi_ for high-y wall (side=1).
@@ -153,6 +162,10 @@ struct GpuGraphSolver : IGpuSolver {
         ibm_list_.w_wall  = ww;
         ibm_list_.T_wall  = Tw;
     }
+
+    // FSI-1: attach a rigid body for moving-wall BC + 6-DOF ODE integration.
+    // Call before build().  non-null → IBM must also be enabled.
+    void set_rigid_body(RigidBody6DOF* rb) { rigid_body_ = rb; }
 
     void set_body_force(double fx, double fy, double fz) override {
         force_x_ = fx; force_y_ = fy; force_z_ = fz;
@@ -244,4 +257,6 @@ private:
     // P14.4: explicit per-stage kernel sequence with Berger-Colella CF correction.
     // Used when tree has C/F interfaces (cf_list.n_coarse > 0).
     double _advance_amr(double cfl);
+    // FSI-1: accumulate surface forces, step rigid body, update IBM rigid state.
+    void _fsi_stage_update(cudaStream_t s, double dt_stage);
 };

@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <vector>
 
+// Forward declaration — defined in fsi/rigid_body.hpp.
+// Included here only when FSI wire-in is needed (gpu_graph.cu).
+struct RigidBody6DOF;
+
 struct GpuIbmMeta {
     double*  d_Q;
     int8_t*  d_cell_type; // [NCELL] 0=FLUID, 1=SOLID, 2=IBM_GHOST
@@ -27,6 +31,31 @@ struct alignas(16) GhostEntry {
     uint8_t  wall_bc;        // 0=NoSlip/Adiabatic, 2=Isothermal, 3=SolidFill (copy Q_I to SOLID cell)
     uint8_t  _pad[3];
     float    u_wall, v_wall, w_wall, T_wall;
+    // FSI-1: nearest surface point (world coords).  Used by k_apply_moving_wall.
+    float    x_surf, y_surf, z_surf;
+    float    _pad2;
+};
+
+// Per-leaf metadata needed by k_surface_forces_ibm.
+// Uses the prim-scratch buffer (d_scratch = rhs_list scratch pool, stores primitive
+// variables after k_prim_duc; scratch layout comp=4 is pressure).
+struct GpuIbmForceMeta {
+    const double* d_scratch;   // prim scratch for this leaf (SCRATCH_NCOMP*NCELL doubles)
+    const int8_t* d_cell_type; // [GPU_NCELL] same as GpuIbmMeta::d_cell_type
+    const float*  d_sdf;       // [GPU_NCELL]
+    const float*  d_wnx;       // [GPU_NCELL] outward wall normal x
+    const float*  d_wny;
+    const float*  d_wnz;
+    float ox, oy, oz;          // block origin
+    float hx, hy, hz;          // cell size
+};
+
+// FSI-1: rigid-body state passed to ghost-cell kernel for moving-wall BC.
+// All values zero → stationary wall (backward-compatible).
+struct IbmRigidState {
+    double v_cm[3] = {};  // centre-of-mass velocity (world frame)
+    double omega[3] = {}; // angular velocity (world frame)
+    double x_cm[3] = {};  // centre-of-mass position (world frame)
 };
 
 struct GpuIbmList {
@@ -43,6 +72,9 @@ struct GpuIbmList {
     uint8_t  wall_bc = 0;  // 0=NoSlip/Adiabatic, 2=Isothermal
     float    u_wall = 0.f, v_wall = 0.f, w_wall = 0.f, T_wall = 300.f;
 
+    // FSI-1: rigid-body state for moving-wall BC (defaults = stationary).
+    IbmRigidState rigid;
+
     GpuIbmList() = default;
     GpuIbmList(const GpuIbmList&) = delete;
     GpuIbmList& operator=(const GpuIbmList&) = delete;
@@ -50,4 +82,16 @@ struct GpuIbmList {
 
     void build(const BlockTree& tree, const GpuPool& pool, const GpuBvh& bvh);
     void exec(cudaStream_t stream = nullptr) const;
+    // FSI-1: update ghost-cell wall velocity from rigid-body state (no rebuild needed).
+    void update_rigid(const IbmRigidState& s) { rigid = s; }
 };
+
+// FSI-1: accumulate pressure force and torque on the immersed surface.
+// d_wrench[6] = {Fx,Fy,Fz,Tx,Ty,Tz}; must be zeroed before launch.
+// Uses atomicAdd; one thread per IBM_GHOST cell.
+__global__
+void k_surface_forces_ibm(
+    const GpuIbmForceMeta* __restrict__ metas,
+    int n_leaves,
+    double x_cm_x, double x_cm_y, double x_cm_z,
+    double* __restrict__ d_wrench);

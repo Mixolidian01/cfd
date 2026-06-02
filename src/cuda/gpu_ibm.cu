@@ -4,6 +4,7 @@
 #include "cuda/gpu_meta_buffer.cuh"
 #include "mesh/cell_block.hpp"
 #include <vector>
+#include <cmath>
 
 // gridDim.x = n_leaves, blockDim.x = 256
 __global__
@@ -63,6 +64,101 @@ void k_ibm_mark_ghosts(const GpuIbmMeta* __restrict__ metas)
                 break;
             }
         }
+    }
+}
+
+// FSI-1: Update u_wall/v_wall/w_wall in ghost entries from rigid-body state.
+// One thread per ghost entry.
+// gridDim.x = (n_ghosts + 255) / 256,  blockDim.x = 256
+__global__
+void k_apply_moving_wall(GhostEntry* __restrict__ ghosts, int n_ghosts,
+                          double vcm_x, double vcm_y, double vcm_z,
+                          double omega_x, double omega_y, double omega_z,
+                          double xcm_x, double xcm_y, double xcm_z)
+{
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_ghosts) return;
+    GhostEntry& ge = ghosts[tid];
+    if (ge.wall_bc == 3) return;  // SolidFill: no wall BC to update
+
+    // r = x_surf - x_cm
+    double rx = ge.x_surf - xcm_x;
+    double ry = ge.y_surf - xcm_y;
+    double rz = ge.z_surf - xcm_z;
+
+    // v_wall = v_cm + omega × r
+    ge.u_wall = (float)(vcm_x + omega_y * rz - omega_z * ry);
+    ge.v_wall = (float)(vcm_y + omega_z * rx - omega_x * rz);
+    ge.w_wall = (float)(vcm_z + omega_x * ry - omega_y * rx);
+}
+
+// FSI-1: Accumulate pressure force and torque on the immersed surface.
+// Iterates over all interior IBM_GHOST cells; for each, reads cell pressure
+// from d_scratch (primitive layout: [comp][NCELL], comp=4 is pressure).
+// dF = p * n_outward * dA,  dT = (x_surf - x_cm) × dF.
+// Uses atomicAdd on d_wrench[6].
+// gridDim.x = n_leaves, blockDim.x = 256
+__global__
+void k_surface_forces_ibm(
+    const GpuIbmForceMeta* __restrict__ metas,
+    int n_leaves,
+    double x_cm_x, double x_cm_y, double x_cm_z,
+    double* __restrict__ d_wrench)
+{
+    if (blockIdx.x >= n_leaves) return;
+    const GpuIbmForceMeta& m = metas[blockIdx.x];
+    const int NC = GPU_NCELL;
+    const double dA = (double)(m.hx * m.hy);  // face area = h² for cubic cells
+
+    for (int flat = threadIdx.x; flat < NC; flat += blockDim.x) {
+        if (m.d_cell_type[flat] != 2) continue;  // only IBM_GHOST cells
+
+        int k =  flat / (GPU_NB2 * GPU_NB2);
+        int j = (flat /  GPU_NB2) % GPU_NB2;
+        int i =  flat %  GPU_NB2;
+
+        // Skip ghost layer cells outside interior range
+        if (i < GPU_NG || i >= GPU_NG + GPU_NB) continue;
+        if (j < GPU_NG || j >= GPU_NG + GPU_NB) continue;
+        if (k < GPU_NG || k >= GPU_NG + GPU_NB) continue;
+
+        // Cell pressure from prim scratch: comp=4 is pressure (rho=0,u=1,v=2,w=3,p=4)
+        double p = m.d_scratch[4 * NC + flat];
+        if (p < 0.0) p = 0.0;
+
+        // Outward wall normal (points from solid into fluid, i.e. outward from surface)
+        double nx = (double)m.d_wnx[flat];
+        double ny = (double)m.d_wny[flat];
+        double nz = (double)m.d_wnz[flat];
+
+        // Surface point: x_ghost - sdf * n  (sdf > 0 for ghost cells near surface)
+        double sdf = (double)m.d_sdf[flat];
+        double gx = (double)m.ox + (i - GPU_NG + 0.5) * (double)m.hx;
+        double gy = (double)m.oy + (j - GPU_NG + 0.5) * (double)m.hy;
+        double gz = (double)m.oz + (k - GPU_NG + 0.5) * (double)m.hz;
+        double xs = gx - sdf * nx;
+        double ys = gy - sdf * ny;
+        double zs = gz - sdf * nz;
+
+        // Force contribution: dF = p * n * dA
+        double dFx = p * nx * dA;
+        double dFy = p * ny * dA;
+        double dFz = p * nz * dA;
+
+        // Torque contribution: dT = (x_surf - x_cm) × dF
+        double rx = xs - x_cm_x;
+        double ry = ys - x_cm_y;
+        double rz = zs - x_cm_z;
+        double dTx = ry * dFz - rz * dFy;
+        double dTy = rz * dFx - rx * dFz;
+        double dTz = rx * dFy - ry * dFx;
+
+        atomicAdd(&d_wrench[0], dFx);
+        atomicAdd(&d_wrench[1], dFy);
+        atomicAdd(&d_wrench[2], dFz);
+        atomicAdd(&d_wrench[3], dTx);
+        atomicAdd(&d_wrench[4], dTy);
+        atomicAdd(&d_wrench[5], dTz);
     }
 }
 
@@ -222,6 +318,10 @@ static void build_ghost_entries(
         ge.v_wall    = v_wall;
         ge.w_wall    = w_wall;
         ge.T_wall    = T_wall;
+        // FSI-1: surface point = ghost_centroid - sdf * n  (sdf > 0 for ghost cells)
+        ge.x_surf    = (float)(gx - (double)sdf * nx);
+        ge.y_surf    = (float)(gy - (double)sdf * ny);
+        ge.z_surf    = (float)(gz - (double)sdf * nz);
 
         for (int dz = 0; dz < 2; ++dz)
         for (int dy = 0; dy < 2; ++dy)
@@ -348,6 +448,20 @@ void GpuIbmList::build(const BlockTree& tree, const GpuPool& pool, const GpuBvh&
 
 void GpuIbmList::exec(cudaStream_t stream) const {
     constexpr int TPB = 256;
+
+    // FSI-1: If any rigid-body motion is present, update ghost-entry wall velocities.
+    const bool has_motion =
+        rigid.v_cm[0] != 0.0 || rigid.v_cm[1] != 0.0 || rigid.v_cm[2] != 0.0 ||
+        rigid.omega[0] != 0.0 || rigid.omega[1] != 0.0 || rigid.omega[2] != 0.0;
+    if (has_motion && n_ghosts > 0 && d_ghosts) {
+        int nb = (n_ghosts + TPB - 1) / TPB;
+        k_apply_moving_wall<<<nb, TPB, 0, stream>>>(
+            d_ghosts, n_ghosts,
+            rigid.v_cm[0], rigid.v_cm[1], rigid.v_cm[2],
+            rigid.omega[0], rigid.omega[1], rigid.omega[2],
+            rigid.x_cm[0], rigid.x_cm[1], rigid.x_cm[2]);
+    }
+
     // SolidFill first so that ghost-cell stencils reading SOLID cells see fresh fluid values
     if (n_solid_fills > 0 && d_solid_fills) {
         int nb = (n_solid_fills + TPB - 1) / TPB;

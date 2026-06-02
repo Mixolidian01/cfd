@@ -238,6 +238,7 @@ if(NVCC)
         ${_S}/cuda/gpu_metrics.cu  ${_S}/metrics/metrics_bus.cu
         ${_S}/models/stl_loader.cpp ${_S}/cuda/gpu_bvh.cu ${_S}/cuda/gpu_ibm.cu
         ${_S}/cuda/gpu_wmles.cu    ${_S}/models/wall_model.cpp
+        ${_S}/fsi/rigid_body.cpp
         ${_GPU_BASE}
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
@@ -323,6 +324,7 @@ if(NVCC)
              ${_S}/cuda/gpu_metrics.cu  ${_S}/metrics/metrics_bus.cu
              ${_S}/io/vtk_writer.cu
              ${_S}/models/stl_loader.cpp ${_S}/models/wall_model.cpp
+             ${_S}/fsi/rigid_body.cpp
              ${_GPU_POOL}
              ${_GPU_OPS}
     )
@@ -333,6 +335,7 @@ if(NVCC)
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
              ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
              ${_S}/cuda/gpu_snapshot.cu
+             ${_S}/fsi/rigid_body.cpp
              ${_GPU_POOL}
              ${_GPU_OPS}
              ${_S}/models/sgs.cpp
@@ -541,6 +544,22 @@ else()
 endif()
 
 # =============================================================================
+# FSI library and gate t53 (CPU-only; no CUDA required)
+# =============================================================================
+add_library(fsi STATIC src/fsi/rigid_body.cpp)
+target_include_directories(fsi PUBLIC include)
+
+add_executable(test_t53_fsi_rigid tests/cpu/test_t53_fsi_rigid.cpp)
+target_link_libraries(test_t53_fsi_rigid PRIVATE fsi m)
+add_test(NAME t53_fsi_rigid COMMAND test_t53_fsi_rigid)
+add_custom_target(t53
+    DEPENDS test_t53_fsi_rigid
+    COMMAND $<TARGET_FILE:test_t53_fsi_rigid>
+    COMMENT "FSI-1 RigidBody6DOF unit test (Newton's law + wall_velocity)"
+    USES_TERMINAL
+)
+
+# =============================================================================
 # Optional feature gates  (t9–t18)
 # =============================================================================
 
@@ -725,6 +744,7 @@ add_custom_target(ba
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
             test_ensemble test_scheme_select test_t38_adjoint test_t42_adjoint_rk3
             test_rect_domain test_t42_rect_ns test_multi_root
+            test_t53_fsi_rigid
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
