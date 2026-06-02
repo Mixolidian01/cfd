@@ -28,6 +28,15 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
+# ── ccache (Category 1): wrap C++ compiler, wire into nvcc below ──────────────
+find_program(CCACHE ccache)
+if(CCACHE)
+    message(STATUS "ccache found: ${CCACHE}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE}")
+else()
+    message(STATUS "ccache not found — install ccache for incremental build speedup")
+endif()
+
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -46,10 +55,16 @@ endif()
 add_library(linalg STATIC src/linalg/linalg.cpp)
 target_include_directories(linalg PUBLIC include)
 
+# ── Category 2: PCH for CPU library targets ────────────────────────────────────
+# Precompile the STL subset used across every translation unit.  Each target
+# generates its own PCH so flag differences (e.g. -fopenmp on operators) are safe.
+set(_CFD_PCH <vector> <memory> <array> <string> <cmath> <cstdint> <functional> <utility>)
+
 # amr_operators.cpp and ghost_filler.cpp live in libblock — block_tree.cpp calls
 # fill_cf_ghosts() directly and must not be compiled again in libns_solver (ODR violation).
 add_library(block STATIC src/mesh/block_tree.cpp src/mesh/amr_operators.cpp src/mesh/ghost_filler.cpp)
 target_link_libraries(block PUBLIC linalg)
+target_precompile_headers(block PRIVATE ${_CFD_PCH})
 
 find_package(OpenMP)
 add_library(operators STATIC
@@ -62,6 +77,7 @@ add_library(operators STATIC
     src/schemes/adjoint_rk3.cpp            # D11-adj: adjoint_rk3_one_block (frozen-weight RK3 adjoint)
 )
 target_link_libraries(operators PUBLIC block)
+target_precompile_headers(operators PRIVATE ${_CFD_PCH})
 if(OpenMP_CXX_FOUND)
     target_link_libraries(operators PUBLIC OpenMP::OpenMP_CXX)
     message(STATUS "OpenMP found — leaf loop will be parallelised")
@@ -87,6 +103,7 @@ add_library(ns_solver STATIC
     src/solver/ensemble_solver.cpp   # P14.5: EnsembleSolver + stochastic EnKF
 )
 target_link_libraries(ns_solver PUBLIC operators)
+target_precompile_headers(ns_solver PRIVATE ${_CFD_PCH})
 find_package(Threads REQUIRED)
 target_link_libraries(ns_solver PUBLIC Threads::Threads)
 
@@ -182,7 +199,21 @@ if(NVCC)
     if(NOT _ARCH)
         set(_ARCH "75")
     endif()
+
+    # Category 1: allow manual arch override, e.g. cmake -DCFD_CUDA_ARCH=80
+    set(CFD_CUDA_ARCH "" CACHE STRING "Override detected CUDA arch (e.g. 80 for A100). Empty = auto-detect.")
+    if(CFD_CUDA_ARCH)
+        set(_ARCH "${CFD_CUDA_ARCH}")
+        message(STATUS "CUDA arch override → sm_${_ARCH}")
+    endif()
     message(STATUS "nvcc: ${NVCC}  arch: sm_${_ARCH}")
+
+    # Category 1: ccache wrapper for nvcc (set _NVCC_CMD = [ccache] nvcc)
+    if(CCACHE)
+        set(_NVCC_CMD "${CCACHE}" "${NVCC}")
+    else()
+        set(_NVCC_CMD "${NVCC}")
+    endif()
 
     # ── Source-set shorthands ─────────────────────────────────────────────────
     set(_S ${CMAKE_SOURCE_DIR}/src)
@@ -233,7 +264,7 @@ if(NVCC)
         set(_bin ${CMAKE_BINARY_DIR}/${A_BIN})
         add_custom_command(
             OUTPUT  ${_bin}
-            COMMAND ${NVCC} ${_NVCC_BASE} ${A_EXTRA_FLAGS} ${A_SRCS}
+            COMMAND ${_NVCC_CMD} ${_NVCC_BASE} ${A_EXTRA_FLAGS} ${A_SRCS}
                     -o ${_bin} -lm ${A_EXTRA_LIBS}
             DEPENDS ${A_SRCS}
             COMMENT "nvcc: compiling ${A_COMMENT}"
@@ -414,7 +445,7 @@ if(NVCC)
     set(_D0_BIN ${CMAKE_BINARY_DIR}/bench_d0_roofline)
     add_custom_command(
         OUTPUT  ${_D0_BIN}
-        COMMAND ${NVCC} ${_NVCC_BASE} ${_WNO} ${_D0_SRCS} -o ${_D0_BIN} -lm
+        COMMAND ${_NVCC_CMD} ${_NVCC_BASE} ${_WNO} ${_D0_SRCS} -o ${_D0_BIN} -lm
         DEPENDS ${_D0_SRCS}
         COMMENT "nvcc: compiling D0 roofline benchmark"
         VERBATIM
@@ -427,7 +458,7 @@ if(NVCC)
     set(_BENCH_TGV_BIN ${CMAKE_BINARY_DIR}/bench_tgv)
     add_custom_command(
         OUTPUT  ${_BENCH_TGV_BIN}
-        COMMAND ${NVCC} ${_NVCC_BASE} ${_WNO} ${_GPU_NS}
+        COMMAND ${_NVCC_CMD} ${_NVCC_BASE} ${_WNO} ${_GPU_NS}
                 ${_T}/bench_cpu_vs_gpu_tgv.cu
                 -o ${_BENCH_TGV_BIN} -lm
         DEPENDS ${_T}/bench_cpu_vs_gpu_tgv.cu ${_GPU_NS}
@@ -443,7 +474,7 @@ if(NVCC)
     set(_SIM_GPU_BIN ${CMAKE_BINARY_DIR}/simulate_gpu)
     add_custom_command(
         OUTPUT  ${_SIM_GPU_BIN}
-        COMMAND ${NVCC} ${_NVCC_BASE} ${_WNO} ${_GPU_NS}
+        COMMAND ${_NVCC_CMD} ${_NVCC_BASE} ${_WNO} ${_GPU_NS}
                 ${_APP}/simulate_gpu.cu
                 -o ${_SIM_GPU_BIN} -lm ${_LZ4}
         DEPENDS ${_APP}/simulate_gpu.cu ${_GPU_NS}
@@ -464,7 +495,7 @@ if(NVCC)
         endforeach()
         add_custom_command(
             OUTPUT  ${_bin}
-            COMMAND ${NVCC} ${_NVCC_BASE} ${A_EXTRA_FLAGS} ${_mpi_inc_flags} ${A_SRCS}
+            COMMAND ${_NVCC_CMD} ${_NVCC_BASE} ${A_EXTRA_FLAGS} ${_mpi_inc_flags} ${A_SRCS}
                     -o ${_bin} -lm ${A_EXTRA_LIBS}
             DEPENDS ${A_SRCS}
             COMMENT "nvcc: compiling ${A_COMMENT}"
