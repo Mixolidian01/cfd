@@ -46,3 +46,6 @@ Formula: Est. BW (GB/s) = 45.9 MB / avg_ms * 1000
 - The mixed-precision path (WENO5Z_MP) is separate from the default WENO5Z path:
   WENO5Z uses full FP64 for bitwise GPU==CPU agreement; WENO5Z_MP uses FP32 β/τ/ω
   for production throughput. The two paths coexist in the dispatch switch.
+- t24 SRCS fix (gpu_bvh.cu, gpu_ibm.cu, gpu_wmles.cu, gpu_metrics.cu, metrics_bus.cu,
+  stl_loader.cpp, wall_model.cpp) corrects a latent link failure introduced in G7
+  (commit 77223f2) when MetricsBus was wired in but t24's hand-rolled SRCS were not updated.

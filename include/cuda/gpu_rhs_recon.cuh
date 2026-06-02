@@ -2,13 +2,13 @@
 // gpu_rhs_recon.cuh — device-inline reconstruction helpers for gpu_rhs.cu.
 //
 // Includes:
-//   weno5z_upwind / gpu_weno5z_scalar    — WENO5-Z scalar (Borges 2008)
-//   teno5_upwind  / gpu_teno5_scalar     — TENO5-A scalar (Fu/Hu/Adams 2016)
-//   teno7_upwind  / gpu_teno7_scalar     — TENO7-A scalar (Fu/Hu/Adams 2019)
-//   GpuRoeState, gpu_roe_from_prim       — Roe-averaged state
-//   gpu_char_proj / gpu_back_proj        — characteristic ↔ conservative projection
-//   gpu_safe_prim_f                      — NaN-safe prim fallback
-//   gpu_weno5_face / gpu_teno5_face / gpu_teno7_face — full face reconstructions
+//   weno5z_upwind / gpu_weno5z_scalar<USE_MP> — WENO5-Z scalar (Borges 2008)
+//   teno5_upwind  / gpu_teno5_scalar          — TENO5-A scalar (Fu/Hu/Adams 2016)
+//   teno7_upwind  / gpu_teno7_scalar          — TENO7-A scalar (Fu/Hu/Adams 2019)
+//   GpuRoeState, gpu_roe_from_prim            — Roe-averaged state
+//   gpu_char_proj / gpu_back_proj             — characteristic ↔ conservative projection
+//   gpu_safe_prim_f                           — NaN-safe prim fallback
+//   gpu_weno5_face<USE_MP> / gpu_teno5_face / gpu_teno7_face — full face reconstructions
 //
 // All functions are __device__ __forceinline__; this header is safe to include
 // in any .cu TU that needs reconstruction.  It must be included after the GPU
@@ -71,26 +71,21 @@ double weno5z_upwind_mp(double a, double b, double c, double d, double e) noexce
     return w0*s0 + w1*s1 + w2*s2;
 }
 
-// WENO5-Z scalar reconstruction (Borges et al. 2008) — full FP64.
-// Uses weno5z_upwind (not weno5z_upwind_mp) so GPU vs CPU differences stay at
-// machine-epsilon level (required by t25 N1/N3 tolerance of 1e-8).
+// WENO5-Z scalar reconstruction (Borges et al. 2008).
+// USE_MP=false: full FP64 (default WENO5Z scheme, required by t25 GPU==CPU tolerance).
+// USE_MP=true:  FP32 β/τ/ω + FP64 sub-stencil interpolants (WENO5Z_MP scheme).
+template<bool USE_MP>
 __device__ __forceinline__
 void gpu_weno5z_scalar(double vm2, double vm1, double v0,
                        double vp1, double vp2, double vp3,
                        double& vL, double& vR) noexcept {
-    vL = weno5z_upwind(vm2, vm1, v0,  vp1, vp2);   // left state
-    vR = weno5z_upwind(vp3, vp2, vp1, v0,  vm1);   // right state (mirrored)
-}
-
-// WENO5-Z mixed-precision scalar reconstruction — FP32 β/τ/ω, FP64 sub-stencil interpolants.
-// Use for production runs and benchmarks (GpuReconScheme::WENO5Z_MP).
-// NOT used by gpu_weno5z_scalar to preserve t25 GPU==CPU tolerance.
-__device__ __forceinline__
-void gpu_weno5z_mp_scalar(double vm2, double vm1, double v0,
-                          double vp1, double vp2, double vp3,
-                          double& vL, double& vR) noexcept {
-    vL = weno5z_upwind_mp(vm2, vm1, v0,  vp1, vp2);   // left state
-    vR = weno5z_upwind_mp(vp3, vp2, vp1, v0,  vm1);   // right state (mirrored)
+    if constexpr (USE_MP) {
+        vL = weno5z_upwind_mp(vm2, vm1, v0,  vp1, vp2);
+        vR = weno5z_upwind_mp(vp3, vp2, vp1, v0,  vm1);
+    } else {
+        vL = weno5z_upwind(vm2, vm1, v0,  vp1, vp2);
+        vR = weno5z_upwind(vp3, vp2, vp1, v0,  vm1);
+    }
 }
 
 // TENO5-A one-sided upwind reconstruction (Fu, Hu, Adams 2016/2019).
@@ -302,9 +297,12 @@ GPrim gpu_safe_prim_f(const double Qc[GPU_NVAR], const GPrim& fb) noexcept
 }
 
 // WENO5 face reconstruction with Roe characteristic decomposition.
+// USE_MP=false: full FP64 WENO5-Z (default; preserves t25 GPU==CPU tolerance).
+// USE_MP=true:  FP32 β/τ/ω WENO5-Z (WENO5Z_MP; production throughput path).
 // Reads prim from d_scratch (comp-major: sp[comp*NCELL + flat]).
 // (i,j,k) = left cell of face; axis = normal direction.
 // Requires NG=2: stencil offset d ∈ {-2,-1,0,+1,+2,+3} all in-bounds.
+template<bool USE_MP>
 __device__ __forceinline__
 void gpu_weno5_face(const double* __restrict__ sp,
                     int i, int j, int k, int axis,
@@ -339,54 +337,7 @@ void gpu_weno5_face(const double* __restrict__ sp,
 
     double wL_w[5], wR_w[5];
     for (int kk = 0; kk < 5; ++kk)
-        gpu_weno5z_scalar(W[kk][0],W[kk][1],W[kk][2],W[kk][3],W[kk][4],W[kk][5], wL_w[kk], wR_w[kk]);
-
-    double QL[GPU_NVAR], QR[GPU_NVAR];
-    gpu_back_proj(wL_w, rs, QL);
-    gpu_back_proj(wR_w, rs, QR);
-    GPrim fbL; fbL.rho=rL; fbL.u=uL; fbL.v=vL; fbL.w=wL; fbL.p=pL; fbL.T=TL; fbL.c=cL;
-    GPrim fbR; fbR.rho=rR; fbR.u=uR; fbR.v=vR; fbR.w=wR; fbR.p=pR; fbR.T=TR; fbR.c=cR;
-    qL_out = gpu_safe_prim_f(QL, fbL);
-    qR_out = gpu_safe_prim_f(QR, fbR);
-}
-
-// WENO5-Z mixed-precision face reconstruction (GpuReconScheme::WENO5Z_MP).
-// Identical to gpu_weno5_face but uses gpu_weno5z_mp_scalar (FP32 β/τ/ω).
-__device__ __forceinline__
-void gpu_weno5_mp_face(const double* __restrict__ sp,
-                       int i, int j, int k, int axis,
-                       GPrim& qL_out, GPrim& qR_out) noexcept {
-    auto sidx = [&](int d) -> int {
-        if (axis == 0) return gpu_cell_idx(i+d, j, k);
-        if (axis == 1) return gpu_cell_idx(i, j+d, k);
-        return                gpu_cell_idx(i, j, k+d);
-    };
-
-    const int fL = sidx(0), fR = sidx(1);
-    const double rL = sp[0*GPU_NCELL+fL], uL = sp[1*GPU_NCELL+fL];
-    const double vL = sp[2*GPU_NCELL+fL], wL = sp[3*GPU_NCELL+fL];
-    const double pL = sp[4*GPU_NCELL+fL], TL = sp[5*GPU_NCELL+fL], cL = sp[6*GPU_NCELL+fL];
-    const double rR = sp[0*GPU_NCELL+fR], uR = sp[1*GPU_NCELL+fR];
-    const double vR = sp[2*GPU_NCELL+fR], wR = sp[3*GPU_NCELL+fR];
-    const double pR = sp[4*GPU_NCELL+fR], TR = sp[5*GPU_NCELL+fR], cR = sp[6*GPU_NCELL+fR];
-    const GpuRoeState rs = gpu_roe_from_prim(rL,uL,vL,wL,pL, rR,uR,vR,wR,pR, axis);
-
-    double Q[6][GPU_NVAR];
-    for (int m = 0; m < 6; ++m) {
-        const int flat = sidx(m-2);
-        const double rho = sp[0*GPU_NCELL+flat], u = sp[1*GPU_NCELL+flat];
-        const double v   = sp[2*GPU_NCELL+flat], w = sp[3*GPU_NCELL+flat];
-        const double p   = sp[4*GPU_NCELL+flat];
-        Q[m][0] = rho; Q[m][1] = rho*u; Q[m][2] = rho*v; Q[m][3] = rho*w;
-        Q[m][4] = p/(GPU_GAMMA-1.0) + 0.5*rho*(u*u+v*v+w*w);
-    }
-
-    double W[5][6];
-    for (int m = 0; m < 6; ++m) { double Wm[5]; gpu_char_proj(Q[m], rs, Wm); for (int c=0;c<5;++c) W[c][m]=Wm[c]; }
-
-    double wL_w[5], wR_w[5];
-    for (int kk = 0; kk < 5; ++kk)
-        gpu_weno5z_mp_scalar(W[kk][0],W[kk][1],W[kk][2],W[kk][3],W[kk][4],W[kk][5], wL_w[kk], wR_w[kk]);
+        gpu_weno5z_scalar<USE_MP>(W[kk][0],W[kk][1],W[kk][2],W[kk][3],W[kk][4],W[kk][5], wL_w[kk], wR_w[kk]);
 
     double QL[GPU_NVAR], QR[GPU_NVAR];
     gpu_back_proj(wL_w, rs, QL);
