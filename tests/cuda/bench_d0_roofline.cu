@@ -100,9 +100,11 @@ int main() {
            bytes_per_call / 1e6);
     printf("\n");
 
-    // Force WENO5-Z for this benchmark. Must be set after every build() call and before the
-    // first advance() (advance() triggers graph capture which bakes the scheme into the graph).
-    solver.rhs_list.scheme = GpuReconScheme::WENO5Z;
+    // Force WENO5-Z mixed-precision for this benchmark (measures P-MP optimisation).
+    // WENO5Z_MP = FP32 β/τ/ω, FP64 sub-stencil interpolants (weno5z_upwind_mp).
+    // Must be set after every build() call and before the first advance()
+    // (advance() triggers graph capture which bakes the scheme into the graph).
+    solver.rhs_list.scheme = GpuReconScheme::WENO5Z_MP;
 
     // Warm up: 5 advance steps (discarded)
     for (int i = 0; i < 5; ++i) solver.advance(tree, 0.4);

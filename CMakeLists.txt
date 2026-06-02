@@ -319,6 +319,9 @@ if(NVCC)
              ${_S}/cuda/gpu_rhs.cu  ${_S}/cuda/gpu_cfl.cu ${_S}/cuda/gpu_cf.cu
              ${_S}/cuda/gpu_sgs.cu  ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
              ${_S}/cuda/gpu_snapshot.cu ${_S}/cuda/gpu_acdi.cu
+             ${_S}/cuda/gpu_bvh.cu  ${_S}/cuda/gpu_ibm.cu ${_S}/cuda/gpu_wmles.cu
+             ${_S}/cuda/gpu_metrics.cu  ${_S}/metrics/metrics_bus.cu
+             ${_S}/models/stl_loader.cpp ${_S}/models/wall_model.cpp
              ${_GPU_POOL}
              ${_GPU_OPS}
     )

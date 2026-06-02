@@ -32,7 +32,7 @@ static constexpr int SCRATCH_NCOMP = 9;  // rho,u,v,w,p,T,c,mu,duc
 // Convective reconstruction scheme tag — set before GpuRhsList::exec() or graph capture.
 // TILED variants (D0.5) load each NB2×NB2 i-plane into padded shmem before the WENO/TENO
 // sweep, eliminating ~60 % of DRAM reads for Y/Z transverse stencil accesses.
-enum class GpuReconScheme : uint8_t { WENO5Z, TENO5A, WENO5Z_TILED, TENO5A_TILED, TENO7A };
+enum class GpuReconScheme : uint8_t { WENO5Z, TENO5A, WENO5Z_TILED, TENO5A_TILED, TENO7A, WENO5Z_MP };
 
 // ── Per-leaf RHS metadata ─────────────────────────────────────────────────────
 struct alignas(64) GpuLeafRhsMeta {
