@@ -41,13 +41,42 @@ double weno5z_upwind(double a, double b, double c, double d, double e) noexcept 
     return (a0*s0 + a1*s1 + a2*s2) / (a0 + a1 + a2);
 }
 
+// FP32 weights are safe for WENO5-Z because ω_k depends only on the relative magnitude
+// of β_k — FP32 roundoff (~1e-7) does not misclassify smooth vs. shocked cells.
+// TENO5-A/TENO7-A are excluded: their hard cutoff CT≈1e-6 lies within FP32 roundoff
+// (~1e-7) for near-threshold cells, corrupting sub-stencil selection.
+__device__ __forceinline__
+double weno5z_upwind_mp(double a, double b, double c, double d, double e) noexcept {
+    // Phase 2 (FP64): sub-stencil interpolants — computed first, inputs still double
+    const double s0 = ( 2.0*a -  7.0*b + 11.0*c) * (1.0/6.0);
+    const double s1 = (      -b +  5.0*c +  2.0*d) * (1.0/6.0);
+    const double s2 = ( 2.0*c +  5.0*d -       e) * (1.0/6.0);
+    // Phase 1 (FP32): smoothness indicators β, global indicator τ₅, WENO-Z weights
+    const float fa=(float)a, fb=(float)b, fc=(float)c, fd=(float)d, fe=(float)e;
+    const float B0 = (13.f/12.f)*(fa-2.f*fb+fc)*(fa-2.f*fb+fc)
+                   +  (1.f/ 4.f)*(fa-4.f*fb+3.f*fc)*(fa-4.f*fb+3.f*fc);
+    const float B1 = (13.f/12.f)*(fb-2.f*fc+fd)*(fb-2.f*fc+fd)
+                   +  (1.f/ 4.f)*(fb-fd)*(fb-fd);
+    const float B2 = (13.f/12.f)*(fc-2.f*fd+fe)*(fc-2.f*fd+fe)
+                   +  (1.f/ 4.f)*(3.f*fc-4.f*fd+fe)*(3.f*fc-4.f*fd+fe);
+    const float tau5 = fabsf(B0 - B2);
+    constexpr float eps32 = 1.e-36f;
+    constexpr float c0 = 0.1f, c1 = 0.6f, c2 = 0.3f;
+    const float t0 = tau5/(B0+eps32), t1 = tau5/(B1+eps32), t2 = tau5/(B2+eps32);
+    const float A0 = c0*(1.f+t0*t0), A1 = c1*(1.f+t1*t1), A2 = c2*(1.f+t2*t2);
+    const float iAw = 1.f/(A0+A1+A2);
+    const double w0=(double)(A0*iAw), w1=(double)(A1*iAw), w2=(double)(A2*iAw);
+    // Phase 2 (FP64) continued: weighted sum
+    return w0*s0 + w1*s1 + w2*s2;
+}
+
 // WENO5-Z scalar reconstruction (Borges et al. 2008)
 __device__ __forceinline__
 void gpu_weno5z_scalar(double vm2, double vm1, double v0,
                        double vp1, double vp2, double vp3,
                        double& vL, double& vR) noexcept {
-    vL = weno5z_upwind(vm2, vm1, v0,  vp1, vp2);   // left state
-    vR = weno5z_upwind(vp3, vp2, vp1, v0,  vm1);   // right state (mirrored)
+    vL = weno5z_upwind_mp(vm2, vm1, v0,  vp1, vp2);   // left state
+    vR = weno5z_upwind_mp(vp3, vp2, vp1, v0,  vm1);   // right state (mirrored)
 }
 
 // TENO5-A one-sided upwind reconstruction (Fu, Hu, Adams 2016/2019).

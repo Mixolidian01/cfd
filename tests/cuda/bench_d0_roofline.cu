@@ -100,6 +100,10 @@ int main() {
            bytes_per_call / 1e6);
     printf("\n");
 
+    // Force WENO5-Z scheme for mixed-precision baseline measurement.
+    // Must be set before the first advance() which triggers graph capture.
+    solver.rhs_list.scheme = GpuReconScheme::WENO5Z;
+
     // Warm up: 5 advance steps (discarded)
     for (int i = 0; i < 5; ++i) solver.advance(tree, 0.4);
     CUDA_CHECK(cudaDeviceSynchronize());
