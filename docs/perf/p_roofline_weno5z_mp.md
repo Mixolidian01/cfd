@@ -10,10 +10,10 @@
 per scalar reconstruction moved to FP32). Sub-stencil interpolants s₀,s₁,s₂ and
 weighted sum kept in FP64.
 
-A separate `GpuReconScheme::WENO5Z_MP` dispatch path (`k_rhs_conv_mp` →
-`gpu_weno5_mp_face` → `gpu_weno5z_mp_scalar`) is used for the mixed-precision kernel.
-`gpu_weno5z_scalar` (default `WENO5Z` path) retains full FP64 to preserve the
-GPU==CPU tolerance required by t25 N1/N3.
+A separate `GpuReconScheme::WENO5Z_MP` dispatch path (`k_rhs_conv<true>` →
+`gpu_weno5_face<true>` → `gpu_weno5z_scalar<true>`) is used for the mixed-precision
+kernel. `gpu_weno5z_scalar<false>` (default `WENO5Z` path) retains full FP64 to
+preserve the GPU==CPU tolerance required by t25 N1/N3.
 
 TENO5-A and TENO7-A unchanged (full FP64): their hard cutoff CT≈1e-6 lies within
 FP32 roundoff (~1e-7), which would corrupt sub-stencil selection near the threshold.
