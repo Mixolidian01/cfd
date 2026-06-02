@@ -242,7 +242,7 @@ if(NVCC)
         ${_GPU_OPS}             ${_S}/solver/ns_solver.cpp  ${_S}/solver/cpu_rk3.cpp
                                 ${_S}/solver/lts_integrator.cpp
                                 ${_S}/solver/imex_advance.cpp ${_S}/mesh/flux_register.cpp
-        ${_S}/models/sgs.cpp    ${_S}/io/checkpoint.cpp ${_S}/io/vtk_writer.cpp
+        ${_S}/models/sgs.cpp    ${_S}/io/checkpoint.cpp ${_S}/io/vtk_writer.cu
         ${_S}/io/live_streamer.cpp ${_S}/io/viewer_html.cpp
         ${_S}/io/http_server.cpp   ${_S}/io/frame_packer.cpp
     )
@@ -285,7 +285,7 @@ if(NVCC)
              ${_GPU_OPS} ${_S}/solver/ns_solver.cpp ${_S}/solver/cpu_rk3.cpp
              ${_S}/solver/lts_integrator.cpp
              ${_S}/solver/imex_advance.cpp ${_S}/mesh/flux_register.cpp
-             ${_S}/models/sgs.cpp ${_S}/io/checkpoint.cpp ${_S}/io/vtk_writer.cpp
+             ${_S}/models/sgs.cpp ${_S}/io/checkpoint.cpp ${_S}/io/vtk_writer.cu
              ${_S}/io/live_streamer.cpp ${_S}/io/viewer_html.cpp
              ${_S}/io/http_server.cpp   ${_S}/io/frame_packer.cpp
     )
@@ -321,6 +321,7 @@ if(NVCC)
              ${_S}/cuda/gpu_snapshot.cu ${_S}/cuda/gpu_acdi.cu
              ${_S}/cuda/gpu_bvh.cu  ${_S}/cuda/gpu_ibm.cu ${_S}/cuda/gpu_wmles.cu
              ${_S}/cuda/gpu_metrics.cu  ${_S}/metrics/metrics_bus.cu
+             ${_S}/io/vtk_writer.cu
              ${_S}/models/stl_loader.cpp ${_S}/models/wall_model.cpp
              ${_GPU_POOL}
              ${_GPU_OPS}
@@ -438,6 +439,13 @@ if(NVCC)
              ${_S}/cuda/gpu_metrics.cu
              ${_S}/cuda/gpu_snapshot.cu
              ${_S}/metrics/metrics_bus.cu
+             ${_S}/io/vtk_writer.cu
+    )
+
+    add_nvcc_gate(TARGET t52 BIN t52_vtk COMMENT "C1 VTK XML binary writer (vtk_write_vts + pvts)"
+        EXTRA_FLAGS ${_WNO}
+        SRCS ${_T}/test_t52_vtk.cu
+             ${_S}/io/vtk_writer.cu
     )
 
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)

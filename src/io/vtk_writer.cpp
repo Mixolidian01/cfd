@@ -1,5 +1,6 @@
-// vtk_writer.cpp — VTK legacy format output
+// vtk_writer.cpp — VTK legacy format output (CPU-only, legacy ASCII)
 #include "io/vtk_writer.hpp"
+#include "solver/ns_solver.hpp"
 #include <cstdio>
 #include <stdexcept>
 #include <string>

@@ -5,6 +5,7 @@
 #include "cuda/gpu_rhs.cuh"
 #include "gpu_snapshot.hpp"
 #include "cuda/gpu_ibm.cuh"
+#include "io/vtk_writer.hpp"
 #include <filesystem>
 
 void MetricsBus::build(const MetricsConfig& cfg, int n_leaves,
@@ -77,6 +78,17 @@ void MetricsBus::write(int step, double t, double dt) {
     for (auto* pm : probe_mons_)
         if (pm->interval > 0 && step % pm->interval == 0)
             pm->write(step, t);
+    // VTK XML binary output
+    if (!cfg_.vtk_prefix.empty() && cfg_.vtk_interval > 0
+        && step % cfg_.vtk_interval == 0 && snap_metas_ && n_leaves_ > 0) {
+        for (int li = 0; li < n_leaves_; ++li) {
+            const auto& m = snap_metas_[li];
+            vtk_write_vts(cfg_.vtk_prefix, step, li,
+                          (double)m.ox, (double)m.oy, (double)m.oz, (double)m.h,
+                          m.d_Q);
+        }
+        vtk_write_pvts(cfg_.vtk_prefix, step, n_leaves_);
+    }
 }
 
 void MetricsBus::rebuild(int n_leaves, const GpuRhsList* rhs_list,

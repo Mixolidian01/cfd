@@ -284,6 +284,9 @@ struct SolverConfig {
         std::string output_dir = ".";
         std::vector<SurfaceConfig> surfaces;
         std::vector<ProbeConfig>   probes;
+        // VTK XML binary output (empty prefix = disabled)
+        std::string vtk_prefix   = "";
+        int         vtk_interval = 100;
     };
     MetricsConfig metrics;
 
