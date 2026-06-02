@@ -18,7 +18,8 @@
 #include "cuda/gpu_hllc.cuh"
 #include "physics/teno5_scalar.hpp"
 
-// One-sided WENO5-Z upwind reconstruction (Borges et al. 2008).
+// One-sided WENO5-Z upwind reconstruction (Borges et al. 2008) — full FP64 reference.
+// Production path uses weno5z_upwind_mp (FP32 β/τ/ω, FP64 interpolants).
 // Stencil [a,b,c,d,e] = [vm2,vm1,v0,vp1,vp2] for the left state.
 // For the right state, pass the mirrored stencil [vp3,vp2,vp1,v0,vm1].
 __device__ __forceinline__

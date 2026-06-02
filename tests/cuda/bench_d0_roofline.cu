@@ -100,8 +100,8 @@ int main() {
            bytes_per_call / 1e6);
     printf("\n");
 
-    // Force WENO5-Z scheme for mixed-precision baseline measurement.
-    // Must be set before the first advance() which triggers graph capture.
+    // Force WENO5-Z for this benchmark. Must be set after every build() call and before the
+    // first advance() (advance() triggers graph capture which bakes the scheme into the graph).
     solver.rhs_list.scheme = GpuReconScheme::WENO5Z;
 
     // Warm up: 5 advance steps (discarded)
