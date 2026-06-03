@@ -351,10 +351,34 @@ int main(int argc, char* argv[])
             uint8_t bc = 0; // NoSlip
             if (sc.ibm.wall_bc == "isothermal") bc = 2;
             ibm_bvh = std::make_unique<GpuBvh>();
-            ibm_bvh->build(load_stl(sc.ibm.stl_path));
+            StlMesh stl_mesh = load_stl(sc.ibm.stl_path);
+            ibm_bvh->build(stl_mesh);
             graph_solver.set_gpu_ibm(ibm_bvh.get(), bc,
                                      (float)sc.ibm.u_wall, (float)sc.ibm.v_wall,
                                      (float)sc.ibm.w_wall, (float)sc.ibm.T_wall);
+            // Flat-surface AMR criterion: refine until h ≤ mean_tri_edge / curvature_k.
+            // For curved surfaces the curvature criterion already handles refinement;
+            // for flat surfaces (R_c = ∞) this is the only signal.
+            float h_surf = (float)cfg.d("ibm_h_surf", 0.0);
+            if (h_surf == 0.0f && !stl_mesh.triangles.empty()) {
+                double edge_sum = 0.0;
+                int n_edges = 0;
+                for (const auto& tri : stl_mesh.triangles) {
+                    auto elen = [](const std::array<float,3>& a,
+                                   const std::array<float,3>& b) {
+                        float dx=a[0]-b[0], dy=a[1]-b[1], dz=a[2]-b[2];
+                        return (double)sqrtf(dx*dx + dy*dy + dz*dz);
+                    };
+                    edge_sum += elen(tri.v0, tri.v1) + elen(tri.v1, tri.v2)
+                              + elen(tri.v2, tri.v0);
+                    n_edges += 3;
+                }
+                h_surf = (float)(edge_sum / n_edges) / 5.0f;  // curvature_k default = 5
+            }
+            if (h_surf > 0.0f) {
+                graph_solver.set_ibm_surf_h(h_surf);
+                printf("simulate_gpu: IBM flat-surface h_surf=%.4g\n", (double)h_surf);
+            }
         } catch (const std::exception& e) {
             fprintf(stderr, "Warning: IBM STL load failed: %s\n", e.what());
         }

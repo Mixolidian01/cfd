@@ -173,6 +173,10 @@ struct GpuGraphSolver : IGpuSolver {
         ibm_list_.T_wall  = Tw;
     }
 
+    // Set flat-surface resolution target for IBM curvature AMR sensor.
+    // Call after set_gpu_ibm() and before build(). 0 = disabled.
+    void set_ibm_surf_h(float h) { ibm_list_.h_ibm_surf = h; }
+
     // FSI-1: attach a rigid body for moving-wall BC + 6-DOF ODE integration.
     // Call before build().  non-null → IBM must also be enabled.
     void set_rigid_body(RigidBody6DOF* rb) { rigid_body_ = rb; }

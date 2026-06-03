@@ -573,7 +573,7 @@ void k_ibm_curvature(const GpuIbmMeta* __restrict__ metas,
 __global__
 void k_ibm_augment_sensor(const GpuIbmMeta* __restrict__ metas,
                            const float* __restrict__ d_R_c_pool,
-                           float curvature_k, float refine_thr,
+                           float curvature_k, float h_ibm_surf, float refine_thr,
                            float* __restrict__ d_sensor, int n_leaves)
 {
     const int li = blockIdx.x;
@@ -590,9 +590,13 @@ void k_ibm_augment_sensor(const GpuIbmMeta* __restrict__ metas,
 
     float val = 0.0f;
     if (fabsf(m.d_sdf[flat]) < thr_sdf) {
+        // Curvature criterion: refine while h > R_c / curvature_k.
         const float rc = R_c[flat];
         if (rc < 1e29f)
             val = curvature_k * h / rc * refine_thr;
+        // Flat-surface criterion: refine while h > h_ibm_surf.
+        if (h_ibm_surf > 0.0f)
+            val = fmaxf(val, h / h_ibm_surf * refine_thr);
     }
 
     __shared__ float smax[GPU_NB * GPU_NB * GPU_NB];
@@ -612,6 +616,6 @@ void GpuIbmList::augment_sensor(float* d_sensor, float refine_thr,
     if (n_leaves == 0 || !d_R_c_pool || !d_metas) return;
     const dim3 block(GPU_NB, GPU_NB, GPU_NB);
     k_ibm_augment_sensor<<<n_leaves, block, 0, stream>>>(
-        d_metas, d_R_c_pool, curvature_k, refine_thr, d_sensor, n_leaves);
+        d_metas, d_R_c_pool, curvature_k, h_ibm_surf, refine_thr, d_sensor, n_leaves);
     CUDA_CHECK(cudaGetLastError());
 }

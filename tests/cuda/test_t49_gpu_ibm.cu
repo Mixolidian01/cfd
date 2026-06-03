@@ -301,6 +301,36 @@ int main() {
         if (g_pool.has_device(pb)) g_pool.free(pb);
     }
 
+    // ── I12: Flat-surface h_ibm_surf criterion ────────────────────────────────
+    // Set h_ibm_surf = 0.06 (< h=0.125) with the sphere BVH.
+    // Even if all R_c were ∞ (flat surface), the sensor should fire near the surface.
+    // We verify by calling augment_sensor on a zeroed sensor and checking it rises.
+    {
+        // Reuse ibm from the last build() (sphere, d_R_c_pool valid).
+        // Override h_ibm_surf to a value smaller than h_cell so signal > refine_thr.
+        const float h_ibm_surf_test = 0.06f;  // 0.06 < h_cell=0.125 → h/h_surf=2.08
+        ibm.h_ibm_surf = h_ibm_surf_test;
+
+        const float refine_thr_test = 0.05f;
+        float* d_sensor_test = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_sensor_test, ibm.n_leaves * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_sensor_test, 0, ibm.n_leaves * sizeof(float)));
+
+        ibm.augment_sensor(d_sensor_test, refine_thr_test, nullptr);
+        cudaDeviceSynchronize();
+
+        std::vector<float> h_sens(ibm.n_leaves);
+        CUDA_CHECK(cudaMemcpy(h_sens.data(), d_sensor_test,
+                              ibm.n_leaves * sizeof(float), cudaMemcpyDeviceToHost));
+        CUDA_CHECK(cudaFree(d_sensor_test));
+        ibm.h_ibm_surf = 0.0f;  // restore
+
+        bool any_triggered = false;
+        for (float s : h_sens) if (s > refine_thr_test) { any_triggered = true; break; }
+        check(any_triggered, "I12",
+              "Flat-surface h_ibm_surf criterion fires sensor near IBM surface");
+    }
+
     // ── W5: winding-number sign on a non-convex torus ─────────────────────────
     // Torus: major radius R=0.30, minor radius r=0.09, centred at (0.5,0.5,0.5).
     // Domain [0,1]^3, 1 leaf block → h = 1/NB = 0.125.

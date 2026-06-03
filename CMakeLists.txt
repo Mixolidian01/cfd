@@ -425,7 +425,7 @@ if(NVCC)
              ${_S}/models/bn_flux_correction.cpp
              ${_GPU_POOL}
     )
-    add_nvcc_gate(TARGET t49 BIN t49_ibm_gpu COMMENT "IBM GPU ghost-cell STL import + pre-refine (I5-I11)"
+    add_nvcc_gate(TARGET t49 BIN t49_ibm_gpu COMMENT "IBM GPU ghost-cell STL import + pre-refine (I5-I12)"
         EXTRA_FLAGS ${_WNO}
         SRCS ${_T}/test_t49_gpu_ibm.cu
              ${_S}/models/ibm.cpp
