@@ -335,5 +335,8 @@ int main() {
     test_gui_endpoints(streamer.port());
 
     solver_thread.join();
-    return result | (g_fails > 0 ? 1 : 0);
+    int final_fail = result | (g_fails > 0 ? 1 : 0);
+    std::fprintf(stdout, "\n%s  14 tests (S1-S4 + GE1-GE10)\n",
+                 final_fail == 0 ? "ALL PASS" : "SOME FAIL");
+    return final_fail;
 }
