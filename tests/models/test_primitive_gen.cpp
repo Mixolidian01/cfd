@@ -41,6 +41,20 @@ int main() {
     auto cyl = make_cylinder(0.f,0.f, 0.f,1.f, 0.5f, 16);
     check(cyl.triangles.size() == 64, "PG4", "cylinder: 64 triangles");
 
+    // PG4b: cylinder side normals point outward from axis
+    bool cok = true;
+    float ccx = 0.f, ccy = 0.f; // cylinder centred at (0,0) for the test call
+    for (const auto& t : cyl.triangles) {
+        float mx = (t.v0[0]+t.v1[0]+t.v2[0])/3.f - ccx;
+        float my = (t.v0[1]+t.v1[1]+t.v2[1])/3.f - ccy;
+        // Only check side faces: those whose centroid is not at z=0 or z=1 extremes
+        float mz = (t.v0[2]+t.v1[2]+t.v2[2])/3.f;
+        if (mz < 0.05f || mz > 0.95f) continue; // skip caps
+        float dot = t.normal[0]*mx + t.normal[1]*my;
+        if (dot < 0.f) { cok=false; break; }
+    }
+    check(cok, "PG4b", "cylinder: outward side normals");
+
     // Box normals axis-aligned
     bool bok = true;
     for (const auto& t : box.triangles) {
@@ -50,6 +64,6 @@ int main() {
     }
     check(bok, "PG5", "box: axis-aligned normals");
 
-    printf("\n%s  6 tests\n", nfail==0?"ALL PASS":"SOME FAIL");
+    printf("\n%s  7 tests\n", nfail==0?"ALL PASS":"SOME FAIL");
     return nfail;
 }

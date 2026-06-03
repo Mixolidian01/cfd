@@ -91,7 +91,7 @@ TriangleMesh make_cylinder(float cx, float cy, float cz_lo, float cz_hi, float r
     for (int i = 0; i < nseg; ++i) {
         A3 b0 = ring(cz_lo, i), b1 = ring(cz_lo, i+1);
         A3 t0 = ring(cz_hi, i), t1 = ring(cz_hi, i+1);
-        auto sn = norm3(cross3(sub3(t0,b0), sub3(b1,b0)));
+        auto sn = norm3(cross3(sub3(b1,b0), sub3(t0,b0)));
         m.triangles.push_back(make_tri(b0,t1,b1,sn));
         m.triangles.push_back(make_tri(b0,t0,t1,sn));
         A3 tc = {cx,cy,cz_hi};
