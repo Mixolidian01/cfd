@@ -7,6 +7,7 @@
 # Options:
 #   --backend cpu|gpu|mpi   execution path (default: cpu)
 #   --ranks N               number of MPI ranks (mpi backend only, default: 2)
+#   --port N                override stream_port in config (gpu backend only)
 #   --build-dir DIR         build directory (default: <repo_root>/build)
 #   -h, --help              print this message and exit
 #
@@ -38,6 +39,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 BACKEND="cpu"
 RANKS=2
+PORT=""
 CONFIG=""
 BUILD_DIR="$REPO_ROOT/build"
 
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --backend)   BACKEND="$2";   shift 2 ;;
         --ranks)     RANKS="$2";     shift 2 ;;
+        --port)      PORT="$2";      shift 2 ;;
         --build-dir) BUILD_DIR="$2"; shift 2 ;;
         -h|--help)   usage; exit 0 ;;
         --)          shift; break ;;
@@ -118,6 +121,18 @@ case "$BACKEND" in
             echo "Warning: nvidia-smi not found — GPU availability unknown." >&2
         fi
         echo "launch.sh: backend=gpu  config=$CONFIG"
+        if [[ -n "$PORT" ]]; then
+            TMPCONFIG=$(mktemp /tmp/launch_cfg_XXXXXX.json)
+            trap 'rm -f "$TMPCONFIG"' EXIT
+            python3 -c "
+import json, sys
+cfg = json.load(open('$CONFIG'))
+cfg['stream_port'] = $PORT
+json.dump(cfg, open('$TMPCONFIG','w'))
+"
+            echo "launch.sh: stream_port=$PORT (injected into temp config)"
+            exec "$BIN" "$TMPCONFIG"
+        fi
         exec "$BIN" "$CONFIG"
         ;;
 
