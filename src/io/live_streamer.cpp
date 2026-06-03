@@ -576,6 +576,8 @@ void LiveStreamer::handle_connection(int cfd) {
     const bool is_post_steer      = (req.rfind("POST /steer",      0) == 0);
     const bool is_get_geometry    = (req.rfind("GET /geometry",    0) == 0);
     const bool is_post_primitives = (req.rfind("POST /primitives", 0) == 0);
+    const bool is_post_launch   = (req.rfind("POST /launch",  0) == 0);
+    const bool is_get_status    = (req.rfind("GET /status",   0) == 0);
 
     if (is_get_root) {
         handle_get_root(cfd);
@@ -607,6 +609,11 @@ void LiveStreamer::handle_connection(int cfd) {
     } else if (is_post_primitives) {
         handle_post_primitives(cfd, req);
         ::close(cfd);
+    } else if (is_post_launch) {
+        handle_post_launch(cfd, req);
+        ::close(cfd);
+    } else if (is_get_status) {
+        handle_get_status(cfd);
     } else {
         const char* r404 =
             "HTTP/1.1 404 Not Found\r\n"
@@ -621,7 +628,9 @@ void LiveStreamer::handle_connection(int cfd) {
 // =============================================================================
 
 void LiveStreamer::handle_get_root(int cfd) {
-    std::string html = gui_html(cfg_.port);
+    std::string html = (phase_.load(std::memory_order_acquire) == 0)
+                       ? launcher_html(cfg_.port)
+                       : gui_html(cfg_.port);
     char hdr[256];
     int hlen = std::snprintf(hdr, sizeof(hdr),
         "HTTP/1.1 200 OK\r\n"
@@ -2244,4 +2253,58 @@ void LiveStreamer::handle_post_primitives(int cfd, const std::string& req_with_b
     const char* r200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n"
                        "Access-Control-Allow-Origin: *\r\n\r\n";
     http_safe_send(cfd, r200, std::strlen(r200));
+}
+
+// =============================================================================
+// LiveStreamer::handle_post_launch — receive launch JSON, signal main()
+// =============================================================================
+
+void LiveStreamer::handle_post_launch(int cfd, const std::string& req) {
+    // Extract Content-Length
+    size_t cl_pos = req.find("Content-Length:");
+    if (cl_pos == std::string::npos) cl_pos = req.find("content-length:");
+    int body_len = 0;
+    if (cl_pos != std::string::npos)
+        body_len = std::atoi(req.c_str() + cl_pos + 15);
+
+    // Body follows \r\n\r\n
+    std::string body;
+    size_t hdr_end = req.find("\r\n\r\n");
+    if (hdr_end != std::string::npos)
+        body = req.substr(hdr_end + 4);
+
+    // Drain remainder if needed
+    while (body_len > 0 && (int)body.size() < body_len) {
+        char buf[4096]; int n = ::recv(cfd, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        body.append(buf, n);
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(launch_mtx_);
+        launch_json_ = body;
+    }
+    launch_ready_.store(true, std::memory_order_release);
+
+    const char* hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                      "Content-Length: 10\r\n\r\n{\"ok\":true}";
+    ::send(cfd, hdr, std::strlen(hdr), 0);
+}
+
+// =============================================================================
+// LiveStreamer::handle_get_status — return current phase as JSON
+// =============================================================================
+
+void LiveStreamer::handle_get_status(int cfd) {
+    const char* state = (phase_.load(std::memory_order_acquire) == 0)
+                        ? "waiting" : "running";
+    char body[64];
+    int blen = std::snprintf(body, sizeof(body), "{\"state\":\"%s\"}", state);
+    char hdr[256];
+    int hlen = std::snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        "Content-Length: %d\r\n\r\n", blen);
+    ::send(cfd, hdr, hlen, 0);
+    ::send(cfd, body, blen, 0);
+    ::close(cfd);
 }

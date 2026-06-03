@@ -46,6 +46,7 @@
 const char* viewer_html();
 // Free function defined in gui_html.cpp — 5-tab GUI.
 std::string gui_html(int port);
+std::string launcher_html(int port);
 
 // ── Variable selector ────────────────────────────────────────────────────────
 enum class StreamVar : uint8_t {
@@ -188,6 +189,18 @@ public:
         geom_cache_ = mesh;
     }
 
+    // Launch state — used in --launcher mode
+    bool pop_launch(std::string& json_out) noexcept {
+        if (!launch_ready_.load(std::memory_order_acquire)) return false;
+        std::lock_guard<std::mutex> lk(launch_mtx_);
+        json_out = std::move(launch_json_);
+        launch_ready_.store(false, std::memory_order_release);
+        return true;
+    }
+    void set_running() noexcept {
+        phase_.store(1, std::memory_order_release);
+    }
+
 private:
     StreamConfig cfg_;
     mutable std::mutex cfg_mtx_;
@@ -226,6 +239,12 @@ private:
     TriangleMesh geom_cache_;
     std::mutex   geom_mtx_;
 
+    // ── Launcher state ────────────────────────────────────────────────────────
+    std::atomic<int>  phase_{0};          // 0=waiting, 1=running
+    std::atomic<bool> launch_ready_{false};
+    std::string       launch_json_;
+    std::mutex        launch_mtx_;
+
     std::string  sim_cfg_json_;
     std::mutex   sim_cfg_mtx_;
 
@@ -247,6 +266,8 @@ private:
     void handle_post_steer      (int cfd, const std::string& req_with_body);
     void handle_get_geometry    (int cfd);
     void handle_post_primitives (int cfd, const std::string& req_with_body);
+    void handle_post_launch     (int cfd, const std::string& req_with_body);
+    void handle_get_status      (int cfd);
 
     void build_frame    (const BlockTree&, int step, double t, FrameBuffer&);
     void serialize_frame(const FrameBuffer&, std::vector<uint8_t>& out);
