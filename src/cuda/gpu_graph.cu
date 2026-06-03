@@ -364,16 +364,10 @@ void GpuGraphSolver::_fsi_stage_update(cudaStream_t s, double dt_stage, int stag
     // ibm_list_.exec() on the next stage.
 }
 
-void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
+void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s, double h_dt) {
     constexpr int TPB = 256;
     const double* d_dt = cfl_list.d_dt;
     const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
-
-    // FSI-1: fetch host dt for the rigid-body ODE step (advanced once per RK3 step
-    // on stage_idx==2 inside _fsi_stage_update).  cfl_list.exec already wrote d_dt.
-    double h_dt = 0.0;
-    if ((rigid_body_ || rigid_prescribed_) && ibm_enabled_)
-        CUDA_CHECK(cudaMemcpy(&h_dt, cfl_list.d_dt, sizeof(double), cudaMemcpyDeviceToHost));
 
     if (acdi_enabled_) acdi_list_.save_phin(s);
     k_save_qn<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
@@ -567,7 +561,7 @@ double GpuGraphSolver::advance(const BlockTree& tree, double cfl) {
     const bool use_explicit = !graph_valid || mpi_halo_.active();
 
     if (use_explicit) {
-        _run_rk3_explicit(stream);
+        _run_rk3_explicit(stream, dt);
         if (sgs_enabled || dyn_sgs_enabled_) {
             ghost_list.exec(stream);
             if (ibm_enabled_) ibm_list_.exec(stream);

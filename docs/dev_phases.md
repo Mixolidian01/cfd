@@ -89,9 +89,9 @@ These were not in the original CLAUDE.md phase list; implemented 2026-05-30.
 
 | Phase | Title | Status | Gate | Commit | Date |
 |-------|-------|--------|------|--------|------|
-| C1 | VTK XML binary writer + MetricsBus VtkChannel | ⬜ TODO | t52 | — | — |
-| FSI-1 | Moving-wall IBM + rigid 6-DOF ODE | ⬜ TODO | t53 | — | — |
-| FSI-2 | Corotational beam FEM (JAX) + Aitken partitioned coupling | ⬜ TODO | t54 | — | — |
+| C1 | VTK XML binary writer + MetricsBus VtkChannel | ✅ DONE | t52 | 4809624 | 2026-06-03 |
+| FSI-1 | Moving-wall IBM + rigid 6-DOF ODE | ✅ DONE | t53 | 49b38fc | 2026-06-03 |
+| FSI-2 | Corotational beam FEM (JAX) + Aitken partitioned coupling | ✅ DONE | t54 | 652a80c | 2026-06-03 |
 
 > Plan: `docs/superpowers/plans/2026-06-02-fsi-viz-roadmap.md`
 

@@ -279,7 +279,7 @@ struct GpuGraphSolver : IGpuSolver {
     double      metrics_t_    = 0.0;
 
 private:
-    void _run_rk3_explicit(cudaStream_t s);
+    void _run_rk3_explicit(cudaStream_t s, double h_dt);
     void _capture_graphs();
     void _destroy_graphs();
     // P14.4: explicit per-stage kernel sequence with Berger-Colella CF correction.

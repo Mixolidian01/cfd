@@ -746,6 +746,7 @@ add_custom_target(ba
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
             test_ensemble test_scheme_select test_t38_adjoint test_t42_adjoint_rk3
             test_rect_domain test_t42_rect_ns test_multi_root
+            t52 t53 t54
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
