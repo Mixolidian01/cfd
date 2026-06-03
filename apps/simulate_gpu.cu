@@ -19,6 +19,8 @@
 #include "io/live_streamer.hpp"
 #include "io/checkpoint.hpp"
 #include "models/sgs.hpp"
+#include "metrics/metrics_bus.hpp"
+#include "fsi/rigid_body.hpp"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -233,6 +235,20 @@ int main(int argc, char* argv[])
     sc.ibm.w_wall   = cfg.d("ibm_w_wall",   0.0);
     sc.ibm.T_wall   = cfg.d("ibm_T_wall",   300.0);
 
+    // === FSI rigid body ===
+    const double fsi_mass        = cfg.d("fsi_mass",       0.0);
+    const double fsi_Ix          = cfg.d("fsi_Ix",         1.0);
+    const double fsi_Iy          = cfg.d("fsi_Iy",         1.0);
+    const double fsi_Iz          = cfg.d("fsi_Iz",         1.0);
+    const bool   fsi_prescribed  = cfg.b("fsi_prescribed", false);
+
+    // === VTK / Metrics ===
+    sc.metrics.vtk_prefix   = cfg.str("vtk_prefix",    "");
+    sc.metrics.vtk_interval = cfg.i("vtk_interval",    100);
+    sc.metrics.output_dir   = cfg.str("metrics_dir",   ".");
+    sc.metrics.global_interval   = cfg.i("metrics_interval", 10);
+    sc.metrics.residual_interval = cfg.i("metrics_residual", 0);
+
     // === Combustion / Arrhenius ===
     sc.physics.combustion_enabled = cfg.b("combustion",      false);
     sc.physics.arrhenius.A        = cfg.d("combustion_A",    1e4);
@@ -343,6 +359,20 @@ int main(int argc, char* argv[])
             fprintf(stderr, "Warning: IBM STL load failed: %s\n", e.what());
         }
     }
+    // === FSI rigid body (requires IBM) ===
+    std::unique_ptr<RigidBody6DOF> rigid_body;
+    if (sc.ibm.enabled && fsi_mass > 0.0) {
+        rigid_body = std::make_unique<RigidBody6DOF>();
+        rigid_body->mass = fsi_mass;
+        rigid_body->I[0] = fsi_Ix;
+        rigid_body->I[1] = fsi_Iy;
+        rigid_body->I[2] = fsi_Iz;
+        graph_solver.set_rigid_body(rigid_body.get());
+        graph_solver.set_rigid_prescribed(fsi_prescribed);
+        printf("simulate_gpu: FSI rigid body  mass=%.4g  I=[%.4g,%.4g,%.4g]%s\n",
+               fsi_mass, fsi_Ix, fsi_Iy, fsi_Iz,
+               fsi_prescribed ? "  [prescribed]" : "");
+    }
     graph_solver.set_ducros(sc.numerics.ducros_p_threshold,
                             1.0 / sc.numerics.ducros_blend_width);
     graph_solver.set_body_force(sc.physics.body_force[0],
@@ -406,6 +436,28 @@ int main(int argc, char* argv[])
                stream_port, sv.c_str(), (int)scfg.axis);
     }
 
+    // ── VTK snapshot buffer (when VTK requested but no live stream) ──────────
+    if (!sc.metrics.vtk_prefix.empty() && !snap_buf) {
+        const int n_leaves_max = static_cast<int>(solver.tree.leaf_indices().size());
+        snap_buf = std::make_unique<GpuSnapshotBuffer>();
+        snap_buf->alloc(std::max(n_leaves_max, 64));
+        snap_buf->var_id   = 0;   // rho
+        snap_buf->axis     = 2;
+        snap_buf->norm_pos = 0.5f;
+        snap_buf->domain_L = static_cast<float>(domain_L);
+        solver.set_gpu_snapshot(snap_buf.get());
+        gpu_build();   // re-build so _upload_snap_metas() populates h_metas
+    }
+
+    // ── MetricsBus (VTK, residuals, surface forces, probes) ──────────────────
+    MetricsBus metrics_bus;
+    if (!sc.metrics.vtk_prefix.empty() || sc.metrics.residual_interval > 0) {
+        graph_solver.build_metrics(&metrics_bus, sc.metrics,
+                                   snap_buf ? snap_buf->h_metas : nullptr);
+        printf("simulate_gpu: metrics active  vtk_prefix='%s'  vtk_interval=%d\n",
+               sc.metrics.vtk_prefix.c_str(), sc.metrics.vtk_interval);
+    }
+
     // ── Time integration ───────────────────────────────────────────────────────
     printf("simulate_gpu: running  t_end=%.4g  max_steps=%d  cfl=%.3g  sgs=%s\n",
            sc.time.t_end, sc.time.max_steps, sc.time.cfl,
@@ -413,12 +465,19 @@ int main(int argc, char* argv[])
 
     if (ckpt_intvl > 0 && !ckpt_save.empty()) {
         while (solver.t < sc.time.t_end && solver.step < sc.time.max_steps) {
-            solver.advance();
+            double last_dt = solver.advance();
+            if (metrics_bus.active())
+                metrics_bus.write(solver.step, solver.t, last_dt);
             if (solver.step % ckpt_intvl == 0) {
                 std::string path = ckpt_save + "." + std::to_string(solver.step);
                 checkpoint_save(solver, path);
                 printf("simulate_gpu: checkpoint → %s\n", path.c_str());
             }
+        }
+    } else if (metrics_bus.active()) {
+        while (solver.t < sc.time.t_end && solver.step < sc.time.max_steps) {
+            double last_dt = solver.advance();
+            metrics_bus.write(solver.step, solver.t, last_dt);
         }
     } else {
         solver.run();
