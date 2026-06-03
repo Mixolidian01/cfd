@@ -571,6 +571,11 @@ void LiveStreamer::handle_connection(int cfd) {
     const bool is_get_metrics   = (req.rfind("GET /metrics",        0) == 0);
     const bool is_post_probe    = (req.rfind("POST /probe",          0) == 0);
     const bool is_post_cfg      = (req.rfind("POST /config", 0) == 0);
+    const bool is_get_sim_cfg     = (req.rfind("GET /sim-config",  0) == 0);
+    const bool is_post_sim_cfg    = (req.rfind("POST /sim-config", 0) == 0);
+    const bool is_post_steer      = (req.rfind("POST /steer",      0) == 0);
+    const bool is_get_geometry    = (req.rfind("GET /geometry",    0) == 0);
+    const bool is_post_primitives = (req.rfind("POST /primitives", 0) == 0);
 
     if (is_get_root) {
         handle_get_root(cfd);
@@ -588,6 +593,19 @@ void LiveStreamer::handle_connection(int cfd) {
         handle_post_probe(cfd, req);  // closes cfd inside
     } else if (is_post_cfg) {
         handle_post_config(cfd, req);
+        ::close(cfd);
+    } else if (is_get_sim_cfg) {
+        handle_get_sim_config(cfd);
+    } else if (is_post_sim_cfg) {
+        handle_post_sim_config(cfd, req);
+        ::close(cfd);
+    } else if (is_post_steer) {
+        handle_post_steer(cfd, req);
+        ::close(cfd);
+    } else if (is_get_geometry) {
+        handle_get_geometry(cfd);
+    } else if (is_post_primitives) {
+        handle_post_primitives(cfd, req);
         ::close(cfd);
     } else {
         const char* r404 =
@@ -2096,4 +2114,134 @@ void LiveStreamer::set_axis(uint8_t a) noexcept {
 void LiveStreamer::set_pos(double p) noexcept {
     std::lock_guard<std::mutex> lk(cfg_mtx_);
     cfg_.pos = p;
+}
+
+// =============================================================================
+// GUI Task 3 — five new endpoint handlers
+// =============================================================================
+
+void LiveStreamer::handle_get_sim_config(int cfd) {
+    std::string body;
+    {
+        std::lock_guard<std::mutex> lk(sim_cfg_mtx_);
+        body = sim_cfg_json_.empty() ? "{}" : sim_cfg_json_;
+    }
+    char hdr[256];
+    int hlen = std::snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        "Content-Length: %zu\r\nAccess-Control-Allow-Origin: *\r\n"
+        "Connection: close\r\n\r\n", body.size());
+    http_safe_send(cfd, hdr,  static_cast<size_t>(hlen));
+    http_safe_send(cfd, body.c_str(), body.size());
+    ::close(cfd);
+}
+
+void LiveStreamer::handle_post_sim_config(int cfd, const std::string& req_with_body) {
+    int cl = http_content_length(req_with_body);
+    std::string body;
+    auto p = req_with_body.find("\r\n\r\n");
+    if (p != std::string::npos) body = req_with_body.substr(p + 4);
+    while ((int)body.size() < cl) {
+        char tmp[512]; int want = std::min(cl-(int)body.size(), (int)sizeof(tmp));
+        ssize_t n = ::recv(cfd, tmp, static_cast<size_t>(want), 0);
+        if (n <= 0) break;
+        body.append(tmp, static_cast<size_t>(n));
+    }
+    {
+        std::lock_guard<std::mutex> lk(sim_cfg_mtx_);
+        sim_cfg_json_ = body;
+    }
+    const char* r200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n"
+                       "Access-Control-Allow-Origin: *\r\n\r\n";
+    http_safe_send(cfd, r200, std::strlen(r200));
+}
+
+void LiveStreamer::handle_post_steer(int cfd, const std::string& req_with_body) {
+    int cl = http_content_length(req_with_body);
+    std::string body;
+    auto p = req_with_body.find("\r\n\r\n");
+    if (p != std::string::npos) body = req_with_body.substr(p + 4);
+    while ((int)body.size() < cl) {
+        char tmp[256]; int want = std::min(cl-(int)body.size(), (int)sizeof(tmp));
+        ssize_t n = ::recv(cfd, tmp, static_cast<size_t>(want), 0);
+        if (n <= 0) break;
+        body.append(tmp, static_cast<size_t>(n));
+    }
+    auto found = [&](const char* s){ return body.find(s) != std::string::npos; };
+    if      (found("pause"))      steer_paused_.store(true,  std::memory_order_release);
+    else if (found("resume"))     steer_paused_.store(false, std::memory_order_release);
+    else if (found("checkpoint")) steer_checkpoint_.store(true, std::memory_order_release);
+    else if (found("regrid"))     steer_regrid_.store(true,     std::memory_order_release);
+    const char* r200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n"
+                       "Access-Control-Allow-Origin: *\r\n\r\n";
+    http_safe_send(cfd, r200, std::strlen(r200));
+}
+
+void LiveStreamer::handle_get_geometry(int cfd) {
+    TriangleMesh geom;
+    {
+        std::lock_guard<std::mutex> lk(geom_mtx_);
+        geom = geom_cache_;
+    }
+    std::string body;
+    body.reserve(geom.triangles.size() * 72 + 64);
+    body += "{\"count\":";
+    body += std::to_string(geom.triangles.size() * 3);
+    body += ",\"positions\":[";
+    for (size_t i = 0; i < geom.triangles.size(); ++i) {
+        const auto& t = geom.triangles[i];
+        for (float v : t.v0) { body += std::to_string(v); body += ','; }
+        for (float v : t.v1) { body += std::to_string(v); body += ','; }
+        for (float v : t.v2) { body += std::to_string(v); body += ','; }
+    }
+    if (!geom.triangles.empty()) body.pop_back();
+    body += "],\"normals\":[";
+    for (size_t i = 0; i < geom.triangles.size(); ++i) {
+        const auto& t = geom.triangles[i];
+        for (int rep = 0; rep < 3; ++rep)
+            for (float v : t.normal) { body += std::to_string(v); body += ','; }
+    }
+    if (!geom.triangles.empty()) body.pop_back();
+    body += "]}";
+    char hdr[256];
+    int hlen = std::snprintf(hdr, sizeof(hdr),
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+        "Content-Length: %zu\r\nAccess-Control-Allow-Origin: *\r\n"
+        "Connection: close\r\n\r\n", body.size());
+    http_safe_send(cfd, hdr,  static_cast<size_t>(hlen));
+    http_safe_send(cfd, body.c_str(), body.size());
+    ::close(cfd);
+}
+
+void LiveStreamer::handle_post_primitives(int cfd, const std::string& req_with_body) {
+    int cl = http_content_length(req_with_body);
+    std::string body;
+    auto p = req_with_body.find("\r\n\r\n");
+    if (p != std::string::npos) body = req_with_body.substr(p + 4);
+    while ((int)body.size() < cl) {
+        char tmp[512]; int want = std::min(cl-(int)body.size(), (int)sizeof(tmp));
+        ssize_t n = ::recv(cfd, tmp, static_cast<size_t>(want), 0);
+        if (n <= 0) break;
+        body.append(tmp, static_cast<size_t>(n));
+    }
+    TriangleMesh mesh;
+    auto dv = [&](const char* k, double def) {
+        double v = def; json_double(body, k, v); return static_cast<float>(v);
+    };
+    if (body.find("\"sphere\"") != std::string::npos) {
+        mesh = make_sphere(dv("cx",0.5), dv("cy",0.5), dv("cz",0.5), dv("r",0.2));
+    } else if (body.find("\"box\"") != std::string::npos) {
+        mesh = make_box(dv("x0",0.1), dv("y0",0.1), dv("z0",0.1),
+                        dv("x1",0.9), dv("y1",0.9), dv("z1",0.9));
+    } else if (body.find("\"cylinder\"") != std::string::npos) {
+        mesh = make_cylinder(dv("cx",0.5), dv("cy",0.5),
+                             dv("cz0",0.1), dv("cz1",0.9), dv("r",0.2));
+    }
+    {
+        std::lock_guard<std::mutex> lk(geom_mtx_);
+        geom_cache_ = std::move(mesh);
+    }
+    const char* r200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n"
+                       "Access-Control-Allow-Origin: *\r\n\r\n";
+    http_safe_send(cfd, r200, std::strlen(r200));
 }
