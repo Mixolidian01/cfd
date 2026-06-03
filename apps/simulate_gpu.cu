@@ -21,6 +21,7 @@
 #include "models/sgs.hpp"
 #include "metrics/metrics_bus.hpp"
 #include "fsi/rigid_body.hpp"
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +30,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <cuda_runtime.h>
 
 // =============================================================================
@@ -459,6 +461,10 @@ int main(int argc, char* argv[])
         else                    scfg.var = StreamVar::RHO;
 
         streamer = std::make_unique<LiveStreamer>(scfg);
+        if (!sc.ibm.stl_path.empty()) {
+            TriangleMesh gui_geom = load_mesh(sc.ibm.stl_path);
+            streamer->set_geometry(gui_geom);
+        }
         solver.set_streamer(streamer.get());
 
         // Option A/C: allocate GPU snapshot buffer — zero-copy slice + GPU metrics.
@@ -506,6 +512,13 @@ int main(int argc, char* argv[])
 
     if (ckpt_intvl > 0 && !ckpt_save.empty()) {
         while (solver.t < sc.time.t_end && solver.step < sc.time.max_steps) {
+            while (streamer && streamer->is_paused())
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (streamer && streamer->pop_checkpoint() && !ckpt_save.empty()) {
+                std::string path = ckpt_save + "." + std::to_string(solver.step) + ".steer";
+                checkpoint_save(solver, path);
+                printf("simulate_gpu: steer checkpoint → %s\n", path.c_str());
+            }
             double last_dt = solver.advance();
             if (metrics_bus.active())
                 metrics_bus.write(solver.step, solver.t, last_dt);
@@ -517,6 +530,12 @@ int main(int argc, char* argv[])
         }
     } else if (metrics_bus.active()) {
         while (solver.t < sc.time.t_end && solver.step < sc.time.max_steps) {
+            while (streamer && streamer->is_paused())
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            if (streamer && streamer->pop_checkpoint() && !ckpt_save.empty()) {
+                std::string path = ckpt_save + "." + std::to_string(solver.step) + ".steer";
+                checkpoint_save(solver, path);
+            }
             double last_dt = solver.advance();
             metrics_bus.write(solver.step, solver.t, last_dt);
         }
