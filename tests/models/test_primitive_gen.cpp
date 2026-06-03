@@ -26,6 +26,17 @@ int main() {
     }
     check(nok, "PG3", "sphere: unit normals");
 
+    // PG3b: sphere normals point outward
+    bool outok = true;
+    for (const auto& t : sph.triangles) {
+        float cx = (t.v0[0]+t.v1[0]+t.v2[0])/3.f;
+        float cy = (t.v0[1]+t.v1[1]+t.v2[1])/3.f;
+        float cz = (t.v0[2]+t.v1[2]+t.v2[2])/3.f;
+        float dot = t.normal[0]*cx + t.normal[1]*cy + t.normal[2]*cz; // sphere centred at 0
+        if (dot < 0.f) { outok=false; break; }
+    }
+    check(outok, "PG3b", "sphere: outward-facing normals");
+
     // Cylinder nseg=16: nseg*2 side + nseg top + nseg bottom = 64
     auto cyl = make_cylinder(0.f,0.f, 0.f,1.f, 0.5f, 16);
     check(cyl.triangles.size() == 64, "PG4", "cylinder: 64 triangles");
@@ -39,6 +50,6 @@ int main() {
     }
     check(bok, "PG5", "box: axis-aligned normals");
 
-    printf("\n%s  5 tests\n", nfail==0?"ALL PASS":"SOME FAIL");
+    printf("\n%s  6 tests\n", nfail==0?"ALL PASS":"SOME FAIL");
     return nfail;
 }

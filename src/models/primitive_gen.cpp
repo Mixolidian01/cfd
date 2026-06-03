@@ -45,17 +45,17 @@ TriangleMesh make_sphere(float cx, float cy, float cz, float r, int nlon, int nl
     };
 
     for (int i = 0; i < nlon; ++i)
-        push(0, idx(1,i+1), idx(1,i));
+        push(0, idx(1,i), idx(1,i+1));
 
     for (int j = 1; j < nlat-1; ++j)
         for (int i = 0; i < nlon; ++i) {
-            push(idx(j,i), idx(j,i+1), idx(j+1,i+1));
-            push(idx(j,i), idx(j+1,i+1), idx(j+1,i));
+            push(idx(j,i), idx(j+1,i+1), idx(j,i+1));
+            push(idx(j,i), idx(j+1,i), idx(j+1,i+1));
         }
 
     int sp = (int)V.size()-1;
     for (int i = 0; i < nlon; ++i)
-        push(sp, idx(nlat-1,i), idx(nlat-1,i+1));
+        push(sp, idx(nlat-1,i+1), idx(nlat-1,i));
 
     return m;
 }
@@ -91,15 +91,15 @@ TriangleMesh make_cylinder(float cx, float cy, float cz_lo, float cz_hi, float r
     for (int i = 0; i < nseg; ++i) {
         A3 b0 = ring(cz_lo, i), b1 = ring(cz_lo, i+1);
         A3 t0 = ring(cz_hi, i), t1 = ring(cz_hi, i+1);
-        auto sn = norm3(cross3(sub3(b1,b0), sub3(t0,b0)));
-        m.triangles.push_back(make_tri(b0,b1,t1,sn));
-        m.triangles.push_back(make_tri(b0,t1,t0,sn));
+        auto sn = norm3(cross3(sub3(t0,b0), sub3(b1,b0)));
+        m.triangles.push_back(make_tri(b0,t1,b1,sn));
+        m.triangles.push_back(make_tri(b0,t0,t1,sn));
         A3 tc = {cx,cy,cz_hi};
-        auto tn = norm3(cross3(sub3(t1,t0), sub3(tc,t0)));
-        m.triangles.push_back(make_tri(t0,t1,tc,tn));
+        auto tn = std::array<float,3>{0.f, 0.f, 1.f};
+        m.triangles.push_back(make_tri(t0,tc,t1,tn));
         A3 bc = {cx,cy,cz_lo};
-        auto bn = norm3(cross3(sub3(bc,b0), sub3(b1,b0)));
-        m.triangles.push_back(make_tri(b0,bc,b1,bn));
+        auto bn = std::array<float,3>{0.f, 0.f, -1.f};
+        m.triangles.push_back(make_tri(b0,b1,bc,bn));
     }
     return m;
 }
