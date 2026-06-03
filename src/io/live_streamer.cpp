@@ -2287,7 +2287,7 @@ void LiveStreamer::handle_post_launch(int cfd, const std::string& req) {
     launch_ready_.store(true, std::memory_order_release);
 
     const char* hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                      "Content-Length: 10\r\n\r\n{\"ok\":true}";
+                      "Content-Length: 11\r\n\r\n{\"ok\":true}";
     ::send(cfd, hdr, std::strlen(hdr), 0);
 }
 
