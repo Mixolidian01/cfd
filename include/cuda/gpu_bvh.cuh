@@ -1,5 +1,5 @@
 #pragma once
-// gpu_bvh.cuh — Flat AABB BVH built on CPU from an STL mesh, uploaded to GPU.
+// gpu_bvh.cuh — Flat AABB BVH built on CPU from a triangle mesh, uploaded to GPU.
 //
 // Layout:
 //   Interior node: left >= 0, right >= 0  (child indices into nodes[])
@@ -9,7 +9,7 @@
 // "reserve slot first, fill children, then fill AABB" order so that the root
 // is always at index 0.
 
-#include "models/stl_loader.hpp"
+#include "models/mesh_loader.hpp"
 #include <cuda_runtime.h>
 #include <vector>
 
@@ -44,8 +44,8 @@ struct GpuBvh {
     GpuBvh& operator=(const GpuBvh&) = delete;
     ~GpuBvh();
 
-    // Build BVH on CPU from StlMesh, then upload all data to device.
-    void build(const StlMesh& mesh);
+    // Build BVH on CPU from a TriangleMesh, then upload all data to device.
+    void build(const TriangleMesh& mesh);
 
     bool ready() const noexcept { return n_nodes > 0; }
 };

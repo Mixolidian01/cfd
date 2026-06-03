@@ -13,7 +13,7 @@
 #include "cuda/gpu_graph.cuh"
 #include "cuda/gpu_ibm.cuh"
 #include "cuda/gpu_bvh.cuh"
-#include "models/stl_loader.hpp"
+#include "models/mesh_loader.hpp"
 #include "gpu_pool.hpp"
 #include "mesh/bc_types.hpp"        // bc_to_int()
 #include "io/live_streamer.hpp"
@@ -351,7 +351,7 @@ int main(int argc, char* argv[])
             uint8_t bc = 0; // NoSlip
             if (sc.ibm.wall_bc == "isothermal") bc = 2;
             ibm_bvh = std::make_unique<GpuBvh>();
-            StlMesh stl_mesh = load_stl(sc.ibm.stl_path);
+            TriangleMesh stl_mesh = load_mesh(sc.ibm.stl_path);
             ibm_bvh->build(stl_mesh);
             graph_solver.set_gpu_ibm(ibm_bvh.get(), bc,
                                      (float)sc.ibm.u_wall, (float)sc.ibm.v_wall,

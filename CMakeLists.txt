@@ -236,7 +236,8 @@ if(NVCC)
         ${_S}/cuda/gpu_mpi_halo.cu ${_S}/cuda/gpu_amr.cu
         ${_S}/cuda/gpu_snapshot.cu ${_S}/cuda/gpu_acdi.cu
         ${_S}/cuda/gpu_metrics.cu  ${_S}/metrics/metrics_bus.cu
-        ${_S}/models/stl_loader.cpp ${_S}/cuda/gpu_bvh.cu ${_S}/cuda/gpu_ibm.cu
+        ${_S}/models/stl_loader.cpp ${_S}/models/mesh_loader.cpp
+        ${_S}/cuda/gpu_bvh.cu ${_S}/cuda/gpu_ibm.cu
         ${_S}/cuda/gpu_wmles.cu    ${_S}/models/wall_model.cpp
         ${_S}/fsi/rigid_body.cpp
         ${_GPU_BASE}
@@ -323,7 +324,8 @@ if(NVCC)
              ${_S}/cuda/gpu_bvh.cu  ${_S}/cuda/gpu_ibm.cu ${_S}/cuda/gpu_wmles.cu
              ${_S}/cuda/gpu_metrics.cu  ${_S}/metrics/metrics_bus.cu
              ${_S}/io/vtk_writer.cu
-             ${_S}/models/stl_loader.cpp ${_S}/models/wall_model.cpp
+             ${_S}/models/stl_loader.cpp ${_S}/models/mesh_loader.cpp
+             ${_S}/models/wall_model.cpp
              ${_S}/fsi/rigid_body.cpp
              ${_GPU_POOL}
              ${_GPU_OPS}
@@ -651,6 +653,17 @@ add_custom_target(t14 DEPENDS test_weno5_cf
     COMMAND $<TARGET_FILE:test_weno5_cf>
     COMMENT "P7.2 gate: 5th-order Lagrange C/F ghost fill accuracy" USES_TERMINAL)
 
+# ── Mesh loader (STL + OBJ, load_mesh dispatcher) ────────────────────────────
+add_executable(test_mesh_loader
+    tests/models/test_mesh_loader.cpp
+    src/models/stl_loader.cpp
+    src/models/mesh_loader.cpp
+)
+target_include_directories(test_mesh_loader PRIVATE include)
+target_link_libraries(test_mesh_loader PRIVATE m)
+target_compile_features(test_mesh_loader PRIVATE cxx_std_20)
+add_test(NAME mesh_loader COMMAND test_mesh_loader)
+
 # ── P7.3: IBM ghost-cell immersed boundary (t15) ─────────────────────────────
 add_library(ibm STATIC src/models/ibm.cpp)
 target_link_libraries(ibm PUBLIC ns_solver)
@@ -749,6 +762,7 @@ add_custom_target(ba
     DEPENDS test_linalg test_block test_operators test_ns test_amr6 test_step7
             test_config test_imex test_sat test_ghost_fill test_cell_block_accessors
             test_bn_amr test_bn_solver test_multiphase
+            test_mesh_loader
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
             test_ensemble test_scheme_select test_t38_adjoint test_t42_adjoint_rk3
             test_rect_domain test_t42_rect_ns test_multi_root

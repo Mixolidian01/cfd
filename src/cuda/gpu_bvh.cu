@@ -45,7 +45,7 @@ struct AABB {
     }
 };
 
-static AABB tri_aabb(const StlTriangle& t) noexcept {
+static AABB tri_aabb(const Triangle& t) noexcept {
     AABB b;
     b.expand(t.v0[0], t.v0[1], t.v0[2]);
     b.expand(t.v1[0], t.v1[1], t.v1[2]);
@@ -53,7 +53,7 @@ static AABB tri_aabb(const StlTriangle& t) noexcept {
     return b;
 }
 
-static float tri_centroid(const StlTriangle& t, int axis) noexcept {
+static float tri_centroid(const Triangle& t, int axis) noexcept {
     return (t.v0[axis] + t.v1[axis] + t.v2[axis]) * (1.0f / 3.0f);
 }
 
@@ -63,7 +63,7 @@ static float tri_centroid(const StlTriangle& t, int axis) noexcept {
 // [lo, hi) is a half-open range into `indices`.
 
 static int build_recursive(
-    const std::vector<StlTriangle>& tris,
+    const std::vector<Triangle>& tris,
     std::vector<int>& indices,
     int lo, int hi,
     std::vector<CpuBvhNode>& nodes)
@@ -152,7 +152,7 @@ GpuBvh::~GpuBvh() {
 
 // ── GpuBvh::build ─────────────────────────────────────────────────────────────
 
-void GpuBvh::build(const StlMesh& mesh) {
+void GpuBvh::build(const TriangleMesh& mesh) {
     const int nt = static_cast<int>(mesh.triangles.size());
     if (nt == 0) return;
 
@@ -177,7 +177,7 @@ void GpuBvh::build(const StlMesh& mesh) {
     std::vector<float> h_nx(nt),  h_ny(nt),  h_nz(nt);
 
     for (int i = 0; i < nt; ++i) {
-        const StlTriangle& t = mesh.triangles[i];
+        const Triangle& t = mesh.triangles[i];
         h_v0x[i] = t.v0[0];  h_v0y[i] = t.v0[1];  h_v0z[i] = t.v0[2];
         h_v1x[i] = t.v1[0];  h_v1y[i] = t.v1[1];  h_v1z[i] = t.v1[2];
         h_v2x[i] = t.v2[0];  h_v2y[i] = t.v2[1];  h_v2z[i] = t.v2[2];
