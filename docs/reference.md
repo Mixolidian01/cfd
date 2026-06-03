@@ -1,6 +1,6 @@
 # CFD Solver — Technical Reference
 
-> Updated: 2026-06-01  
+> Updated: 2026-06-03  
 > Covers: governing equations, numerics, GPU architecture, and developer APIs for every component.  
 > For phase status and commit history, see `docs/dev_phases.md` and `docs/dev_log.md`.
 
@@ -658,7 +658,34 @@ gpu_solver.set_gpu_ibm(&bvh, /*bc=*/0, /*uw,vw,ww,Tw=*/0,0,0,0);
 gpu_solver.build(tree, bc_int);
 ```
 
-Gate t49 (I5–I9) and winding-number gate W5 (non-convex torus geometry).
+Gate t49 (I5–I12) and winding-number gate W5 (non-convex torus geometry).
+
+#### IBM AMR Sensor (W6)
+
+`GpuIbmList` computes a per-leaf curvature radius $R_c$ field during `build()` and exposes `augment_sensor()` to blend a refinement signal into `gpu_regrid()`:
+
+$$R_c = \frac{1}{|\nabla \cdot \hat{n}|}$$
+
+The sensor fires for any leaf cell within $3h$ of the surface:
+
+$$s = \max\!\left(\frac{k_c \cdot h}{R_c},\; \frac{h}{h_\text{surf}}\right) \cdot s_\text{thr}$$
+
+where $k_c = 5$ (cells per $R_c$; refine when $h > R_c/k_c$) and $h_\text{surf}$ is the flat-surface target resolution. The flat-surface term ensures AMR fires even on geometries where $\nabla \cdot \hat{n} = 0$ (planes, boxes).
+
+`h_surf` is auto-computed from the mean STL triangle edge length divided by 5, or set explicitly via `ibm_h_surf` in the JSON config. Set to `0` to disable the flat-surface term.
+
+`augment_sensor()` is called inside `gpu_regrid()` immediately after `gpu_eval_refine_sensor`, so IBM geometry refines alongside the Löhner flow sensor.
+
+#### IBM Startup Pre-refinement (W7)
+
+When `ibm_enabled && max_level > 0`, the driver (`simulate_gpu.cu`) runs a pre-refinement loop before the time loop:
+
+```cpp
+while (graph_solver.gpu_regrid(tree, pool, bc0, max_level))
+    ++n_passes;
+```
+
+This converges the AMR topology to the IBM geometry before any flow is advanced. The loop terminates naturally because `max_level` caps depth and `gpu_regrid` returns `false` when no changes occur.
 
 ### 15.3 CPU Usage (analytic level-set)
 
@@ -965,14 +992,29 @@ GpuBvh  (include/cuda/gpu_bvh.cuh + src/cuda/gpu_bvh.cu)
     Robust for non-convex and non-watertight STL meshes.
 
 GpuIbmList  (include/cuda/gpu_ibm.cuh + src/cuda/gpu_ibm.cu)
+  Fields (selected):
+    d_R_c_pool   float[n_leaves * GPU_NCELL] — per-cell curvature radius [m]
+    curvature_k  float = 5.0  — refine when h > R_c / curvature_k
+    h_ibm_surf   float = 0.0  — flat-surface target resolution (0 = disabled)
+
   build(tree, pool, bvh)
     1. k_ibm_classify: bvh_sdf per cell → d_cell_type_pool (FLUID/SOLID/IBM_GHOST)
     2. Pass 1: GhostEntry for each IBM_GHOST; image point I = G − 2·sdf·n_outward
     3. Pass 2: GhostEntry for each SOLID; sdf_eff = max(sdf, −1.5h) (depth clamp)
+    4. k_ibm_curvature: kappa = div(n_wall) via central differences on d_wnx/y/z;
+         R_c[cell] = 1/|kappa| (or 1e30 for flat regions / boundary cells)
 
   exec(stream)
     1. k_ghost_fill_ibm(d_solid_fills) — SolidFill first
     2. k_ghost_fill_ibm(d_ghosts)      — ghost fill second
+
+  augment_sensor(d_sensor, refine_thr, stream)  [W6]
+    k_ibm_augment_sensor<<<n_leaves, dim3(GPU_NB,GPU_NB,GPU_NB)>>>
+      For each interior cell with |sdf| < 3h:
+        val = max(curvature_k * h / R_c * thr,   // curvature signal
+                  h / h_ibm_surf * thr)           // flat-surface signal (if h_ibm_surf > 0)
+      Block-max reduction (shared memory) → atomicMax into d_sensor[leaf_idx]
+    Called inside gpu_regrid() after gpu_eval_refine_sensor.
 
 GhostEntry:
   ghost_ptr    — base of ghost cell in d_Q
@@ -1112,8 +1154,11 @@ struct IGpuSolver : TimeIntegrator {
 | t46 | G4 | ODE mixing-length wall model |
 | t47 | G5 | Berger-Oliger LTS |
 | t48 | G6 | Baer-Nunziato two-phase |
-| t49 | I5–I9, W5 | IBM STL import + ghost-cell BC (winding-number sign) |
+| t49 | I5–I12, W5 | IBM STL import + ghost-cell BC; curvature AMR sensor; pre-refinement; flat-surface signal |
 | t50 | C50 | Turbulent channel WMLES (Re_τ=395, body force) |
+| t52 | C1  | VTK XML binary writer |
+| t53 | FSI-1 | Moving-wall IBM + rigid 6-DOF; Theodorsen Cl validation |
+| t54 | FSI-2 | Dowell flutter onset U* ∈ [5.3, 7.3] |
 
 Note: t28, t30 are MPI-gated (`HAVE_MPI`). GPU targets are **not** in the `ba` target.
 
