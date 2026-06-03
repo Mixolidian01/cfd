@@ -621,7 +621,7 @@ void LiveStreamer::handle_connection(int cfd) {
 // =============================================================================
 
 void LiveStreamer::handle_get_root(int cfd) {
-    std::string html = viewer_html_combined();
+    std::string html = gui_html(cfg_.port);
     char hdr[256];
     int hlen = std::snprintf(hdr, sizeof(hdr),
         "HTTP/1.1 200 OK\r\n"

@@ -44,6 +44,8 @@
 
 // Free function defined in viewer_html.cpp (R9-E1 extraction).
 const char* viewer_html();
+// Free function defined in gui_html.cpp — 5-tab GUI.
+std::string gui_html(int port);
 
 // ── Variable selector ────────────────────────────────────────────────────────
 enum class StreamVar : uint8_t {
