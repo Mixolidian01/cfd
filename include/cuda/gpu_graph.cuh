@@ -39,6 +39,7 @@
 #include "gpu_amr.cuh"
 #include "gpu_snapshot.hpp"
 #include "cuda/gpu_acdi.cuh"
+#include "cuda/gpu_array.cuh"
 #include "cuda/gpu_ibm.cuh"
 #include "cuda/gpu_wmles.cuh"
 #include "models/wall_model.hpp"
@@ -80,8 +81,13 @@ struct GpuGraphSolver : IGpuSolver {
     // ODE step is skipped and ibm_list_.rigid is left untouched.  Used by validation
     // tests with prescribed kinematics (e.g. t53 F3 Theodorsen pitching airfoil).
     bool           rigid_prescribed_ = false;
-    double*        d_wrench_   = nullptr;  // [6]: {Fx,Fy,Fz,Tx,Ty,Tz} on device
-    GpuIbmForceMeta* d_rhs_leaf_metas_ = nullptr;  // [n_leaves] for k_surface_forces_ibm
+    // FSI-1 device buffers — RAII via GpuArray (rule 6).
+    GpuArray<double>          d_wrench_{};         // [N_WRENCH]: {Fx,Fy,Fz,Tx,Ty,Tz}
+    GpuArray<GpuIbmForceMeta> d_rhs_leaf_metas_{}; // [n_leaves]
+    // Pinned host mirror of d_wrench_ + event to avoid a stream-wide sync in
+    // _fsi_stage_update (CLAUDE.md rule 11).  Both lazy-init in build().
+    double*        h_wrench_pinned_ = nullptr;     // [N_WRENCH]
+    cudaEvent_t    wrench_ready_    = nullptr;
 
     // D7 WMLES: algebraic Reichardt wall model applied after ghost fill each stage.
     // Two lists: wmles_lo_ for low-y wall (side=0), wmles_hi_ for high-y wall (side=1).
@@ -280,5 +286,9 @@ private:
     // Used when tree has C/F interfaces (cf_list.n_coarse > 0).
     double _advance_amr(double cfl);
     // FSI-1: accumulate surface forces, step rigid body, update IBM rigid state.
-    void _fsi_stage_update(cudaStream_t s, double dt_stage);
+    // stage_index ∈ {0,1,2} = SSP-RK3 sub-stage.  The rigid-body ODE is advanced
+    // ONLY on the final stage (stage_index == 2) so the body sees one step per
+    // RK3 step (not three).  Earlier stages still launch k_surface_forces_ibm
+    // (so the wrench is fresh) but skip the ODE step.
+    void _fsi_stage_update(cudaStream_t s, double dt_stage, int stage_index);
 };

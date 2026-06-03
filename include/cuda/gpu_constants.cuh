@@ -15,6 +15,9 @@ static constexpr int GPU_NCELL = GPU_NB2 * GPU_NB2 * GPU_NB2; // 1728
 // Defined BEFORE static_assert that uses it.
 static constexpr int GPU_NVAR = 5;
 
+// Primitive-scratch buffer pressure component index (rho=0,u=1,v=2,w=3,p=4).
+static constexpr int SCRATCH_P_IDX = 4;
+
 // Shared-memory budget check: NVAR × NCELL × 8 bytes = 5×1728×8 = 69,120 bytes
 // Ampere SM 8.6 opt-in limit (cudaFuncAttributeMaxDynamicSharedMemorySize): ~99 KB
 // Default carveout is 48 KB — caller must invoke cudaFuncSetAttribute to raise it.

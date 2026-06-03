@@ -85,11 +85,11 @@ static void test_F2() {
 
 // ── F3 helpers: thick symmetric airfoil STL (axis-aligned, chord = x) ────────
 // Uses the NACA 4-digit thickness formula with t = `t_over_c` (max thickness
-// fraction).  NACA0012 uses t=0.12 (Theodorsen-standard).  For coarse-grid
-// IBM gates a thicker section (e.g. t=0.40) is used so the body is resolved.
+// fraction).  The coarse-grid F3 gate uses t/c = 0.40 so the body is resolved
+// by ~6 IBM ghost cells across the thickness — NOT a true NACA0012 section.
 // Airfoil chord runs along +x from x=cx_le to x=cx_le+chord at y=cy.
 // We extrude in z: z ∈ [z_lo, z_hi].
-static void write_naca0012_stl(const char* path,
+static void write_naca_sym_stl(const char* path,
                                float cx_le, float cy, float z_lo, float z_hi,
                                float chord, int n_panels,
                                float t_over_c = 0.12f)
@@ -121,7 +121,7 @@ static void write_naca0012_stl(const char* path,
 
     FILE* f = std::fopen(path, "wb");
     char header[80] = {};
-    std::snprintf(header, sizeof(header), "NACA0012 chord=%.3f panels=%d", chord, n_panels);
+    std::snprintf(header, sizeof(header), "NACA_sym chord=%.3f panels=%d", chord, n_panels);
     std::fwrite(header, 1, 80, f);
     std::fwrite(&n_tris, 4, 1, f);
 
@@ -205,7 +205,7 @@ static void write_naca0012_stl(const char* path,
 // as a follow-up gate (see docs/superpowers/plans/2025-XX-XX-fsi-validation).
 static void test_F3_theodorsen()
 {
-    printf("\n  ── F3 setup: NACA0012 prescribed pitching, k=0.25, alpha0=5deg ──\n");
+    printf("\n  ── F3 setup: wrench-pipeline non-triviality, k=0.25, alpha0=5deg ──\n");
 
     // Geometry / freestream parameters.
     //
@@ -252,10 +252,9 @@ static void test_F3_theodorsen()
     const double alpha0 = 5.0 * M_PI / 180.0;              // 5° in rad
     const double omega0 = 2.0 * M_PI / T_per;
 
-    // Theodorsen thin-airfoil reference at k=0.25: |C(k)| ≈ 0.822.
-    //   Cl_amp_thin = 2π · |C(k)| · α₀ ≈ 0.450
-    // Printed for reference; F3b's tolerance is loose by design (see header).
-    const double Cl_thin = 2.0 * M_PI * 0.822 * alpha0;     // ≈ 0.450 (reference)
+    // Theodorsen thin-airfoil reference at k=0.25 (kept as a code comment for
+    // future tighter-grid F3 work):  |C(k)| ≈ 0.822, Cl_amp_thin ≈ 0.450.
+    // Not used by F3b's pipeline-only check.
 
     // Time step estimate: CFL_used * h / (c_inf + U_inf).  Used only to size
     // the history buffer / sampling window; actual dt is set by the CFL kernel.
@@ -269,11 +268,10 @@ static void test_F3_theodorsen()
     std::printf("  domain L=(%.3f,%.3f,%.3f)  h=%.4f  pivot=(%.3f,%.3f,%.3f)\n",
                 Lx, Ly, Lz, h, x_pivot, y_pivot, z_pivot);
     std::printf("  T=%.4f  total steps=%d  dt~%.4e\n", T_per, n_steps, dt_guess);
-    std::printf("  Cl_theodorsen (thin-airfoil ref) = %.4f\n", Cl_thin);
 
-    // ── Geometry: write NACA0012 STL and build BVH ──────────────────────────
-    const char* stl_path = "/tmp/naca0012_t53.stl";
-    write_naca0012_stl(stl_path, cx_le, cy, z_lo, z_hi, chord,
+    // ── Geometry: write symmetric airfoil STL and build BVH ─────────────────
+    const char* stl_path = "/tmp/naca_sym_t53.stl";
+    write_naca_sym_stl(stl_path, cx_le, cy, z_lo, z_hi, chord,
                        /*n_panels=*/32, /*t_over_c=*/t_over_c);
     StlMesh mesh = load_stl(stl_path);
     std::printf("  STL: %zu triangles\n", mesh.triangles.size());

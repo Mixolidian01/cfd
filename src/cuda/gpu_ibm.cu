@@ -122,8 +122,8 @@ void k_surface_forces_ibm(
         if (j < GPU_NG || j >= GPU_NG + GPU_NB) continue;
         if (k < GPU_NG || k >= GPU_NG + GPU_NB) continue;
 
-        // Cell pressure from prim scratch: comp=4 is pressure (rho=0,u=1,v=2,w=3,p=4)
-        double p = m.d_scratch[4 * NC + flat];
+        // Cell pressure from prim scratch (rho=0,u=1,v=2,w=3,p=4 — see SCRATCH_P_IDX)
+        double p = m.d_scratch[SCRATCH_P_IDX * NC + flat];
         if (p < 0.0) p = 0.0;
 
         // Outward wall normal (points from solid into fluid, i.e. outward from surface)

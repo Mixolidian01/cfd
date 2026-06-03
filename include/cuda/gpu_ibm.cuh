@@ -86,8 +86,11 @@ struct GpuIbmList {
     void update_rigid(const IbmRigidState& s) { rigid = s; }
 };
 
+// FSI-1: wrench vector layout = {Fx, Fy, Fz, Tx, Ty, Tz}
+static constexpr int N_WRENCH = 6;
+
 // FSI-1: accumulate pressure force and torque on the immersed surface.
-// d_wrench[6] = {Fx,Fy,Fz,Tx,Ty,Tz}; must be zeroed before launch.
+// d_wrench[N_WRENCH] = {Fx,Fy,Fz,Tx,Ty,Tz}; must be zeroed before launch.
 // Uses atomicAdd; one thread per IBM_GHOST cell.
 __global__
 void k_surface_forces_ibm(

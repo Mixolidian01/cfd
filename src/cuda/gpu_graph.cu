@@ -70,8 +70,9 @@ GpuGraphSolver::~GpuGraphSolver() {
     _destroy_graphs();
     if (d_rk3_metas)       { cudaFree(d_rk3_metas);       d_rk3_metas = nullptr; }
     if (d_Qn_pool)         { cudaFree(d_Qn_pool);         d_Qn_pool   = nullptr; }
-    if (d_wrench_)         { cudaFree(d_wrench_);         d_wrench_   = nullptr; }
-    if (d_rhs_leaf_metas_) { cudaFree(d_rhs_leaf_metas_); d_rhs_leaf_metas_ = nullptr; }
+    // d_wrench_ and d_rhs_leaf_metas_ free themselves via GpuArray dtor.
+    if (h_wrench_pinned_)  { cudaFreeHost(h_wrench_pinned_); h_wrench_pinned_ = nullptr; }
+    if (wrench_ready_)     { cudaEventDestroy(wrench_ready_); wrench_ready_ = nullptr; }
     if (stream)             { cudaStreamDestroy(stream);   stream      = nullptr; }
 }
 
@@ -170,12 +171,13 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
     // Allocated when either a rigid body is attached (full FSI coupling) or
     // prescribed-motion mode is on (force-extraction only, e.g. t53 F3).
     if ((rigid_body_ || rigid_prescribed_) && ibm_enabled_) {
-        if (d_wrench_) { cudaFree(d_wrench_); d_wrench_ = nullptr; }
-        CUDA_CHECK(cudaMalloc(&d_wrench_, 6 * sizeof(double)));
+        d_wrench_.alloc(N_WRENCH);
+        // Lazy-init pinned host mirror + event (re-used across builds).
+        if (!h_wrench_pinned_)
+            CUDA_CHECK(cudaMallocHost(&h_wrench_pinned_, N_WRENCH * sizeof(double)));
+        if (!wrench_ready_)
+            CUDA_CHECK(cudaEventCreateWithFlags(&wrench_ready_, cudaEventDisableTiming));
 
-        if (d_rhs_leaf_metas_) { cudaFree(d_rhs_leaf_metas_); d_rhs_leaf_metas_ = nullptr; }
-        CUDA_CHECK(cudaMalloc(&d_rhs_leaf_metas_,
-                              (size_t)n_leaves * sizeof(GpuIbmForceMeta)));
         // Build host array pointing into ibm_list_ pools and rhs_list scratch.
         std::vector<GpuIbmForceMeta> h_rlm(n_leaves);
         for (int li = 0; li < n_leaves; ++li) {
@@ -193,9 +195,7 @@ void GpuGraphSolver::build(const BlockTree& tree, const GpuPool& pool, int bc_ty
             h_rlm[li].hy = (float)nd.block->hy;
             h_rlm[li].hz = (float)nd.block->hz;
         }
-        CUDA_CHECK(cudaMemcpy(d_rhs_leaf_metas_, h_rlm.data(),
-                              (size_t)n_leaves * sizeof(GpuIbmForceMeta),
-                              cudaMemcpyHostToDevice));
+        d_rhs_leaf_metas_.upload(h_rlm);
     }
 
     // Option A/C: upload snapshot leaf metadata whenever topology changes.
@@ -305,20 +305,25 @@ void GpuGraphSolver::set_snapshot_buffer(GpuSnapshotBuffer* buf)
 // that this path is identical to the replay path (same zero+launch order).
 // When MPI is active, mpi_halo_.exchange() syncs the stream, downloads real
 // cell planes to CPU, does MPI exchange, and uploads ghost cells back to GPU.
-// FSI-1: accumulate surface forces, download wrench, step rigid body, update IBM.
-// Runs synchronously (stream sync + cudaMemcpy) — only called when rigid_body_ != nullptr.
+
 // FSI-1: download the per-stage surface-force wrench {Fx,Fy,Fz,Tx,Ty,Tz}.
 // Reflects the value from the last RK3 sub-stage in the most recent advance().
-// When no rigid body / prescribed motion is active, d_wrench_ is null and
+// When no rigid body / prescribed motion is active, d_wrench_ is empty and
 // out[] is zero-filled.
-void GpuGraphSolver::read_wrench(double out[6]) const {
-    for (int i = 0; i < 6; ++i) out[i] = 0.0;
+void GpuGraphSolver::read_wrench(double out[N_WRENCH]) const {
+    for (int i = 0; i < N_WRENCH; ++i) out[i] = 0.0;
     if (!d_wrench_) return;
-    CUDA_CHECK(cudaMemcpy(out, d_wrench_, 6 * sizeof(double),
+    CUDA_CHECK(cudaMemcpy(out, d_wrench_.get(), N_WRENCH * sizeof(double),
                           cudaMemcpyDeviceToHost));
 }
 
-void GpuGraphSolver::_fsi_stage_update(cudaStream_t s, double dt_stage) {
+// FSI-1: accumulate surface forces, optionally step rigid body, update IBM rigid state.
+// The rigid-body ODE is advanced ONLY on the final SSP-RK3 sub-stage (stage_idx==2)
+// using the full step dt (= 3 * dt_stage); earlier stages still launch
+// k_surface_forces_ibm so the wrench is always fresh, but skip the ODE advance.
+// Uses pinned host buffer + event sync to avoid cudaStreamSynchronize on the
+// advance stream (CLAUDE.md rule 11).
+void GpuGraphSolver::_fsi_stage_update(cudaStream_t s, double dt_stage, int stage_idx) {
     if (!ibm_enabled_ || !d_wrench_ || !d_rhs_leaf_metas_) return;
     if (!rigid_body_ && !rigid_prescribed_) return;
 
@@ -329,31 +334,34 @@ void GpuGraphSolver::_fsi_stage_update(cudaStream_t s, double dt_stage) {
     double yp = rigid_body_ ? rigid_body_->x[1] : ibm_list_.rigid.x_cm[1];
     double zp = rigid_body_ ? rigid_body_->x[2] : ibm_list_.rigid.x_cm[2];
 
-    // Zero wrench.
-    CUDA_CHECK(cudaMemsetAsync(d_wrench_, 0, 6 * sizeof(double), s));
-    // Accumulate forces (reads d_scratch_pool which was filled by rhs_list.exec).
+    // Zero wrench, launch accumulation, async copy to pinned host, event-wait.
+    CUDA_CHECK(cudaMemsetAsync(d_wrench_.get(), 0, N_WRENCH * sizeof(double), s));
     k_surface_forces_ibm<<<n_leaves, TPB, 0, s>>>(
-        d_rhs_leaf_metas_, n_leaves, xp, yp, zp, d_wrench_);
-    // Sync so host can read wrench.
-    CUDA_CHECK(cudaStreamSynchronize(s));
-    double h_wrench[6];
-    CUDA_CHECK(cudaMemcpy(h_wrench, d_wrench_, 6 * sizeof(double),
-                          cudaMemcpyDeviceToHost));
-    // Prescribed-motion mode: leave kinematics untouched, just expose the
-    // wrench via d_wrench_ (already populated above).
+        d_rhs_leaf_metas_.get(), n_leaves, xp, yp, zp, d_wrench_.get());
+    CUDA_CHECK(cudaMemcpyAsync(h_wrench_pinned_, d_wrench_.get(),
+                               N_WRENCH * sizeof(double),
+                               cudaMemcpyDeviceToHost, s));
+    CUDA_CHECK(cudaEventRecord(wrench_ready_, s));
+    CUDA_CHECK(cudaEventSynchronize(wrench_ready_));
+
+    // Prescribed-motion mode: caller drives kinematics each step.
     if (rigid_prescribed_) return;
-    // Step rigid body ODE.
-    rigid_body_->step(h_wrench, dt_stage);
-    // Update IBM rigid state for next ghost fill.
-    IbmRigidState rs;
-    for (int i = 0; i < 3; ++i) rs.v_cm[i]  = rigid_body_->v[i];
-    for (int i = 0; i < 3; ++i) rs.omega[i] = rigid_body_->w[i];
-    for (int i = 0; i < 3; ++i) rs.x_cm[i]  = rigid_body_->x[i];
-    ibm_list_.update_rigid(rs);
+
+    // Advance the 6-DOF ODE only on the last RK3 sub-stage with the FULL step dt.
+    // SSP-RK3 sub-stage dt equals the step dt (Shu-Osher weighted), so the full
+    // step covers three sub-stages → step the body once per RK3 step.
+    if (stage_idx == 2) {
+        rigid_body_->step(h_wrench_pinned_, dt_stage);
+        IbmRigidState rs;
+        for (int i = 0; i < 3; ++i) rs.v_cm[i]  = rigid_body_->v[i];
+        for (int i = 0; i < 3; ++i) rs.omega[i] = rigid_body_->w[i];
+        for (int i = 0; i < 3; ++i) rs.x_cm[i]  = rigid_body_->x[i];
+        ibm_list_.update_rigid(rs);
+    }
     // NOTE: BVH geometry rebuild (moving the surface) is deferred to the caller's
-    // advance loop if the geometry itself moves (e.g. per-step regrid). For this
-    // first gate the ghost-cell wall velocities are updated via k_apply_moving_wall
-    // inside ibm_list_.exec() on the next stage.
+    // advance loop if the geometry itself moves (e.g. per-step regrid). The
+    // ghost-cell wall velocities are updated via k_apply_moving_wall inside
+    // ibm_list_.exec() on the next stage.
 }
 
 void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
@@ -361,10 +369,8 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
     const double* d_dt = cfl_list.d_dt;
     const size_t rhs_bytes = (size_t)GPU_NVAR * GPU_NCELL * n_leaves * sizeof(double);
 
-    // FSI-1: RK3 stage coefficients for sub-step dt (explicit Euler on rigid body).
-    // SSP-RK3: stage 1 = dt, stage 2 = 0.5*dt, stage 3 = dt  (Shu-Osher weights).
-    // Engineering choice: use full dt for each stage (matches explicit Euler on flow).
-    // Retrieve dt from device (already computed by cfl_list.exec before this call).
+    // FSI-1: fetch host dt for the rigid-body ODE step (advanced once per RK3 step
+    // on stage_idx==2 inside _fsi_stage_update).  cfl_list.exec already wrote d_dt.
     double h_dt = 0.0;
     if ((rigid_body_ || rigid_prescribed_) && ibm_enabled_)
         CUDA_CHECK(cudaMemcpy(&h_dt, cfl_list.d_dt, sizeof(double), cudaMemcpyDeviceToHost));
@@ -372,7 +378,8 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
     if (acdi_enabled_) acdi_list_.save_phin(s);
     k_save_qn<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
 
-    auto stage = [&](bool s1, double a, double b) {
+    auto stage = [&](int stage_idx, double a, double b) {
+        const bool s1 = (stage_idx == 0);
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, s));
         mpi_halo_.exchange(s);
         ghost_list.exec(s);
@@ -382,8 +389,9 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
         }
         if (ibm_enabled_) ibm_list_.exec(s);
         rhs_list.exec(s, false);
-        // FSI-1: accumulate surface forces and step rigid body after RHS is computed.
-        if ((rigid_body_ || rigid_prescribed_) && ibm_enabled_) _fsi_stage_update(s, h_dt);
+        // FSI-1: accumulate surface forces (every stage); step rigid body only on stage 2.
+        if ((rigid_body_ || rigid_prescribed_) && ibm_enabled_)
+            _fsi_stage_update(s, h_dt, stage_idx);
         if (s1) k_rk3s1 <<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
         else    k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, a, b);
         k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
@@ -395,9 +403,9 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s) {
             acdi_list_.update_phi(d_dt, a, s1, s);
         }
     };
-    stage(true,  0.0,     0.0   );
-    stage(false, 0.75,    0.25  );
-    stage(false, 1.0/3.0, 2.0/3.0);
+    stage(0, 0.0,     0.0   );
+    stage(1, 0.75,    0.25  );
+    stage(2, 1.0/3.0, 2.0/3.0);
 }
 
 // Capture three per-stage sub-graphs.  Each captures (ghost fill + prim_duc +
@@ -470,7 +478,9 @@ double GpuGraphSolver::_advance_amr(double cfl) {
 
     if (acdi_enabled_) acdi_list_.save_phin(stream);
 
-    auto stage = [&](bool save_qn, double cf_wt, bool s1, double a, double b) {
+    auto stage = [&](int stage_idx, double cf_wt, double a, double b) {
+        const bool save_qn = (stage_idx == 0);
+        const bool s1      = (stage_idx == 0);
         CUDA_CHECK(cudaMemsetAsync(rhs_list.d_rhs_pool, 0, rhs_bytes, stream));
         if (save_qn) k_save_qn<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
         mpi_halo_.exchange(stream);
@@ -481,8 +491,9 @@ double GpuGraphSolver::_advance_amr(double cfl) {
         }
         if (ibm_enabled_) ibm_list_.exec(stream);
         rhs_list.exec(stream, false);
-        // FSI-1: accumulate surface forces and step rigid body after RHS computed.
-        if ((rigid_body_ || rigid_prescribed_) && ibm_enabled_) _fsi_stage_update(stream, dt);
+        // FSI-1: accumulate surface forces (every stage); step rigid body only on stage 2.
+        if ((rigid_body_ || rigid_prescribed_) && ibm_enabled_)
+            _fsi_stage_update(stream, dt, stage_idx);
         cf_list.undo_coarse_flux(stream);
         cf_list.accum_fine_flux(stream, cf_wt);
         if (s1) k_rk3s1 <<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt);
@@ -496,9 +507,9 @@ double GpuGraphSolver::_advance_amr(double cfl) {
             acdi_list_.update_phi(d_dt, a, s1, stream);
         }
     };
-    stage(true,  1.0/6.0, true,  0.0,     0.0   );   // Stage 1 — weight 1/6
-    stage(false, 1.0/6.0, false, 0.75,    0.25  );   // Stage 2 — weight 1/6
-    stage(false, 2.0/3.0, false, 1.0/3.0, 2.0/3.0); // Stage 3 — weight 2/3
+    stage(0, 1.0/6.0, 0.0,     0.0   );   // Stage 1 — weight 1/6
+    stage(1, 1.0/6.0, 0.75,    0.25  );   // Stage 2 — weight 1/6
+    stage(2, 2.0/3.0, 1.0/3.0, 2.0/3.0); // Stage 3 — weight 2/3
 
     // Apply Berger-Colella correction to coarse Q (once, after all 3 stages).
     cf_list.apply_correction(stream, dt);
