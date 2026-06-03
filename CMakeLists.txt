@@ -93,6 +93,7 @@ add_library(ns_solver STATIC
     src/solver/imex_advance.cpp         # R9-B: IMEX member function (advance_imex)
     src/mesh/flux_register.cpp
     src/models/sgs.cpp
+    src/models/primitive_gen.cpp   # GUI-6: make_sphere/box/cylinder used by live_streamer
     src/io/checkpoint.cpp
     src/io/vtk_writer.cpp
     src/io/live_streamer.cpp
