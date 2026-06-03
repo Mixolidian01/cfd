@@ -386,9 +386,18 @@ void GpuGraphSolver::_run_rk3_explicit(cudaStream_t s, double h_dt) {
         // FSI-1: accumulate surface forces (every stage); step rigid body only on stage 2.
         if ((rigid_body_ || rigid_prescribed_) && ibm_enabled_)
             _fsi_stage_update(s, h_dt, stage_idx);
+        // Zero RHS of SOLID/IBM_GHOST cells so the Shu-Osher update leaves them
+        // unchanged (d_Q remains the ghost-filled value, Qn+dt*0=Qn path).
+        if (ibm_enabled_) ibm_list_.zero_solid_rhs(rhs_list.d_rhs_pool, s);
         if (s1) k_rk3s1 <<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt);
         else    k_rk3s23<<<n_leaves, TPB, 0, s>>>(d_rk3_metas, d_dt, a, b);
         k_positivity_floor<<<n_leaves, TPB, 0, s>>>(d_rk3_metas);
+        // Re-apply IBM ghost fill after the RK3 update so IBM cells always hold
+        // the reflected state based on the UPDATED fluid field, not a Shu-Osher
+        // mix with the old Qn.  This is the standard ghost-cell IBM contract:
+        // immersed cells are never evolved by the PDE — they are always set from
+        // the image-point interpolation.
+        if (ibm_enabled_) ibm_list_.exec(s);
         if (acdi_enabled_) {
             acdi_list_.zero_rhs(s);
             acdi_list_.fill_ghosts(s);
@@ -488,11 +497,13 @@ double GpuGraphSolver::_advance_amr(double cfl) {
         // FSI-1: accumulate surface forces (every stage); step rigid body only on stage 2.
         if ((rigid_body_ || rigid_prescribed_) && ibm_enabled_)
             _fsi_stage_update(stream, dt, stage_idx);
+        if (ibm_enabled_) ibm_list_.zero_solid_rhs(rhs_list.d_rhs_pool, stream);
         cf_list.undo_coarse_flux(stream);
         cf_list.accum_fine_flux(stream, cf_wt);
         if (s1) k_rk3s1 <<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt);
         else    k_rk3s23<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas, d_dt, a, b);
         k_positivity_floor<<<n_leaves, TPB, 0, stream>>>(d_rk3_metas);
+        if (ibm_enabled_) ibm_list_.exec(stream);
         if (acdi_enabled_) {
             acdi_list_.zero_rhs(stream);
             acdi_list_.fill_ghosts(stream);

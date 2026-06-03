@@ -82,6 +82,10 @@ struct GpuIbmList {
 
     void build(const BlockTree& tree, const GpuPool& pool, const GpuBvh& bvh);
     void exec(cudaStream_t stream = nullptr) const;
+    // Zero the accumulated RHS for all SOLID (ct==1) and IBM_GHOST (ct==2) cells.
+    // Call after rhs_list.exec() and before the RK3 update to prevent non-conservative
+    // flux accumulation in immersed cells driving a growing energy instability.
+    void zero_solid_rhs(double* d_rhs_pool, cudaStream_t stream = nullptr) const;
     // FSI-1: update ghost-cell wall velocity from rigid-body state (no rebuild needed).
     void update_rigid(const IbmRigidState& s) { rigid = s; }
 };

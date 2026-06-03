@@ -171,10 +171,16 @@ void k_ghost_fill_ibm(const GhostEntry* __restrict__ ghosts, int n_ghosts)
     const GhostEntry& ge = ghosts[tid];
     const int NC = GPU_NCELL;
 
+    // Normalize weights so sum=1 in fp64; eliminates bias for constant fields
+    // (float ge.w[s] can sum to 1+ε for curved-surface image points, seeding instability).
+    double wsum = 0.0;
+    for (int s = 0; s < 8; ++s) wsum += (double)ge.w[s];
+    const double inv_wsum = (wsum > 0.0) ? 1.0 / wsum : 1.0;
+
     double Q_I[GPU_NVAR] = {};
     for (int s = 0; s < 8; ++s) {
         const double* sp = ge.stencil[s];
-        float w = ge.w[s];
+        double w = (double)ge.w[s] * inv_wsum;
         for (int v = 0; v < GPU_NVAR; ++v)
             Q_I[v] += w * sp[v * NC];
     }
@@ -210,7 +216,6 @@ void k_ghost_fill_ibm(const GhostEntry* __restrict__ ghosts, int n_ghosts)
         if (T_g < 1.0) T_g = 1.0;
         p_g = rho_g * GPU_R_GAS * T_g;
     }
-    // NoSlip velocity reflection applies to all BC types
 
     double KE_g = 0.5 * rho_g * (u_g*u_g + v_g*v_g + w_g*w_g);
     double E_g  = p_g / (GPU_GAMMA - 1.0) + KE_g;
@@ -221,6 +226,35 @@ void k_ghost_fill_ibm(const GhostEntry* __restrict__ ghosts, int n_ghosts)
     gp[2 * NC] = rho_g * v_g;
     gp[3 * NC] = rho_g * w_g;
     gp[4 * NC] = E_g;
+}
+
+// gridDim.x = n_leaves, blockDim.x = 256
+// Zero d_rhs_pool for every SOLID (1) and IBM_GHOST (2) interior cell.
+__global__
+void k_ibm_zero_solid_rhs(
+    const int8_t* __restrict__ ct_pool,
+    double*       __restrict__ rhs_pool,
+    int n_leaves)
+{
+    const int li = blockIdx.x;
+    if (li >= n_leaves) return;
+    const int NC = GPU_NCELL;
+    const int NV = GPU_NVAR;
+    const int8_t* ct  = ct_pool  + (size_t)li * NC;
+    double*       rhs = rhs_pool + (size_t)li * NV * NC;
+    for (int flat = threadIdx.x; flat < NC; flat += blockDim.x) {
+        if (ct[flat] != 0) {  // SOLID (1) or IBM_GHOST (2)
+            for (int v = 0; v < NV; ++v)
+                rhs[v * NC + flat] = 0.0;
+        }
+    }
+}
+
+void GpuIbmList::zero_solid_rhs(double* d_rhs_pool, cudaStream_t stream) const
+{
+    if (n_leaves == 0 || !d_cell_type_pool || !d_rhs_pool) return;
+    k_ibm_zero_solid_rhs<<<n_leaves, 256, 0, stream>>>(
+        d_cell_type_pool, d_rhs_pool, n_leaves);
 }
 
 struct LeafInfo {
@@ -290,10 +324,17 @@ static void build_ghost_entries(
         double gy = inf.oy + (j - GPU_NG + 0.5) * inf.hy;
         double gz = inf.oz + (k - GPU_NG + 0.5) * inf.hz;
 
-        // I = G - 2*sdf*n  (sdf>0 → I inside solid; sdf<0 → I in fluid)
-        double ix = gx - 2.0 * sdf * nx;
-        double iy = gy - 2.0 * sdf * ny;
-        double iz = gz - 2.0 * sdf * nz;
+        // I = G - 2*sdf_eff*n  (sdf>0 → I inside solid; sdf<0 → I in fluid)
+        // IBM_GHOST (sdf>0): push image ≥2*hx into solid so the 8-cell trilinear stencil
+        //   is entirely SOLID (no accidental FLUID corners that bypass the wall BC).
+        // SOLID (sdf<0, bc==3): image ≥2*hx into fluid → past the IBM_GHOST shell (≤hx wide),
+        //   so stencil is pure FLUID and avoids double-reflection that negates no-slip.
+        const double sdf_eff = (bc != 3)
+            ? (double)std::max(sdf,  (float)(2.0f*inf.hx))    // ghost → ≥2*hx into solid
+            : -(double)std::max(-sdf, (float)(2.0f*inf.hx));   // solid → ≥2*hx into fluid
+        double ix = gx - 2.0 * sdf_eff * nx;
+        double iy = gy - 2.0 * sdf_eff * ny;
+        double iz = gz - 2.0 * sdf_eff * nz;
 
         int sli, sflat;
         if (!find_cell(ix, iy, iz, sli, sflat)) return false;
