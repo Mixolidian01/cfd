@@ -719,6 +719,12 @@ add_bench_gate(tb9 test_bench_b9 "B.9 benchmark: Turbulent channel flow Re_tau=1
 # =============================================================================
 # Apps
 # =============================================================================
+
+# STL geometry generator (no GPU dependency — pure C++17)
+add_executable(make_stl tools/make_stl.cpp)
+target_compile_features(make_stl PRIVATE cxx_std_17)
+target_link_libraries(make_stl PRIVATE m)
+
 add_executable(simulate apps/simulate.cpp)
 target_link_libraries(simulate PRIVATE ns_solver bn_operators m)
 
