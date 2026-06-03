@@ -88,6 +88,14 @@ struct GpuIbmList {
     void zero_solid_rhs(double* d_rhs_pool, cudaStream_t stream = nullptr) const;
     // FSI-1: update ghost-cell wall velocity from rigid-body state (no rebuild needed).
     void update_rigid(const IbmRigidState& s) { rigid = s; }
+
+    // AMR curvature sensor: refine leaves where h > R_c / curvature_k.
+    // d_R_c_pool is computed in build(); augment_sensor() blends the IBM signal
+    // into d_sensor in-place (per-leaf max, scaled by refine_thr).
+    float* d_R_c_pool  = nullptr;  // [n_leaves * GPU_NCELL] curvature radius (m)
+    float  curvature_k = 5.0f;     // cells per R_c: refine when h > R_c / curvature_k
+    void augment_sensor(float* d_sensor, float refine_thr,
+                        cudaStream_t stream = nullptr) const;
 };
 
 // FSI-1: wrench vector layout = {Fx, Fy, Fz, Tx, Ty, Tz}

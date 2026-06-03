@@ -229,6 +229,39 @@ int main() {
     check(ng1 == ng2,  "I9b", "n_ghosts unchanged after rebuild",
           (double)std::abs(ng1 - ng2));
 
+    // ── I10: Curvature radius pool computed after build() ─────────────────────
+    // Sphere R=0.25, mean curvature κ=2/R, R_c=R/2=0.125 m.
+    // On the coarse 8×8 lat-lon mesh curvature only appears where wall-normal
+    // patches change; check that d_R_c_pool is populated and that detected
+    // R_c values near the surface are physically plausible for a sphere.
+    {
+        const float R_sphere = 0.25f;
+        const float h_cell   = 1.0f / NB;   // domain=1, NB=8 → h=0.125
+        const float thr_sdf  = 3.0f * h_cell;
+
+        std::vector<float> h_Rc(NCELL), h_sdf_i10(NCELL);
+        cudaMemcpy(h_Rc.data(),     ibm.d_R_c_pool, NCELL * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(h_sdf_i10.data(), ibm.d_sdf_pool, NCELL * sizeof(float), cudaMemcpyDeviceToHost);
+
+        int n_near = 0, n_detected = 0, n_range = 0;
+        for (int f = 0; f < NCELL; ++f) {
+            if (fabsf(h_sdf_i10[f]) < thr_sdf) {
+                ++n_near;
+                if (h_Rc[f] < 1e29f) {
+                    ++n_detected;
+                    if (h_Rc[f] > R_sphere / 20.0f && h_Rc[f] < 20.0f * R_sphere)
+                        ++n_range;
+                }
+            }
+        }
+        check(n_near > 0 && n_detected > 0,
+              "I10a", "R_c pool computed: near-surface curvature detected",
+              (double)n_detected);
+        check(n_detected == 0 || (double)n_range / n_detected > 0.5,
+              "I10b", "R_c values in physical range for sphere (>50% in [R/20, 20R])",
+              n_detected > 0 ? (double)n_range / n_detected : 1.0);
+    }
+
     // ── W5: winding-number sign on a non-convex torus ─────────────────────────
     // Torus: major radius R=0.30, minor radius r=0.09, centred at (0.5,0.5,0.5).
     // Domain [0,1]^3, 1 leaf block → h = 1/NB = 0.125.

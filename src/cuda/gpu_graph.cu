@@ -660,6 +660,7 @@ bool GpuGraphSolver::gpu_regrid(BlockTree& tree, GpuPool& pool, int bc_type,
     CUDA_CHECK(cudaMalloc(&d_sensor, n * sizeof(float)));
 
     gpu_eval_refine_sensor(d_Q_ptrs.data(), h_vals.data(), n, d_sensor, stream);
+    if (ibm_enabled_) ibm_list_.augment_sensor(d_sensor, refine_thr, stream);
 
     // Download sensor values (tiny: n floats, not Q arrays).
     std::vector<float> h_sensor(n);

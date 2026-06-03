@@ -435,6 +435,8 @@ static void build_ghost_entries(
     }
 }
 
+__global__ void k_ibm_curvature(const GpuIbmMeta*, float*, int);
+
 void GpuIbmList::build(const BlockTree& tree, const GpuPool& pool, const GpuBvh& bvh) {
     if (d_metas)          { cudaFree(d_metas);          d_metas = nullptr; }
     if (d_cell_type_pool) { cudaFree(d_cell_type_pool); d_cell_type_pool = nullptr; }
@@ -442,6 +444,7 @@ void GpuIbmList::build(const BlockTree& tree, const GpuPool& pool, const GpuBvh&
     if (d_wnorm_pool)     { cudaFree(d_wnorm_pool);     d_wnorm_pool = nullptr; }
     if (d_ghosts)         { cudaFree(d_ghosts);         d_ghosts = nullptr; }
     if (d_solid_fills)    { cudaFree(d_solid_fills);    d_solid_fills = nullptr; }
+    if (d_R_c_pool)       { cudaFree(d_R_c_pool);       d_R_c_pool = nullptr; }
     n_ghosts = 0; n_solid_fills = 0;
 
     std::vector<int> local;
@@ -453,6 +456,7 @@ void GpuIbmList::build(const BlockTree& tree, const GpuPool& pool, const GpuBvh&
     CUDA_CHECK(cudaMalloc(&d_cell_type_pool, (size_t)n_leaves * GPU_NCELL * sizeof(int8_t)));
     CUDA_CHECK(cudaMalloc(&d_sdf_pool,       (size_t)n_leaves * GPU_NCELL * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_wnorm_pool,     (size_t)n_leaves * GPU_NCELL * 3 * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_R_c_pool,       (size_t)n_leaves * GPU_NCELL * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_cell_type_pool, 0, (size_t)n_leaves * GPU_NCELL * sizeof(int8_t)));
 
     std::vector<GpuIbmMeta> h_metas(n_leaves);
@@ -478,6 +482,7 @@ void GpuIbmList::build(const BlockTree& tree, const GpuPool& pool, const GpuBvh&
         bvh.d_v2x, bvh.d_v2y, bvh.d_v2z,
         bvh.d_nx,  bvh.d_ny,  bvh.d_nz);
     k_ibm_mark_ghosts<<<n_leaves, TPB>>>(d_metas);
+    k_ibm_curvature<<<n_leaves, TPB>>>(d_metas, d_R_c_pool, n_leaves);
     CUDA_CHECK(cudaDeviceSynchronize());
 
     build_ghost_entries(tree, pool, local,
@@ -521,4 +526,92 @@ GpuIbmList::~GpuIbmList() {
     if (d_wnorm_pool)     cudaFree(d_wnorm_pool);
     if (d_ghosts)         cudaFree(d_ghosts);
     if (d_solid_fills)    cudaFree(d_solid_fills);
+    if (d_R_c_pool)       cudaFree(d_R_c_pool);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// k_ibm_curvature  (one block per leaf, 256 threads, stride loop over GPU_NCELL)
+// Computes R_c[flat] = 1/|div(n)| using central differences on wall_normal_field.
+// Cells on the stencil boundary (i/j/k == 0 or NB2-1) get R_c = 1e30.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__
+void k_ibm_curvature(const GpuIbmMeta* __restrict__ metas,
+                     float* __restrict__ d_R_c_pool, int n_leaves)
+{
+    const int li = blockIdx.x;
+    if (li >= n_leaves) return;
+    const GpuIbmMeta& m = metas[li];
+    float* R_c = d_R_c_pool + (size_t)li * GPU_NCELL;
+
+    const float inv2hx = 0.5f / m.hx;
+    const float inv2hy = 0.5f / m.hy;
+    const float inv2hz = 0.5f / m.hz;
+
+    for (int flat = threadIdx.x; flat < GPU_NCELL; flat += blockDim.x) {
+        const int kk = flat / (GPU_NB2 * GPU_NB2);
+        const int jj = (flat / GPU_NB2) % GPU_NB2;
+        const int ii = flat % GPU_NB2;
+        if (ii < 1 || ii >= GPU_NB2 - 1 ||
+            jj < 1 || jj >= GPU_NB2 - 1 ||
+            kk < 1 || kk >= GPU_NB2 - 1) {
+            R_c[flat] = 1e30f;
+            continue;
+        }
+        const float kappa =
+              (m.d_wnx[flat + 1]          - m.d_wnx[flat - 1])           * inv2hx
+            + (m.d_wny[flat + GPU_NB2]    - m.d_wny[flat - GPU_NB2])     * inv2hy
+            + (m.d_wnz[flat + GPU_NB2*GPU_NB2] - m.d_wnz[flat - GPU_NB2*GPU_NB2]) * inv2hz;
+        R_c[flat] = (fabsf(kappa) > 1e-8f) ? 1.0f / fabsf(kappa) : 1e30f;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// k_ibm_augment_sensor  (one block per leaf, dim3(GPU_NB,GPU_NB,GPU_NB) = 512 threads)
+// For interior cells with |sdf| < 3h, compute signal = curvature_k * h / R_c * refine_thr.
+// Block-wide max reduction (same pattern as k_refine_sensor); blends into d_sensor in-place.
+// ─────────────────────────────────────────────────────────────────────────────
+__global__
+void k_ibm_augment_sensor(const GpuIbmMeta* __restrict__ metas,
+                           const float* __restrict__ d_R_c_pool,
+                           float curvature_k, float refine_thr,
+                           float* __restrict__ d_sensor, int n_leaves)
+{
+    const int li = blockIdx.x;
+    if (li >= n_leaves) return;
+    const GpuIbmMeta& m = metas[li];
+    const float* R_c    = d_R_c_pool + (size_t)li * GPU_NCELL;
+    const float h       = m.hx;
+    const float thr_sdf = 3.0f * h;
+
+    const int i    = GPU_NG + threadIdx.x;
+    const int j    = GPU_NG + threadIdx.y;
+    const int k    = GPU_NG + threadIdx.z;
+    const int flat = gpu_cell_idx(i, j, k);
+
+    float val = 0.0f;
+    if (fabsf(m.d_sdf[flat]) < thr_sdf) {
+        const float rc = R_c[flat];
+        if (rc < 1e29f)
+            val = curvature_k * h / rc * refine_thr;
+    }
+
+    __shared__ float smax[GPU_NB * GPU_NB * GPU_NB];
+    const int tid = threadIdx.x + GPU_NB * (threadIdx.y + GPU_NB * threadIdx.z);
+    smax[tid] = val;
+    __syncthreads();
+    for (int s = (GPU_NB * GPU_NB * GPU_NB) / 2; s > 0; s >>= 1) {
+        if (tid < s) smax[tid] = fmaxf(smax[tid], smax[tid + s]);
+        __syncthreads();
+    }
+    if (tid == 0) d_sensor[li] = fmaxf(d_sensor[li], smax[0]);
+}
+
+void GpuIbmList::augment_sensor(float* d_sensor, float refine_thr,
+                                 cudaStream_t stream) const
+{
+    if (n_leaves == 0 || !d_R_c_pool || !d_metas) return;
+    const dim3 block(GPU_NB, GPU_NB, GPU_NB);
+    k_ibm_augment_sensor<<<n_leaves, block, 0, stream>>>(
+        d_metas, d_R_c_pool, curvature_k, refine_thr, d_sensor, n_leaves);
+    CUDA_CHECK(cudaGetLastError());
 }
