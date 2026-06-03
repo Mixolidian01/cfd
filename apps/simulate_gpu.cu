@@ -392,6 +392,23 @@ int main(int argc, char* argv[])
     solver.set_gpu_pool(&pool);
     solver.set_gpu_solver(&graph_solver);
 
+    // ── IBM startup pre-refinement ────────────────────────────────────────────
+    // Iterate gpu_regrid() until h ≤ R_c/curvature_k on every IBM leaf.
+    // Runs when IBM is active and max_level > 0; terminates because depth is capped.
+    if (sc.ibm.enabled && ibm_bvh && sc.amr.max_level > 0) {
+        graph_solver.upload_q();
+        const int bc0 = sc.bc.faces ? bc_to_int((*sc.bc.faces)[0])
+                                    : bc_to_int(sc.bc.variant);
+        int n_passes = 0;
+        while (graph_solver.gpu_regrid(solver.tree, pool, bc0, sc.amr.max_level))
+            ++n_passes;
+        if (n_passes > 0) {
+            gpu_build();
+            printf("simulate_gpu: IBM pre-refinement: %d pass(es)  leaves=%d\n",
+                   n_passes, (int)solver.tree.leaf_indices().size());
+        }
+    }
+
     printf("simulate_gpu: GPU solver active  leaves=%d\n",
            (int)solver.tree.leaf_indices().size());
 

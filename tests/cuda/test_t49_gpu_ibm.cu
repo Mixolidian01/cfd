@@ -262,6 +262,45 @@ int main() {
               n_detected > 0 ? (double)n_range / n_detected : 1.0);
     }
 
+    // ── I11: Startup pre-refinement loop ──────────────────────────────────────
+    // Fresh single-block tree, IBM sphere R=0.25, max_level=2.
+    // The IBM curvature sensor should trigger ≥1 refinement pass and increase
+    // the leaf count beyond the initial 1.
+    {
+        BlockTree pre_tree; pre_tree.init(1.0);
+        CellBlock* pb = pre_tree.nodes[0].block.get();
+        // Set a uniform IC (Löhner sensor ≈ 0; only IBM curvature drives refine).
+        for (int f = 0; f < NCELL; ++f) {
+            pb->Q[0][f] = 1.0; pb->Q[1][f] = 0.0;
+            pb->Q[2][f] = 0.0; pb->Q[3][f] = 0.0; pb->Q[4][f] = 2.5;
+        }
+        upload_block(pb);
+
+        GpuGraphSolver pre_solver;
+        pre_solver.set_gpu_ibm(&bvh, 0, 0.f, 0.f, 0.f, 300.f);
+        pre_solver.build(pre_tree, g_pool, 0);
+        pre_solver.upload_q();
+
+        const int leaves_before = (int)pre_tree.leaf_indices().size();
+        int n_passes = 0;
+        while (pre_solver.gpu_regrid(pre_tree, g_pool, 0, 2))
+            ++n_passes;
+        const int leaves_after = (int)pre_tree.leaf_indices().size();
+
+        check(n_passes >= 1, "I11a",
+              "IBM pre-refinement: ≥1 pass on max_level=2 sphere tree",
+              (double)n_passes);
+        check(leaves_after > leaves_before, "I11b",
+              "IBM pre-refinement: leaf count increased after loop",
+              (double)(leaves_after - leaves_before));
+
+        for (int li : pre_tree.leaf_indices()) {
+            CellBlock* b = pre_tree.nodes[li].block.get();
+            if (b && g_pool.has_device(b)) g_pool.free(b);
+        }
+        if (g_pool.has_device(pb)) g_pool.free(pb);
+    }
+
     // ── W5: winding-number sign on a non-convex torus ─────────────────────────
     // Torus: major radius R=0.30, minor radius r=0.09, centred at (0.5,0.5,0.5).
     // Domain [0,1]^3, 1 leaf block → h = 1/NB = 0.125.
