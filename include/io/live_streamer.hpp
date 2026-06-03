@@ -31,6 +31,7 @@
 
 #include "mesh/block_tree.hpp"
 #include "gpu_snapshot.hpp"
+#include "models/primitive_gen.hpp"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -174,6 +175,17 @@ public:
 
     int port() const noexcept { return cfg_.port; }
 
+    // Steering — polled by advance loop
+    bool is_paused()      const noexcept { return steer_paused_.load(std::memory_order_acquire); }
+    bool pop_checkpoint() noexcept { return steer_checkpoint_.exchange(false, std::memory_order_acq_rel); }
+    bool pop_regrid()     noexcept { return steer_regrid_.exchange(false,     std::memory_order_acq_rel); }
+
+    // Geometry cache — set after loading IBM mesh
+    void set_geometry(const TriangleMesh& mesh) {
+        std::lock_guard<std::mutex> lk(geom_mtx_);
+        geom_cache_ = mesh;
+    }
+
 private:
     StreamConfig cfg_;
     mutable std::mutex cfg_mtx_;
@@ -204,6 +216,17 @@ private:
     std::atomic<int> stream_fd_{-1};     // 2-D slice stream socket
     std::atomic<int> vol_stream_fd_{-1}; // 3-D volume stream socket
 
+    // ── GUI extensions ────────────────────────────────────────────────────────────
+    std::atomic<bool> steer_paused_{false};
+    std::atomic<bool> steer_checkpoint_{false};
+    std::atomic<bool> steer_regrid_{false};
+
+    TriangleMesh geom_cache_;
+    std::mutex   geom_mtx_;
+
+    std::string  sim_cfg_json_;
+    std::mutex   sim_cfg_mtx_;
+
     // ── Internal helpers ──────────────────────────────────────────────────────
     void run_accept();
     void run_stream();
@@ -217,6 +240,11 @@ private:
     void handle_post_config     (int cfd, const std::string& req_with_body);
     void handle_get_metrics     (int cfd);
     void handle_post_probe      (int cfd, const std::string& req_with_body);
+    void handle_get_sim_config  (int cfd);
+    void handle_post_sim_config (int cfd, const std::string& req_with_body);
+    void handle_post_steer      (int cfd, const std::string& req_with_body);
+    void handle_get_geometry    (int cfd);
+    void handle_post_primitives (int cfd, const std::string& req_with_body);
 
     void build_frame    (const BlockTree&, int step, double t, FrameBuffer&);
     void serialize_frame(const FrameBuffer&, std::vector<uint8_t>& out);
