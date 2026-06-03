@@ -76,6 +76,10 @@ struct GpuGraphSolver : IGpuSolver {
     // to rigid_body_->step(); the IBM wall velocity is updated accordingly.
     // FSI is always run in explicit mode (no CUDA graph capture).
     RigidBody6DOF* rigid_body_ = nullptr;
+    // When true, surface-force wrench is accumulated each stage but the rigid-body
+    // ODE step is skipped and ibm_list_.rigid is left untouched.  Used by validation
+    // tests with prescribed kinematics (e.g. t53 F3 Theodorsen pitching airfoil).
+    bool           rigid_prescribed_ = false;
     double*        d_wrench_   = nullptr;  // [6]: {Fx,Fy,Fz,Tx,Ty,Tz} on device
     GpuIbmForceMeta* d_rhs_leaf_metas_ = nullptr;  // [n_leaves] for k_surface_forces_ibm
 
@@ -166,6 +170,24 @@ struct GpuGraphSolver : IGpuSolver {
     // FSI-1: attach a rigid body for moving-wall BC + 6-DOF ODE integration.
     // Call before build().  non-null → IBM must also be enabled.
     void set_rigid_body(RigidBody6DOF* rb) { rigid_body_ = rb; }
+
+    // FSI-1: copy the current surface-force wrench {Fx,Fy,Fz,Tx,Ty,Tz} from
+    // device to host (last RK3 sub-stage value).  No-op when FSI not active.
+    // Used by validation tests (e.g. t53 F3 Theodorsen Cl) that need the
+    // integrated surface force per step even when no rigid body is attached.
+    void read_wrench(double out[6]) const;
+
+    // FSI-1: directly set the IBM rigid-body kinematic state for prescribed
+    // motion tests.  Bypasses the 6-DOF ODE — caller controls v_cm/omega/x_cm.
+    // No effect when IBM is disabled.
+    void set_rigid_state(const IbmRigidState& s) { ibm_list_.update_rigid(s); }
+
+    // FSI-1: enable prescribed-motion mode.  When true, the surface-force kernel
+    // is launched each stage (so read_wrench() returns valid data) but no rigid
+    // body ODE step is performed and ibm_list_.rigid is not overwritten — the
+    // caller controls the kinematic state via set_rigid_state() each step.
+    // Requires IBM to be enabled.  Call before build().
+    void set_rigid_prescribed(bool on) { rigid_prescribed_ = on; }
 
     void set_body_force(double fx, double fy, double fz) override {
         force_x_ = fx; force_y_ = fy; force_z_ = fz;

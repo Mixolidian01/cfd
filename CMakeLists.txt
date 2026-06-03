@@ -450,6 +450,15 @@ if(NVCC)
         SRCS ${_T}/test_t52_vtk.cu
              ${_S}/io/vtk_writer.cu
     )
+    # FSI-1 gate (t53): rigid 6-DOF ODE (F1/F2) + prescribed NACA0012 pitching
+    # Theodorsen Cl validation (F3).  Requires full GPU NS stack (IBM + RHS + RK3).
+    add_nvcc_gate(TARGET t53 BIN t53_fsi_rigid
+        COMMENT "FSI-1 RigidBody6DOF + prescribed pitching NACA0012 Theodorsen Cl"
+        EXTRA_FLAGS ${_WNO}  EXTRA_LIBS ${_LZ4}
+        SRCS ${_T}/test_t53_fsi_rigid.cu
+             ${_S}/models/ibm.cpp
+             ${_GPU_NS}
+    )
 
     # D0 roofline baseline benchmark (build-only target; run manually for profiling)
     set(_D0_SRCS
@@ -544,20 +553,13 @@ else()
 endif()
 
 # =============================================================================
-# FSI library and gate t53 (CPU-only; no CUDA required)
+# FSI library (still needed by GPU t53 — rigid_body.cpp is also pulled into
+# _GPU_NS, but the standalone library is kept for non-CUDA consumers).
 # =============================================================================
 add_library(fsi STATIC src/fsi/rigid_body.cpp)
 target_include_directories(fsi PUBLIC include)
-
-add_executable(test_t53_fsi_rigid tests/cpu/test_t53_fsi_rigid.cpp)
-target_link_libraries(test_t53_fsi_rigid PRIVATE fsi m)
-add_test(NAME t53_fsi_rigid COMMAND test_t53_fsi_rigid)
-add_custom_target(t53
-    DEPENDS test_t53_fsi_rigid
-    COMMAND $<TARGET_FILE:test_t53_fsi_rigid>
-    COMMENT "FSI-1 RigidBody6DOF unit test (Newton's law + wall_velocity)"
-    USES_TERMINAL
-)
+# Gate t53 is now CUDA-only (FSI-1 with Theodorsen Cl validation) and is
+# registered in the nvcc-gates block above via add_nvcc_gate(TARGET t53 ...).
 
 # =============================================================================
 # Optional feature gates  (t9–t18)
@@ -744,7 +746,6 @@ add_custom_target(ba
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
             test_ensemble test_scheme_select test_t38_adjoint test_t42_adjoint_rk3
             test_rect_domain test_t42_rect_ns test_multi_root
-            test_t53_fsi_rigid
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"
     USES_TERMINAL
