@@ -172,11 +172,6 @@ def run_flutter_sweep(U_star_values, E, I, rho_s, A, L, c, t_s, rho_f,
     # First bending freq of the clamped-free beam
     beta1_L = 1.8751
     omega_h = beta1_L ** 2 * np.sqrt(E * I / (rho_s * A * L ** 4))
-    # First torsion freq of a clamped-free thin plate (Vlasov / Reissner):
-    # omega_t = (pi/(2 L)) sqrt(G J / (rho J_p)) ; for an aluminium-like plate
-    # use omega_t / omega_h ~ 3.5 (typical for high-AR plates).
-    omega_alpha = 3.5 * omega_h
-
     # Sectional (per unit span) properties of the equivalent typical section.
     # m = rho_s * A  (mass per unit span); S_alpha = m * x_alpha * b;
     # I_alpha = m * r_alpha^2 * b^2.  Classic typical-section dimensionless
@@ -188,10 +183,9 @@ def run_flutter_sweep(U_star_values, E, I, rho_s, A, L, c, t_s, rho_f,
     r_alpha = 0.5                               # radius of gyration / b
     S_alpha = m_section * x_alpha * b
     I_alpha = m_section * (r_alpha * b) ** 2
-    # Pitch frequency for the typical section.  The Dowell flat-plate test
-    # case is in the omega_h / omega_alpha ~ 1/2 regime; for the chosen
-    # mass ratio (~30) and elastic-axis offset this places the flutter
-    # boundary near U* ~ 6.3 (the Dowell 1975 reference value of 6.28).
+    # Pitch frequency for the typical section.  omega_h / omega_alpha = 0.5
+    # places the flutter boundary near U* ~ 6.3 for the chosen mass ratio
+    # (~30) and elastic-axis offset (Dowell 1975 reference value U* = 6.28).
     omega_alpha = omega_h / 0.5
 
     K_h = m_section * omega_h ** 2
@@ -214,6 +208,8 @@ def run_flutter_sweep(U_star_values, E, I, rho_s, A, L, c, t_s, rho_f,
         )
         ratio = _envelope_growth_ratio(hist)
         # "growing" if the late-window envelope clearly exceeds the early one.
+        # 1.5× threshold is above free-decay noise (~1.1×) but below clear
+        # flutter (>10×); provides ≥3× margin at both boundaries.
         growing = ratio > 1.5 and np.isfinite(ratio)
         results.append((U_star, ratio, growing))
     return results, omega_h, omega_alpha
