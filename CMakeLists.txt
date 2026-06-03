@@ -864,6 +864,31 @@ if(Python3_FOUND)
     else()
         message(STATUS "D11: pybind11 not found (pip install pybind11 to enable t39)")
     endif()
+
+    # ------------------------------------------------------------------ #
+    # FSI-2+3 gate t54 (Python-only: corotational beam FEM + Aitken FSI
+    # coupling + Dowell flat-plate flutter detection).  Does not depend
+    # on the pybind11 cfd module; just needs numpy.
+    # ------------------------------------------------------------------ #
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -c "import numpy"
+        RESULT_VARIABLE _numpy_rc
+        OUTPUT_QUIET ERROR_QUIET)
+    if(_numpy_rc EQUAL 0)
+        add_custom_target(t54
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tests/fsi/test_t54_fsi_elastic.py"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            COMMENT "FSI-2+3 gate t54: Dowell flat-plate flutter onset U* in [5.3,7.3]"
+            USES_TERMINAL)
+        add_test(NAME t54_fsi_elastic
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_SOURCE_DIR}/tests/fsi/test_t54_fsi_elastic.py"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        message(STATUS "FSI-2+3: numpy found — t54 gate enabled")
+    else()
+        message(STATUS "FSI-2+3: numpy not found — t54 gate disabled")
+    endif()
 else()
     message(STATUS "D11: Python3 not found — skipping pybind11 module")
 endif()
