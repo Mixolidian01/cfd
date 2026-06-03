@@ -146,7 +146,8 @@ static void test_gui_endpoints(int port) {
 
     // GE8: GET /geometry non-empty after sphere
     r = http_get("/geometry", port);
-    check(r.find("\"count\":") != std::string::npos, "GE8", "GET /geometry non-empty after primitive");
+    check(r.find("\"count\":0") == std::string::npos &&
+          r.find("\"count\":") != std::string::npos, "GE8", "GET /geometry non-empty after primitive");
 
     // GE9: POST /primitives box 200
     code = http_post("/primitives",
