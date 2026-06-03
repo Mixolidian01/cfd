@@ -189,7 +189,7 @@ public:
         geom_cache_ = mesh;
     }
 
-    // Launch state — used in --launcher mode
+    // Launch state — used in --launcher mode (single-consumer polling)
     bool pop_launch(std::string& json_out) noexcept {
         if (!launch_ready_.load(std::memory_order_acquire)) return false;
         std::lock_guard<std::mutex> lk(launch_mtx_);

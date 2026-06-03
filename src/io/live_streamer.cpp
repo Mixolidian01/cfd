@@ -614,6 +614,7 @@ void LiveStreamer::handle_connection(int cfd) {
         ::close(cfd);
     } else if (is_get_status) {
         handle_get_status(cfd);
+        ::close(cfd);
     } else {
         const char* r404 =
             "HTTP/1.1 404 Not Found\r\n"
@@ -2306,5 +2307,4 @@ void LiveStreamer::handle_get_status(int cfd) {
         "Content-Length: %d\r\n\r\n", blen);
     ::send(cfd, hdr, hlen, 0);
     ::send(cfd, body, blen, 0);
-    ::close(cfd);
 }
