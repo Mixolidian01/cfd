@@ -17,6 +17,7 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <cmath>
 #include <vector>
 #include <array>
@@ -334,6 +335,8 @@ static void test_F3_theodorsen()
     double t = 0.0;
     bool stable = true;
     const double q_inf = 0.5 * rho_inf * U_inf * U_inf * chord * span;  // dyn. pressure × area
+    double peak_Cl = 0.0;
+    double peak_w[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     for (int s = 0; s < n_steps; ++s) {
         prescribe(t);
         double dt = solver.advance(tree, /*cfl=*/0.2);
@@ -344,6 +347,10 @@ static void test_F3_theodorsen()
         double Cl = w[1] / q_inf;
         if (!std::isfinite(Cl)) { stable = false; break; }
         Cl_hist.push_back(Cl);
+        if (std::fabs(Cl) > std::fabs(peak_Cl)) {
+            peak_Cl = Cl;
+            std::memcpy(peak_w, w, sizeof(peak_w));
+        }
         if (s == 0 || s == 10 || s == 25 || s == n_steps - 1)
             std::printf("    step %4d  t=%.3f  dt=%.3e  Cl=%.4e  Fy=%.3e\n",
                         s, t, dt, Cl, w[1]);
@@ -367,10 +374,41 @@ static void test_F3_theodorsen()
     std::printf("  Cl history: %d samples, %d finite\n",
                 (int)Cl_hist.size(), n_finite);
     std::printf("  Cl_peak (|Cl|_max over recorded window) = %.4f\n", Cl_peak);
-    const bool in_range = (Cl_peak >= 0.01 && Cl_peak <= 5.0);
+    std::printf("  peak signed Cl = %+.4f  peak wrench T=(%+.3e,%+.3e,%+.3e)\n",
+                peak_Cl, peak_w[3], peak_w[4], peak_w[5]);
+    const bool in_range = (Cl_peak >= 0.05 && Cl_peak <= 1.5);
     check(in_range, "F3b",
-          "FSI surface-force pipeline: |Cl|_peak ∈ [0.01, 5.0] (wrench non-trivial)",
+          "FSI surface-force pipeline: |Cl|_peak ∈ [0.05, 1.5] (wrench non-trivial)",
           Cl_peak, /*show_v=*/true);
+
+    // F3c: pitching moment Tz is non-trivial (catches axis swap in the surface
+    // cross-product).  Pitching motion is pure rotation about z, so a correct
+    // k_surface_forces_ibm must produce a Tz of order Cm·q_inf·c that scales
+    // with |Cl|.  An axis swap (e.g. dTz formula routed into dTx/dTy slot) or
+    // sign error in the cross-product would collapse |Tz| to near zero or to
+    // an inconsistent sign.  We assert |Tz| ≥ 1% of (q_inf · chord), and that
+    // Tz scales with the force level (|Tz| at peak ≥ 10% of |Tx|+|Ty|).
+    //
+    // (We deliberately do *not* assert |Tz| > |Tx|, |Ty| individually: on this
+    // thin-slab geometry, span ≈ chord and z-asymmetric IBM ghost layout feed
+    // 3D moments into Tx/Ty via rz·dFx even with the correct cross-product —
+    // the axis-swap-sensitive signature is "Tz disappears", not "Tz dominates".)
+    const double q_inf_chord = q_inf * chord;
+    const double T_inplane   = std::fabs(peak_w[3]) + std::fabs(peak_w[4]);
+    const bool tz_nontrivial = (std::fabs(peak_w[5]) > 0.01 * q_inf_chord) &&
+                               (std::fabs(peak_w[5]) > 0.1  * T_inplane);
+    check(tz_nontrivial, "F3c",
+          "pitching moment Tz non-trivial (≥1%·q∞·c and ≥10%·(|Tx|+|Ty|))",
+          peak_w[5], /*show_v=*/true);
+
+    // F3d: signed Cl sanity.  Freestream is +x; pitch axis is +z with
+    // omega_z = alpha0*omega0*cos(omega0*t) > 0 at t=0.  Positive omega_z
+    // rotates the chord from +x toward +y, so the trailing edge moves +y and
+    // the leading edge moves -y → nose-down rotation → effective AOA < 0 →
+    // lift (Fy) in -y → Cl_peak < 0.
+    check(peak_Cl < 0.0, "F3d",
+          "signed Cl: omega_z>0 pitches nose-down → peak Cl negative",
+          peak_Cl, /*show_v=*/true);
 
     // Cleanup
     for (int li : tree.leaf_indices()) pool.free(tree.nodes[li].block.get());
