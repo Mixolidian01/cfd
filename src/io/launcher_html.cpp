@@ -554,8 +554,10 @@ async function launch(){
       body:JSON.stringify(buildConfig())});
     if(!r.ok)throw new Error('HTTP '+r.status);
     st.textContent='Building solver…';
+    let tries=0;
     for(;;){
       await new Promise(res=>setTimeout(res,500));
+      if(++tries>120){throw new Error('launch timed out after 60s');}
       try{
         const d=await(await fetch('/status')).json();
         if(d.state==='running'){window.location.href='/';return;}
