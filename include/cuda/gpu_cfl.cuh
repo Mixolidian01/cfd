@@ -42,6 +42,7 @@ struct GpuCflList {
     unsigned long long* d_dt_bits  = nullptr;  // atomicMin scratch (uint64)
     double*             d_dt       = nullptr;  // live device dt (double)
     int                 n_leaves   = 0;
+    double              mu_const_  = 0.0;      // > 0 → override Sutherland viscosity
 
     GpuCflList() = default;
     GpuCflList(const GpuCflList&) = delete;

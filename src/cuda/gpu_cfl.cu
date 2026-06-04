@@ -35,6 +35,7 @@ __global__
 void k_cfl_reduce(const GpuLeafCflMeta* __restrict__ metas,
                   int   n_leaves,
                   double cfl,
+                  double mu_const,
                   unsigned long long* __restrict__ d_dt_bits)
 {
     constexpr int N_INT = GPU_NB * GPU_NB * GPU_NB;   // 512 interior cells per leaf
@@ -71,7 +72,8 @@ void k_cfl_reduce(const GpuLeafCflMeta* __restrict__ metas,
         {
             constexpr double C_VISC = (GPU_GAMMA / GPU_PR > 4.0/3.0)
                                       ? GPU_GAMMA / GPU_PR : 4.0/3.0;
-            const double nu = gpu_sutherland(q.T) / q.rho;
+            const double mu_eff = (mu_const > 0.0) ? mu_const : gpu_sutherland(q.T);
+            const double nu = mu_eff / q.rho;
             if (nu > 0.0) {
                 unsigned long long bits = __double_as_longlong(
                     h_min * h_min / (2.0 * C_VISC * nu));
@@ -163,7 +165,7 @@ double GpuCflList::exec(double cfl, cudaStream_t stream) const {
     constexpr int TPB = 256;
     const int total_cells = n_leaves * GPU_NB * GPU_NB * GPU_NB;
     const int nblocks = (total_cells + TPB - 1) / TPB;
-    k_cfl_reduce<<<nblocks, TPB, 0, stream>>>(d_metas, n_leaves, cfl, d_dt_bits);
+    k_cfl_reduce<<<nblocks, TPB, 0, stream>>>(d_metas, n_leaves, cfl, mu_const_, d_dt_bits);
     CUDA_CHECK(cudaGetLastError());
 
     // Convert bits → device double (avoids extra type-pun on host)
