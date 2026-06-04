@@ -246,13 +246,9 @@ int main(int argc, char* argv[])
     }
 
     // === Viscosity ===
-    {
-        const double mu         = cfg.d("mu",         0.0);
-        const bool   sutherland = cfg.b("sutherland", false);
-        if (mu != 0.0 || sutherland)
-            fprintf(stderr, "[WARN] simulate_gpu: mu/sutherland not yet wired in simulate_gpu.cu step loop\n");
-        (void)mu; (void)sutherland;
-    }
+    const double mu_visc    = cfg.d("mu",         0.0);
+    const bool   sutherland = cfg.b("sutherland", false);
+    (void)sutherland;  // Sutherland used automatically when mu_visc == 0
 
     // === ACDI phase field ===
     sc.acdi.use_acdi  = cfg.b("acdi",         false);
@@ -304,8 +300,6 @@ int main(int argc, char* argv[])
     // === WMLES ===
     sc.physics.wmles_enabled        = cfg.b("wmles",         false);
     sc.physics.wall_model.use_ode   = (cfg.str("wmles_model","reichardt") == "ode");
-    if (sc.physics.wmles_enabled)
-        fprintf(stderr, "[WARN] simulate_gpu: wmles wired via gpu_wmles.cu — not yet in simulate_gpu.cu step loop\n");
 
     // === Body force ===
     sc.physics.body_force[0] = cfg.d("body_fx", 0.0);
@@ -435,6 +429,20 @@ int main(int argc, char* argv[])
     }
     graph_solver.set_ducros(sc.numerics.ducros_p_threshold,
                             1.0 / sc.numerics.ducros_blend_width);
+    if (mu_visc > 0.0)
+        graph_solver.set_mu(mu_visc);
+    if (sc.physics.wmles_enabled && mu_visc > 0.0) {
+        const int    wmles_ax  = cfg.i("wmles_axis", 1);  // wall-normal axis (default Y)
+        const double ic_rho    = cfg.d("ic_rho", 1.0);
+        const double nu        = mu_visc / ic_rho;
+        WallModelCfg wm_cfg;
+        wm_cfg.use_ode = sc.physics.wall_model.use_ode;
+        graph_solver.set_gpu_wmles(wmles_ax, nu, wm_cfg);
+        printf("simulate_gpu: WMLES active  axis=%d  nu=%.4g  model=%s\n",
+               wmles_ax, nu, sc.physics.wall_model.use_ode ? "ode" : "reichardt");
+    } else if (sc.physics.wmles_enabled) {
+        fprintf(stderr, "[WARN] simulate_gpu: wmles=true requires mu>0 — WMLES disabled\n");
+    }
     graph_solver.set_body_force(sc.physics.body_force[0],
                                 sc.physics.body_force[1],
                                 sc.physics.body_force[2]);

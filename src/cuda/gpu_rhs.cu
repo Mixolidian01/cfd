@@ -51,7 +51,7 @@ void k_prim_duc(const GpuLeafRhsMeta* __restrict__ metas) {
         m.d_scratch[4*GPU_NCELL+flat] = q.p;
         m.d_scratch[5*GPU_NCELL+flat] = q.T;
         m.d_scratch[6*GPU_NCELL+flat] = q.c;
-        m.d_scratch[7*GPU_NCELL+flat] = gpu_sutherland(q.T);
+        m.d_scratch[7*GPU_NCELL+flat] = (m.mu_const > 0.0) ? m.mu_const : gpu_sutherland(q.T);
     }
     __syncthreads();
 
@@ -941,6 +941,7 @@ void GpuRhsList::build(const BlockTree& tree, const GpuPool& pool) {
         meta.hz           = nd.block->hz;
         meta.duc_p_thr    = duc_p_thr_;
         meta.duc_blend_inv= duc_blend_inv_;
+        meta.mu_const     = mu_const_;
         meta.is_periodic  = (tree.is_fully_periodic() && n_leaves == 1) ? 1u : 0u;
         meta.cf_bnd_mask  = 0u;
         for (int d = 0; d < NFACES; ++d) {

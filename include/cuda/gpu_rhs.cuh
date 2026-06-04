@@ -44,10 +44,11 @@ struct alignas(64) GpuLeafRhsMeta {
     double        hz;           // cell size along Z
     double        duc_p_thr;    // Ducros pressure-sensor threshold (config-driven)
     double        duc_blend_inv;// 1 / blend_width for Ducros pressure-sensor
+    double        mu_const;     // > 0 → override Sutherland with constant viscosity
     uint8_t       is_periodic;  // 1 → single-block fully-periodic: sidx(±3) wrap in gpu_teno7_face is valid
     uint8_t       cf_bnd_mask;  // bits 0..5: face dir d has a finer neighbour → force PCM for TENO7A
 };
-// Three pointers (24 B) + five doubles (40 B) + two uint8 (2 B) + padding (6 B) = 72 B.
+// Three pointers (24 B) + six doubles (48 B) + two uint8 (2 B) + padding (6 B) = 80 B.
 static_assert(sizeof(GpuLeafRhsMeta) <= 128, "GpuLeafRhsMeta too large");
 
 // ── RHS list ─────────────────────────────────────────────────────────────────
@@ -63,9 +64,10 @@ struct GpuRhsList {
     double          duc_p_thr_     = 0.1;   // matches DucrosConfig defaults
     double          duc_blend_inv_ = 10.0;  // 1/0.1
 
-    double force_x_ = 0.0;
-    double force_y_ = 0.0;
-    double force_z_ = 0.0;
+    double force_x_   = 0.0;
+    double force_y_   = 0.0;
+    double force_z_   = 0.0;
+    double mu_const_  = 0.0;   // > 0 → constant viscosity (overrides Sutherland)
 
     GpuRhsList() = default;
     GpuRhsList(const GpuRhsList&) = delete;

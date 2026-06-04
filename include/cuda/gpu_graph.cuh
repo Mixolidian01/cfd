@@ -114,6 +114,10 @@ struct GpuGraphSolver : IGpuSolver {
     double force_y_ = 0.0;
     double force_z_ = 0.0;
 
+    // Constant dynamic viscosity — set via set_mu() before build().
+    // 0 → use Sutherland's law (default).
+    double mu_const_ = 0.0;
+
     // Ducros sensor config — set via set_ducros() before build().
     double duc_p_thr_     = 0.1;
     double duc_blend_inv_ = 10.0;
@@ -202,6 +206,11 @@ struct GpuGraphSolver : IGpuSolver {
     void set_body_force(double fx, double fy, double fz) override {
         force_x_ = fx; force_y_ = fy; force_z_ = fz;
     }
+
+    // Wire a constant dynamic viscosity µ into the viscous RHS kernel.
+    // When > 0, overrides Sutherland's law with the provided value.
+    // Must be called before build().
+    void set_mu(double mu) { mu_const_ = mu; }
 
     // D7: enable GPU WMLES Reichardt wall model.
     // wall_ax: axis perpendicular to wall (0=x, 1=y, 2=z); nu: kinematic viscosity.
