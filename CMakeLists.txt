@@ -641,6 +641,15 @@ add_custom_target(t12 DEPENDS test_streamer
     COMMAND $<TARGET_FILE:test_streamer>
     COMMENT "P6.5 gate: LiveStreamer 2D slice protocol" USES_TERMINAL)
 
+# ── Launcher gate: LiveStreamer launch state machine (LA1-LA4) ────────────────
+add_executable(test_launcher tests/io/test_launcher.cpp)
+target_link_libraries(test_launcher PRIVATE ns_solver pthread)
+target_compile_features(test_launcher PRIVATE cxx_std_20)
+add_test(NAME launcher COMMAND test_launcher)
+add_custom_target(t_launcher DEPENDS test_launcher
+    COMMAND $<TARGET_FILE:test_launcher>
+    COMMENT "Launcher gate: LiveStreamer launch state machine (LA1-LA4)" USES_TERMINAL)
+
 # ── P7.1: MPI domain decomposition (t13) ─────────────────────────────────────
 add_executable(test_mpi tests/mpi/test_mpi.cpp)
 target_link_libraries(test_mpi PRIVATE ns_solver m)
@@ -783,6 +792,7 @@ add_custom_target(ba
             test_weno5_cf test_ibm test_chemistry test_wmles test_neural_sgs
             test_ensemble test_scheme_select test_t38_adjoint test_t42_adjoint_rk3
             test_rect_domain test_t42_rect_ns test_multi_root
+            test_launcher
             t52 t53 t54
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure -V
     COMMENT "Build + run all gate tests"

@@ -534,6 +534,16 @@ void LiveStreamer::run_accept() {
     }
     ::listen(sfd, 8);
 
+    // Resolve OS-assigned port when cfg_.port == 0 (port=0 requests ephemeral port)
+    if (cfg_.port == 0) {
+        sockaddr_in bound_addr{};
+        socklen_t len = sizeof(bound_addr);
+        if (::getsockname(sfd, reinterpret_cast<sockaddr*>(&bound_addr), &len) == 0) {
+            cfg_.port = ntohs(bound_addr.sin_port);
+        }
+    }
+    bound_port_.store(cfg_.port, std::memory_order_release);
+
     std::fprintf(stderr, "[LiveStreamer] listening on http://localhost:%d\n", cfg_.port);
     std::fflush(stderr);
 

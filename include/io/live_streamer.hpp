@@ -40,6 +40,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 // Free function defined in viewer_html.cpp (R9-E1 extraction).
@@ -176,7 +177,17 @@ public:
     void set_axis(uint8_t  a) noexcept;
     void set_pos (double   p) noexcept;
 
-    int port() const noexcept { return cfg_.port; }
+    // Returns the actual bound port (waits up to 500 ms for port=0 OS assignment).
+    int port() const noexcept {
+        if (cfg_.port != 0) return cfg_.port;
+        // Spin-wait until run_accept() has called getsockname
+        for (int i = 0; i < 50; ++i) {
+            int p = bound_port_.load(std::memory_order_acquire);
+            if (p != 0) return p;
+            ::usleep(10'000);
+        }
+        return bound_port_.load(std::memory_order_acquire);
+    }
 
     // Steering — polled by advance loop
     bool is_paused()      const noexcept { return steer_paused_.load(std::memory_order_acquire); }
@@ -238,6 +249,9 @@ private:
 
     TriangleMesh geom_cache_;
     std::mutex   geom_mtx_;
+
+    // ── Actual bound port (set by run_accept via getsockname; 0 until ready) ──
+    std::atomic<int>  bound_port_{0};
 
     // ── Launcher state ────────────────────────────────────────────────────────
     std::atomic<int>  phase_{0};          // 0=waiting, 1=running
