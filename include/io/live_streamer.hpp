@@ -179,14 +179,13 @@ public:
 
     // Returns the actual bound port (waits up to 500 ms for port=0 OS assignment).
     int port() const noexcept {
-        if (cfg_.port != 0) return cfg_.port;
-        // Spin-wait until run_accept() has called getsockname
+        // Spin-wait up to 500 ms for bound_port_ to be set by run_accept()
         for (int i = 0; i < 50; ++i) {
             int p = bound_port_.load(std::memory_order_acquire);
             if (p != 0) return p;
-            ::usleep(10'000);
+            ::usleep(10'000);  // 10 ms
         }
-        return bound_port_.load(std::memory_order_acquire);
+        return bound_port_.load(std::memory_order_acquire);  // final read after timeout
     }
 
     // Steering — polled by advance loop
