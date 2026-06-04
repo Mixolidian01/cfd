@@ -473,7 +473,7 @@ int main(int argc, char* argv[])
 
     // ── Live streamer + GPU snapshot buffer (optional) ────────────────────────
     int stream_port = cfg.i("stream_port", 0);
-    if (!streamer && stream_port > 0) {
+    if (stream_port > 0) {
         StreamConfig scfg;
         scfg.port        = stream_port;
         scfg.axis        = static_cast<uint8_t>(cfg.i("stream_axis",   2));
@@ -491,10 +491,12 @@ int main(int argc, char* argv[])
         else if (sv == "etot")  scfg.var = StreamVar::ETOT;
         else                    scfg.var = StreamVar::RHO;
 
-        streamer = std::make_unique<LiveStreamer>(scfg);
-        if (!sc.ibm.stl_path.empty()) {
-            TriangleMesh gui_geom = load_mesh(sc.ibm.stl_path);
-            streamer->set_geometry(gui_geom);
+        if (!streamer) {
+            streamer = std::make_unique<LiveStreamer>(scfg);
+            if (!sc.ibm.stl_path.empty()) {
+                TriangleMesh gui_geom = load_mesh(sc.ibm.stl_path);
+                streamer->set_geometry(gui_geom);
+            }
         }
         solver.set_streamer(streamer.get());
 
