@@ -69,8 +69,9 @@ __global__ void k_extract_slice(
 // a non-critical visualisation use case.
 __global__ void k_build_volume(
     const SnapLeafMeta* __restrict__ metas,
-    float* __restrict__ d_volume,          // [N*N*N]
-    int n_leaves, int N, int var_id, float domain_L)
+    float* __restrict__ d_volume,          // [nxi*nyi*nzi]
+    int n_leaves, int nxi, int nyi, int nzi,
+    int var_id, float Lx, float Ly, float Lz)
 {
     const int li = blockIdx.x;
     if (li >= n_leaves) return;
@@ -78,7 +79,9 @@ __global__ void k_build_volume(
     const float hx    = m.h;
     const float hy    = m.hy;
     const float hz    = m.hz;
-    const float inv_L = 1.0f / domain_L;
+    const float iLx   = 1.0f / Lx;
+    const float iLy   = 1.0f / Ly;
+    const float iLz   = 1.0f / Lz;
 
     constexpr int N_INT = GPU_NB * GPU_NB * GPU_NB;
     for (int idx = threadIdx.x; idx < N_INT; idx += 64) {
@@ -90,12 +93,12 @@ __global__ void k_build_volume(
         const float cy = m.oy + (jj + 0.5f) * hy;
         const float cz = m.oz + (kk + 0.5f) * hz;
 
-        const int vi0 = max(0,   (int)((cx - 0.5f*hx) * inv_L * N));
-        const int vi1 = min(N-1, (int)((cx + 0.5f*hx) * inv_L * N));
-        const int vj0 = max(0,   (int)((cy - 0.5f*hy) * inv_L * N));
-        const int vj1 = min(N-1, (int)((cy + 0.5f*hy) * inv_L * N));
-        const int vk0 = max(0,   (int)((cz - 0.5f*hz) * inv_L * N));
-        const int vk1 = min(N-1, (int)((cz + 0.5f*hz) * inv_L * N));
+        const int vi0 = max(0,    (int)((cx - 0.5f*hx) * iLx * nxi));
+        const int vi1 = min(nxi-1,(int)((cx + 0.5f*hx) * iLx * nxi));
+        const int vj0 = max(0,    (int)((cy - 0.5f*hy) * iLy * nyi));
+        const int vj1 = min(nyi-1,(int)((cy + 0.5f*hy) * iLy * nyi));
+        const int vk0 = max(0,    (int)((cz - 0.5f*hz) * iLz * nzi));
+        const int vk1 = min(nzi-1,(int)((cz + 0.5f*hz) * iLz * nzi));
 
         const float val = snap_scalar_val(
             m.d_Q, var_id, GPU_NG + ii, GPU_NG + jj, GPU_NG + kk, hx);
@@ -103,7 +106,7 @@ __global__ void k_build_volume(
         for (int vk = vk0; vk <= vk1; ++vk)
         for (int vj = vj0; vj <= vj1; ++vj)
         for (int vi = vi0; vi <= vi1; ++vi)
-            d_volume[vk * N * N + vj * N + vi] = val;
+            d_volume[vk * nxi * nyi + vj * nxi + vi] = val;
     }
 }
 

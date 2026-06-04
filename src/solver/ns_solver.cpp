@@ -331,7 +331,9 @@ double NSSolver::advance() {
             gpu_snap_->var_id     = static_cast<int>(sc.var);
             gpu_snap_->axis       = static_cast<int>(sc.axis);
             gpu_snap_->norm_pos   = static_cast<float>(sc.pos);
-            gpu_snap_->domain_L   = static_cast<float>(tree.domain_L());
+            gpu_snap_->domain_L  = static_cast<float>(tree.domain_L());
+            gpu_snap_->domain_Ly = static_cast<float>(tree.domain_Ly());
+            gpu_snap_->domain_Lz = static_cast<float>(tree.domain_Lz());
             gpu_snap_->vol_active = streamer_->has_volume_client();
             gpu_snap_->volume_N   = std::max(4, std::min(128, sc.volume_size));
         }

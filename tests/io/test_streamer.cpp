@@ -5,7 +5,7 @@
 //
 // Gate conditions:
 //   S1: at least one frame received
-//   S2: magic bytes correct (0xCFD00001)
+//   S2: magic bytes correct (0xCFD00002)
 //   S3: n_blocks > 0
 //   S4: g_vmax > g_vmin (non-degenerate range)
 
@@ -264,7 +264,7 @@ int main() {
         solver_thread.join();
         return 1;
     }
-    if (chunk_size < 4 + 32) {  // at least length prefix + header
+    if (chunk_size < 4 + 40) {  // at least length prefix + header
         std::fprintf(stderr, "FAIL S0: chunk too small (%lu bytes)\n", chunk_size);
         ::close(cfd);
         solver_thread.join();
@@ -309,8 +309,8 @@ int main() {
     std::fprintf(stdout, "S1 (frame received): PASS\n");
 
     // S2: magic
-    if (magic == 0xCFD00001u) {
-        std::fprintf(stdout, "S2 (magic=0xCFD00001): PASS\n");
+    if (magic == 0xCFD00002u) {
+        std::fprintf(stdout, "S2 (magic=0xCFD00002): PASS\n");
     } else {
         std::fprintf(stderr, "S2 FAIL: magic=0x%08X\n", magic);
         result = 1;

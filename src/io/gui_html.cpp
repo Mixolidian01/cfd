@@ -203,7 +203,21 @@ function addPrimitive(type) {
 }
 
 // ── Three.js geometry preview ─────────────────────────────────────────────────
-let threeScene=null,threeRenderer=null,threeCamera=null,threeControls=null,threeMesh=null;
+let threeScene=null,threeRenderer=null,threeCamera=null,threeControls=null,threeMesh=null,threeBoxLine=null;
+
+// Rebuild the wireframe bounding box to reflect the current domain dimensions.
+function updateDomainBox(){
+  if(!threeScene) return;
+  if(threeBoxLine){threeScene.remove(threeBoxLine);threeBoxLine.geometry.dispose();}
+  const maxL=Math.max(domainLx,domainLy,domainLz);
+  const sx=domainLx/maxL, sy=domainLy/maxL, sz=domainLz/maxL;
+  const be=new THREE.EdgesGeometry(new THREE.BoxGeometry(sx,sy,sz));
+  threeBoxLine=new THREE.LineSegments(be,new THREE.LineBasicMaterial({color:0x336699,opacity:0.4,transparent:true}));
+  threeBoxLine.position.set(sx/2,sy/2,sz/2); threeScene.add(threeBoxLine);
+  if(threeControls){threeControls.target.set(sx/2,sy/2,sz/2);threeControls.update();}
+  renderGeom();
+}
+
 function initThree(){
   if(threeRenderer) return true;
   if(!window.THREE){
@@ -218,14 +232,12 @@ function initThree(){
   threeCamera.position.set(1.5,1.5,2.5); threeCamera.lookAt(0.5,0.5,0.5);
   threeScene.add(new THREE.AmbientLight(0x404060,2));
   const dl=new THREE.DirectionalLight(0xffffff,3); dl.position.set(2,3,2); threeScene.add(dl);
-  const be=new THREE.EdgesGeometry(new THREE.BoxGeometry(1,1,1));
-  const bl=new THREE.LineSegments(be,new THREE.LineBasicMaterial({color:0x336699,opacity:0.4,transparent:true}));
-  bl.position.set(0.5,0.5,0.5); threeScene.add(bl);
   if(THREE.OrbitControls){
     threeControls=new THREE.OrbitControls(threeCamera,canvas);
     threeControls.target.set(0.5,0.5,0.5); threeControls.update();
     threeControls.addEventListener('change',renderGeom);
   }
+  updateDomainBox();
   new ResizeObserver(()=>{
     const w=canvas.clientWidth,h=canvas.clientHeight;
     threeRenderer.setSize(w,h,false);
@@ -260,7 +272,8 @@ function loadGeometry(){
 const canvas2d = document.getElementById('c2d');
 const ctx2d    = canvas2d.getContext('2d');
 const infoEl   = document.getElementById('info');
-let imgData = null, domainL = 1.0, blocks2d = [];
+let imgData = null, domainLx = 1.0, domainLy = 1.0, domainLz = 1.0, sliceAxis = 2, blocks2d = [];
+let volAspectY = 1.0, volAspectZ = 1.0;  // ny/nx, nz/nx for 3D volume
 
 function resize2d() {
   const cw = document.getElementById('cw');
@@ -317,6 +330,16 @@ function lz4_decomp(src,src_off,src_len,dst_size) {
   return dst;
 }
 
+// Returns [La, Lb]: the two in-plane domain lengths for the current slice axis.
+// axis=0 (X-slice): shows Y×Z → [domainLy, domainLz]
+// axis=1 (Y-slice): shows X×Z → [domainLx, domainLz]
+// axis=2 (Z-slice): shows X×Y → [domainLx, domainLy]
+function sliceDims(){
+  if(sliceAxis===0) return [domainLy, domainLz];
+  if(sliceAxis===1) return [domainLx, domainLz];
+  return [domainLx, domainLy];
+}
+
 function drawCells(nB, vmin, vmax, getVal) {
   const W=canvas2d.width, H=canvas2d.height;
   if(!imgData||imgData.width!==W||imgData.height!==H)
@@ -324,17 +347,21 @@ function drawCells(nB, vmin, vmax, getVal) {
   const d=imgData.data;
   for(let i=0;i<d.length;i+=4){d[i]=13;d[i+1]=13;d[i+2]=13;d[i+3]=255;}
   const range=(vmax>vmin)?(vmax-vmin):1;
+  const [La,Lb]=sliceDims();
+  // Fit domain in canvas while preserving aspect ratio.
+  const scale=Math.min(W/La, H/Lb);
+  const offX=(W-La*scale)*0.5, offY=(H-Lb*scale)*0.5;
   let ci=0;
   for(let b=0;b<nB;b++){
     const {ox2d,oy2d,h}=blocks2d[b];
-    const pw=Math.max(1,Math.round(h/domainL*W));
-    const ph=Math.max(1,Math.round(h/domainL*H));
+    const pw=Math.max(1,Math.round(h*scale));
+    const ph=Math.max(1,Math.round(h*scale));
     for(let row=0;row<NB;row++)
     for(let col=0;col<NB;col++){
       const val=getVal(ci++);
       const [r,g,bl]=colormap((val-vmin)/range);
-      const cx=Math.round((ox2d+(col+0.5)*h)/domainL*W);
-      const cy=Math.round((1-(oy2d+(row+0.5)*h)/domainL)*H);
+      const cx=Math.round(offX+(ox2d+(col+0.5)*h)*scale);
+      const cy=Math.round(H-offY-(oy2d+(row+0.5)*h)*scale);
       const px0=cx-Math.floor(pw/2), py0=cy-Math.floor(ph/2);
       for(let dy=0;dy<ph;dy++){
         const py=py0+dy; if(py<0||py>=H) continue;
@@ -353,13 +380,15 @@ const AMR_COLORS=['#4af','#fa4','#4fa','#f4a','#af4','#fff'];
 function drawAmrOverlay(nB) {
   if(!document.getElementById('amr').checked) return;
   const W=canvas2d.width, H=canvas2d.height;
+  const [La,Lb]=sliceDims();
+  const scale=Math.min(W/La, H/Lb);
+  const offX=(W-La*scale)*0.5, offY=(H-Lb*scale)*0.5;
   ctx2d.lineWidth=1; ctx2d.save();
   for(let b=0;b<nB;b++){
     const {ox2d,oy2d,h,lv}=blocks2d[b];
     const bs=NB*h;
     ctx2d.strokeStyle=AMR_COLORS[Math.min(lv,AMR_COLORS.length-1)];
-    ctx2d.strokeRect(ox2d/domainL*W,(1-(oy2d+bs)/domainL)*H,
-                     bs/domainL*W, bs/domainL*H);
+    ctx2d.strokeRect(offX+ox2d*scale, H-offY-(oy2d+bs)*scale, bs*scale, bs*scale);
   }
   ctx2d.restore();
 }
@@ -368,7 +397,7 @@ let paused2d = false;
 function parseFrame(bytes) {
   const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   let o=0;
-  if(dv.getUint32(o,true)!==0xCFD00001) return; o+=4;
+  if(dv.getUint32(o,true)!==0xCFD00002) return; o+=4;
   const step=dv.getInt32(o,true); o+=4;
   const t=dv.getFloat64(o,true); o+=8;
   const nB=dv.getUint8(o++);
@@ -377,7 +406,11 @@ function parseFrame(bytes) {
   const compressed=dv.getUint8(o++);
   const vmin_f=dv.getFloat32(o,true); o+=4;
   const vmax_f=dv.getFloat32(o,true); o+=4;
-  domainL=dv.getFloat32(o,true); o+=4;
+  domainLx=dv.getFloat32(o,true); o+=4;
+  domainLy=dv.getFloat32(o,true); o+=4;
+  domainLz=dv.getFloat32(o,true); o+=4;
+  sliceAxis=axis;
+  updateDomainBox();
   const lck=document.getElementById('lck').checked;
   const vmin=lck?(+document.getElementById('vmn').value||vmin_f):vmin_f;
   const vmax=lck?(+document.getElementById('vmx').value||vmax_f):vmax_f;
@@ -473,7 +506,7 @@ document.addEventListener('keydown', e => {
 // ─────────────────────────────────────────────────────────────────────────────
 const canvas3d = document.getElementById('c3d');
 let gl = null, volProg = null, quadVBuf = null;
-let u_inv_vp, u_eye, u_nsteps, u_vmin, u_vmax, u_vol, u_tf;
+let u_inv_vp, u_eye, u_box, u_nsteps, u_vmin, u_vmax, u_vol, u_tf;
 let volTexGL = null, tfTexGL = null;
 let N3d=32, vmin3d=0, vmax3d=1;
 let nsteps=96, opacScale=12, cmapId3d=0;
@@ -524,6 +557,7 @@ uniform sampler3D u_vol;
 uniform sampler2D u_tf;
 uniform mat4 u_inv_vp;
 uniform vec3 u_eye;
+uniform vec3 u_box;  // AABB max corner: (1, ny/nx, nz/nx)
 uniform int  u_nsteps;
 uniform float u_vmin,u_vmax;
 in vec2 v_uv;
@@ -531,7 +565,7 @@ out vec4 fragColor;
 vec2 ray_aabb(vec3 ro,vec3 rd){
   vec3 inv=1.0/rd;
   vec3 t1=-ro*inv;
-  vec3 t2=(vec3(1.0)-ro)*inv;
+  vec3 t2=(u_box-ro)*inv;
   return vec2(max(max(min(t1.x,t2.x),min(t1.y,t2.y)),min(t1.z,t2.z)),
               min(min(max(t1.x,t2.x),max(t1.y,t2.y)),max(t1.z,t2.z)));
 }
@@ -548,7 +582,7 @@ void main(){
   for(int i=0;i<256;i++){
     if(i>=u_nsteps)break;
     vec3 pos=u_eye+tc*rdir;
-    float raw=texture(u_vol,pos).r;
+    float raw=texture(u_vol,pos/u_box).r;  // scale to [0,1]^3 texture UV
     float nm=clamp((raw-u_vmin)/max(u_vmax-u_vmin,0.0001),0.0,1.0);
     vec4 rgba=texture(u_tf,vec2(nm,0.5));
     float a=rgba.a*dt*float(u_nsteps)*0.08;
@@ -585,6 +619,7 @@ function initWebGL(){
       throw new Error(gl.getProgramInfoLog(volProg));
     u_inv_vp=gl.getUniformLocation(volProg,'u_inv_vp');
     u_eye   =gl.getUniformLocation(volProg,'u_eye');
+    u_box   =gl.getUniformLocation(volProg,'u_box');
     u_nsteps=gl.getUniformLocation(volProg,'u_nsteps');
     u_vmin  =gl.getUniformLocation(volProg,'u_vmin');
     u_vmax  =gl.getUniformLocation(volProg,'u_vmax');
@@ -593,7 +628,7 @@ function initWebGL(){
     quadVBuf=gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER,quadVBuf);
     gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
-    createVolTexGL(2,new Float32Array(8));
+    createVolTexGL(2,2,2,new Float32Array(8));
     tfTexGL=gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D,tfTexGL);
     gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
@@ -609,7 +644,7 @@ function initWebGL(){
   }
 }
 
-function createVolTexGL(sz,data){
+function createVolTexGL(nx,ny,nz,data){
   if(volTexGL)gl.deleteTexture(volTexGL);
   volTexGL=gl.createTexture();
   gl.bindTexture(gl.TEXTURE_3D,volTexGL);
@@ -619,8 +654,8 @@ function createVolTexGL(sz,data){
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
-  gl.texImage3D(gl.TEXTURE_3D,0,gl.R32F,sz,sz,sz,0,gl.RED,gl.FLOAT,data);
-  N3d=sz;
+  gl.texImage3D(gl.TEXTURE_3D,0,gl.R32F,nx,ny,nz,0,gl.RED,gl.FLOAT,data);
+  N3d=nx;
 }
 
 function mat4_persp(fov,asp,n,f){const t=1/Math.tan(fov/2),nf=1/(n-f);return new Float32Array([t/asp,0,0,0,0,t,0,0,0,0,(f+n)*nf,-1,0,0,2*f*n*nf,0]);}
@@ -631,7 +666,12 @@ function sub3(a,b){return[a[0]-b[0],a[1]-b[1],a[2]-b[2]];}
 function dot3(a,b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];}
 function cross3(a,b){return[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];}
 function norm3(a){const d=Math.sqrt(dot3(a,a));return[a[0]/d,a[1]/d,a[2]/d];}
-function eye3(){return[.5+radius*Math.sin(theta)*Math.cos(phi),.5+radius*Math.cos(theta),.5+radius*Math.sin(theta)*Math.sin(phi)];}
+function eye3(){
+  const cx=0.5, cy=volAspectY*0.5, cz=volAspectZ*0.5;
+  return[cx+radius*Math.sin(theta)*Math.cos(phi),
+         cy+radius*Math.cos(theta),
+         cz+radius*Math.sin(theta)*Math.sin(phi)];
+}
 
 function render3d(){
   if(!gl||!volProg||!volTexGL||!tfTexGL){requestAnimationFrame(render3d);return;}
@@ -642,11 +682,13 @@ function render3d(){
   gl.clearColor(0.05,0.05,0.1,1.0);
   gl.clear(gl.COLOR_BUFFER_BIT);
   const eye=eye3();
-  const vp=mat4_mul(mat4_persp(.9,cw/ch,.01,10.),mat4_look(eye,[.5,.5,.5],[0,1,0]));
+  const ctr=[0.5,volAspectY*0.5,volAspectZ*0.5];
+  const vp=mat4_mul(mat4_persp(.9,cw/ch,.01,10.),mat4_look(eye,ctr,[0,1,0]));
   const inv=mat4_inv(vp);
   gl.useProgram(volProg);
   gl.uniformMatrix4fv(u_inv_vp,false,inv);
   gl.uniform3f(u_eye,eye[0],eye[1],eye[2]);
+  gl.uniform3f(u_box,1.0,volAspectY,volAspectZ);
   gl.uniform1i(u_nsteps,nsteps);
   gl.uniform1f(u_vmin,vmin3d);
   gl.uniform1f(u_vmax,vmax3d);
@@ -666,26 +708,31 @@ function ingestVolume(bytes){
   const step=dv.getInt32(o,true); o+=4;
   const t=dv.getFloat64(o,true); o+=8;
   const nx=dv.getUint16(o,true); o+=2;
-  o+=2; o+=2; o+=2; // ny, nz, pad
+  const ny=dv.getUint16(o,true); o+=2;
+  const nz=dv.getUint16(o,true); o+=2;
+  o+=2; // pad
   vmin3d=dv.getFloat32(o,true); o+=4;
   vmax3d=dv.getFloat32(o,true); o+=4;
-  o+=4; // domain_L
+  o+=4; // domain_L (Lx)
   o+=1; // var_id
   const compressed=dv.getUint8(o++); o+=2; // pad
   if(!gl)return;
+  const nvox=nx*ny*nz;
   let vol32;
   if(compressed){
     const unc_size=dv.getUint32(o,true); o+=4;
     const u8=lz4_decomp(bytes,o,bytes.length-o,unc_size);
     const udv=new DataView(u8.buffer);
-    vol32=new Float32Array(nx*nx*nx);
+    vol32=new Float32Array(nvox);
     for(let i=0;i<vol32.length;i++)vol32[i]=vmin3d+(udv.getUint16(i*2,true)/65535)*(vmax3d-vmin3d);
   } else {
-    vol32=new Float32Array(bytes.buffer.slice(bytes.byteOffset+o,bytes.byteOffset+o+nx*nx*nx*4));
+    vol32=new Float32Array(bytes.buffer.slice(bytes.byteOffset+o,bytes.byteOffset+o+nvox*4));
   }
-  createVolTexGL(nx,vol32);
+  volAspectY=ny/nx; volAspectZ=nz/nx;
+  createVolTexGL(nx,ny,nz,vol32);
+  updateDomainBox();
   rebuildTF();
-  infoEl.textContent=`3D step=${step} t=${t.toExponential(3)} N=${nx} [${vmin3d.toPrecision(3)},${vmax3d.toPrecision(3)}]`;
+  infoEl.textContent=`3D step=${step} t=${t.toExponential(3)} N=${nx}×${ny}×${nz} [${vmin3d.toPrecision(3)},${vmax3d.toPrecision(3)}]`;
   fetchMetrics();
 }
 

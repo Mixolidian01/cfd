@@ -61,8 +61,10 @@ struct GpuSnapshotBuffer {
     // ── Current slice config — updated by NSSolver before each advance() ──
     int      var_id   = 0;    // StreamVar enum value (0=RHO … 11=SCHLIEREN)
     int      axis     = 2;    // 0=X, 1=Y, 2=Z
-    float    norm_pos = 0.5f; // normalised slice position ∈ [0,1]
-    float    domain_L = 1.0f; // physical domain side length
+    float    norm_pos  = 0.5f; // normalised slice position ∈ [0,1]
+    float    domain_L  = 1.0f; // physical domain Lx (kept for legacy callers)
+    float    domain_Ly = 1.0f; // physical domain Ly
+    float    domain_Lz = 1.0f; // physical domain Lz
 
     int  max_leaves = 0;
     void* impl_    = nullptr; // SnapImpl* — opaque CUDA handles (stream, device ptrs)

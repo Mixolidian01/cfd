@@ -94,7 +94,9 @@ struct FrameBuffer {
     uint8_t var_id    = 0;
     float   g_vmin    = 0.f;
     float   g_vmax    = 1.f;
-    float   domain_L  = 1.f;
+    float   domain_L  = 1.f;  // Lx (kept for legacy; see domain_Ly/Lz)
+    float   domain_Ly = 1.f;
+    float   domain_Lz = 1.f;
     std::vector<BlockDesc2D>           descs;  // n_blocks entries (always sent)
     std::vector<float>                 data;   // n_blocks × NB × NB float32
     std::vector<std::array<float, 8>>  probe;  // P12.2: all 8 vars per cell (same layout as data)

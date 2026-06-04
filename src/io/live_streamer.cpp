@@ -119,15 +119,23 @@ void LiveStreamer::build_volume(const BlockTree& tree, int step, double t,
     }
 
     const int    N  = std::max(4, std::min(128, cfg_snap.volume_size));
-    const double L  = tree.domain_L();
+    const double Lx = tree.domain_L();
+    const double Ly = tree.domain_Ly();
+    const double Lz = tree.domain_Lz();
     const StreamVar svar = cfg_snap.var;
+
+    // Proportional grid: each axis normalised by its own domain length.
+    const int nyi = std::max(1, std::min(N, static_cast<int>(std::lround(N * Ly / Lx))));
+    const int nzi = std::max(1, std::min(N, static_cast<int>(std::lround(N * Lz / Lx))));
 
     fb.step     = step;
     fb.sim_time = t;
-    fb.nx = fb.ny = fb.nz = static_cast<uint16_t>(N);
-    fb.domain_L = static_cast<float>(L);
+    fb.nx = static_cast<uint16_t>(N);
+    fb.ny = static_cast<uint16_t>(nyi);
+    fb.nz = static_cast<uint16_t>(nzi);
+    fb.domain_L = static_cast<float>(Lx);
     fb.var_id   = static_cast<uint8_t>(svar);
-    fb.data.assign(static_cast<size_t>(N) * N * N, 0.f);
+    fb.data.assign(static_cast<size_t>(N) * nyi * nzi, 0.f);
 
     float g_vmin = std::numeric_limits<float>::max();
     float g_vmax = std::numeric_limits<float>::lowest();
@@ -150,27 +158,27 @@ void LiveStreamer::build_volume(const BlockTree& tree, int step, double t,
             const double cy = node.oy + (jj + 0.5) * h;
             const double cz = node.oz + (kk + 0.5) * h;
 
-            // Voxel range covered by this cell (cell spans [cx−h/2, cx+h/2])
-            const int vi0 = static_cast<int>((cx - 0.5*h) / L * N);
-            const int vi1 = static_cast<int>((cx + 0.5*h) / L * N);
-            const int vj0 = static_cast<int>((cy - 0.5*h) / L * N);
-            const int vj1 = static_cast<int>((cy + 0.5*h) / L * N);
-            const int vk0 = static_cast<int>((cz - 0.5*h) / L * N);
-            const int vk1 = static_cast<int>((cz + 0.5*h) / L * N);
+            // Each axis normalised by its own domain length.
+            const int vi0 = static_cast<int>((cx - 0.5*h) / Lx * N);
+            const int vi1 = static_cast<int>((cx + 0.5*h) / Lx * N);
+            const int vj0 = static_cast<int>((cy - 0.5*h) / Ly * nyi);
+            const int vj1 = static_cast<int>((cy + 0.5*h) / Ly * nyi);
+            const int vk0 = static_cast<int>((cz - 0.5*h) / Lz * nzi);
+            const int vk1 = static_cast<int>((cz + 0.5*h) / Lz * nzi);
 
             const float val = ls_cell_val(blk, svar, NG+ii, NG+jj, NG+kk);
 
             const int vi_lo = std::max(0, vi0);
-            const int vi_hi = std::min(N-1, vi1);
+            const int vi_hi = std::min(N-1,   vi1);
             const int vj_lo = std::max(0, vj0);
-            const int vj_hi = std::min(N-1, vj1);
+            const int vj_hi = std::min(nyi-1, vj1);
             const int vk_lo = std::max(0, vk0);
-            const int vk_hi = std::min(N-1, vk1);
+            const int vk_hi = std::min(nzi-1, vk1);
 
             for (int vk = vk_lo; vk <= vk_hi; ++vk)
             for (int vj = vj_lo; vj <= vj_hi; ++vj)
             for (int vi = vi_lo; vi <= vi_hi; ++vi) {
-                fb.data[static_cast<size_t>(vk)*N*N + vj*N + vi] = val;
+                fb.data[static_cast<size_t>(vk)*N*nyi + vj*N + vi] = val;
                 g_vmin = std::min(g_vmin, val);
                 g_vmax = std::max(g_vmax, val);
             }
@@ -239,16 +247,21 @@ void LiveStreamer::gpu_snapshot(const GpuSnapshotBuffer& snap,
 
     const uint8_t   axis   = cfg_snap.axis;
     const StreamVar svar   = cfg_snap.var;
-    const double    L      = tree.domain_L();
-    const float     L_f    = static_cast<float>(L);
-    const float     z_phys = static_cast<float>(cfg_snap.pos * L);
+    const double    Lx     = tree.domain_L();
+    const double    Ly     = tree.domain_Ly();
+    const double    Lz     = tree.domain_Lz();
+    const float     L_f    = static_cast<float>(Lx);
+    const double    L_axis = (axis == 0) ? Lx : (axis == 1) ? Ly : Lz;
+    const float     z_phys = static_cast<float>(cfg_snap.pos * L_axis);
 
     FrameBuffer& fb = back_;
     fb.step     = step;
     fb.sim_time = t;
     fb.axis     = axis;
     fb.var_id   = static_cast<uint8_t>(svar);
-    fb.domain_L = L_f;
+    fb.domain_L  = L_f;
+    fb.domain_Ly = static_cast<float>(Ly);
+    fb.domain_Lz = static_cast<float>(Lz);
     fb.descs.clear();
     fb.data.clear();
     fb.probe.clear();
@@ -301,15 +314,23 @@ void LiveStreamer::gpu_snapshot(const GpuSnapshotBuffer& snap,
     // Option B: 3-D volume from GPU-mapped pinned buffer — only when a client is
     // listening on /volume-stream (i.e., user has switched to 3D mode in browser).
     if (snap.vol_active && snap.h_volume) {
-        const int N = snap.volume_N;  // matches what k_build_volume used
+        const int N   = snap.volume_N;  // nx — matches what k_build_volume used
+        const int nyi = std::max(1, std::min(N, static_cast<int>(
+                            std::lround(N * static_cast<double>(snap.domain_Ly)
+                                          / static_cast<double>(snap.domain_L)))));
+        const int nzi = std::max(1, std::min(N, static_cast<int>(
+                            std::lround(N * static_cast<double>(snap.domain_Lz)
+                                          / static_cast<double>(snap.domain_L)))));
         FrameBuffer3D& fb3 = back3d_;
         fb3.step     = step;
         fb3.sim_time = t;
-        fb3.nx = fb3.ny = fb3.nz = static_cast<uint16_t>(N);
+        fb3.nx = static_cast<uint16_t>(N);
+        fb3.ny = static_cast<uint16_t>(nyi);
+        fb3.nz = static_cast<uint16_t>(nzi);
         fb3.domain_L = L_f;
         fb3.var_id   = static_cast<uint8_t>(svar);
 
-        const size_t nvox = (size_t)N * N * N;
+        const size_t nvox = (size_t)N * nyi * nzi;
         fb3.data.resize(nvox);
         std::copy(snap.h_volume, snap.h_volume + nvox, fb3.data.begin());
 
@@ -380,14 +401,19 @@ void LiveStreamer::build_frame(const BlockTree& tree, int step, double t,
 
     const uint8_t   axis   = cfg_snap.axis;
     const StreamVar svar   = cfg_snap.var;
-    const double    L      = tree.domain_L();
-    const double    z_phys = cfg_snap.pos * L;   // physical position along slice axis
+    const double    Lx     = tree.domain_L();
+    const double    Ly     = tree.domain_Ly();
+    const double    Lz     = tree.domain_Lz();
+    const double    L_axis = (axis == 0) ? Lx : (axis == 1) ? Ly : Lz;
+    const double    z_phys = cfg_snap.pos * L_axis;
 
     fb.step     = step;
     fb.sim_time = t;
     fb.axis     = axis;
     fb.var_id   = static_cast<uint8_t>(svar);
-    fb.domain_L = static_cast<float>(L);
+    fb.domain_L  = static_cast<float>(Lx);
+    fb.domain_Ly = static_cast<float>(Ly);
+    fb.domain_Lz = static_cast<float>(Lz);
     fb.descs.clear();
     fb.data.clear();
     fb.probe.clear();
@@ -747,10 +773,13 @@ void LiveStreamer::handle_post_probe(int cfd, const std::string& req_with_body) 
     int rlen;
     {
         std::lock_guard<std::mutex> lk(swap_mtx_);
-        const float L = front_.domain_L;
+        // Slice plane uses first-free-axis (La) for x and second-free-axis (Lb) for y.
+        // axis=0: La=Ly, Lb=Lz; axis=1: La=Lx, Lb=Lz; axis=2: La=Lx, Lb=Ly.
+        const float La = (front_.axis == 0) ? front_.domain_Ly : front_.domain_L;
+        const float Lb = (front_.axis == 2) ? front_.domain_Ly : front_.domain_Lz;
         // y-axis flipped: physical oy2d increases upward, canvas y increases downward
-        const float pa = static_cast<float>(norm_x) * L;
-        const float pb = static_cast<float>(1.0 - norm_y) * L;
+        const float pa = static_cast<float>(norm_x) * La;
+        const float pb = static_cast<float>(1.0 - norm_y) * Lb;
         int block_idx = -1;
         int cell_flat = -1;
         for (int b = 0; b < (int)front_.descs.size(); ++b) {

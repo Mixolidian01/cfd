@@ -504,10 +504,12 @@ int main(int argc, char* argv[])
         const int n_leaves_max = static_cast<int>(solver.tree.leaf_indices().size());
         snap_buf = std::make_unique<GpuSnapshotBuffer>();
         snap_buf->alloc(std::max(n_leaves_max, 64));  // reserve some headroom for AMR
-        snap_buf->var_id   = static_cast<int>(scfg.var);
-        snap_buf->axis     = static_cast<int>(scfg.axis);
-        snap_buf->norm_pos = static_cast<float>(scfg.pos);
-        snap_buf->domain_L = static_cast<float>(domain_L);
+        snap_buf->var_id    = static_cast<int>(scfg.var);
+        snap_buf->axis      = static_cast<int>(scfg.axis);
+        snap_buf->norm_pos  = static_cast<float>(scfg.pos);
+        snap_buf->domain_L  = static_cast<float>(Lx);
+        snap_buf->domain_Ly = static_cast<float>(Ly);
+        snap_buf->domain_Lz = static_cast<float>(Lz);
         solver.set_gpu_snapshot(snap_buf.get());
         // Re-build with snapshot buffer set so _upload_snap_metas() runs.
         gpu_build();
@@ -522,10 +524,12 @@ int main(int argc, char* argv[])
         const int n_leaves_max = static_cast<int>(solver.tree.leaf_indices().size());
         snap_buf = std::make_unique<GpuSnapshotBuffer>();
         snap_buf->alloc(std::max(n_leaves_max, 64));
-        snap_buf->var_id   = 0;   // rho
-        snap_buf->axis     = 2;
-        snap_buf->norm_pos = 0.5f;
-        snap_buf->domain_L = static_cast<float>(domain_L);
+        snap_buf->var_id    = 0;   // rho
+        snap_buf->axis      = 2;
+        snap_buf->norm_pos  = 0.5f;
+        snap_buf->domain_L  = static_cast<float>(Lx);
+        snap_buf->domain_Ly = static_cast<float>(Ly);
+        snap_buf->domain_Lz = static_cast<float>(Lz);
         solver.set_gpu_snapshot(snap_buf.get());
         gpu_build();   // re-build so _upload_snap_metas() populates h_metas
     }

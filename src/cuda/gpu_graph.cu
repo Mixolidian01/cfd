@@ -50,7 +50,8 @@ __global__ void k_extract_slice(const SnapLeafMeta* metas, float* d_out,
                                  int var_id, int axis, float slice_phys);
 __global__ void k_reduce_metrics(const SnapLeafMeta* metas, GpuBlockMetrics* d_out);
 __global__ void k_build_volume(const SnapLeafMeta* metas, float* d_volume,
-                                int n_leaves, int N, int var_id, float domain_L);
+                                int n_leaves, int nxi, int nyi, int nzi,
+                                int var_id, float Lx, float Ly, float Lz);
 
 // Verify GPU constants match CPU constants (both headers available here)
 static_assert(GPU_NB   == NB,   "GPU_NB mismatch with NB in cell_block.hpp");
@@ -254,7 +255,12 @@ static void _do_launch_snapshot(GpuSnapshotBuffer* snap_buf, int n_leaves,
     auto* impl = static_cast<SnapImpl*>(snap_buf->impl_);
     if (!impl || !impl->d_metas) return;
 
-    const float slice_phys = snap_buf->norm_pos * snap_buf->domain_L;
+    const float Lx = snap_buf->domain_L;
+    const float Ly = snap_buf->domain_Ly;
+    const float Lz = snap_buf->domain_Lz;
+    const float axis_L = (snap_buf->axis == 0) ? Lx :
+                         (snap_buf->axis == 1) ? Ly : Lz;
+    const float slice_phys = snap_buf->norm_pos * axis_L;
 
     k_extract_slice<<<n_leaves, GPU_NB * GPU_NB, 0, s>>>(
         impl->d_metas, impl->d_slice,
@@ -266,11 +272,14 @@ static void _do_launch_snapshot(GpuSnapshotBuffer* snap_buf, int n_leaves,
     // Option B: 3-D volume — only when a viewer client has connected /volume-stream.
     if (snap_buf->vol_active && impl->d_volume) {
         const int N = max(4, min(128, snap_buf->volume_N));
+        // Proportional grid: each axis normalised by its own domain length.
+        const int nyi = max(1, min(N, (int)lroundf((float)N * Ly / Lx)));
+        const int nzi = max(1, min(N, (int)lroundf((float)N * Lz / Lx)));
         CUDA_CHECK(cudaMemsetAsync(impl->d_volume, 0,
-                                   (size_t)N * N * N * sizeof(float), s));
+                                   (size_t)N * nyi * nzi * sizeof(float), s));
         k_build_volume<<<n_leaves, 64, 0, s>>>(
             impl->d_metas, impl->d_volume,
-            n_leaves, N, snap_buf->var_id, snap_buf->domain_L);
+            n_leaves, N, nyi, nzi, snap_buf->var_id, Lx, Ly, Lz);
     }
 }
 

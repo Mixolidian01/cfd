@@ -60,8 +60,8 @@ void serialize_frame(const FrameBuffer& fb, std::vector<uint8_t>& out) {
     std::vector<uint8_t> body;
     body.reserve(32u + static_cast<uint32_t>(n) * 16u + n_pixels * 4u);
 
-    // ── Header (32 bytes) ────────────────────────────────────────────────────
-    push_u32(body, 0xCFD00001u);    //  0-3  magic
+    // ── Header (40 bytes) ────────────────────────────────────────────────────
+    push_u32(body, 0xCFD00002u);    //  0-3  magic (v2: +Ly/Lz)
     push_i32(body, fb.step);        //  4-7  step
     push_f64(body, fb.sim_time);    //  8-15 time
     body.push_back(n);              // 16    n_blocks
@@ -71,8 +71,10 @@ void serialize_frame(const FrameBuffer& fb, std::vector<uint8_t>& out) {
     const size_t compressed_off = body.size() - 1;
     push_f32(body, fb.g_vmin);      // 20-23 vmin
     push_f32(body, fb.g_vmax);      // 24-27 vmax
-    push_f32(body, fb.domain_L);    // 28-31 domain_L
-    // total header = 32 bytes ✓
+    push_f32(body, fb.domain_L);    // 28-31 domain_Lx
+    push_f32(body, fb.domain_Ly);   // 32-35 domain_Ly
+    push_f32(body, fb.domain_Lz);   // 36-39 domain_Lz
+    // total header = 40 bytes ✓
 
     // ── Block descriptors (n × 16 bytes, always uncompressed) ────────────────
     for (uint8_t b = 0; b < n; ++b) {
@@ -138,28 +140,30 @@ void serialize_frame(const FrameBuffer& fb, std::vector<uint8_t>& out) {
 
 void serialize_volume(const FrameBuffer3D& fb, std::vector<uint8_t>& out) {
     out.clear();
-    const int N     = static_cast<int>(fb.nx);   // nx == ny == nz
-    const int n_vox = N * N * N;
+    const int nx    = static_cast<int>(fb.nx);
+    const int ny    = static_cast<int>(fb.ny);
+    const int nz    = static_cast<int>(fb.nz);
+    const int n_vox = nx * ny * nz;
 
     std::vector<uint8_t> body;
     body.reserve(40u + static_cast<size_t>(n_vox) * 4u);
 
     // ── Header (40 bytes) ────────────────────────────────────────────────────
-    push_u32(body, 0xCFD00003u);             //  0-3  magic (3D frame)
-    push_i32(body, fb.step);                //  4-7  step
-    push_f64(body, fb.sim_time);            //  8-15 sim_time
+    push_u32(body, 0xCFD00003u);                          //  0-3  magic (3D frame)
+    push_i32(body, fb.step);                              //  4-7  step
+    push_f64(body, fb.sim_time);                          //  8-15 sim_time
     // 16-17 nx, 18-19 ny, 20-21 nz, 22-23 pad
-    body.push_back(static_cast<uint8_t>(N));     body.push_back(static_cast<uint8_t>(N >> 8));
-    body.push_back(static_cast<uint8_t>(N));     body.push_back(static_cast<uint8_t>(N >> 8));
-    body.push_back(static_cast<uint8_t>(N));     body.push_back(static_cast<uint8_t>(N >> 8));
-    body.push_back(0); body.push_back(0);    // pad
-    push_f32(body, fb.g_vmin);              // 24-27 g_vmin
-    push_f32(body, fb.g_vmax);              // 28-31 g_vmax
-    push_f32(body, fb.domain_L);            // 32-35 domain_L
-    body.push_back(fb.var_id);              // 36    var_id
-    body.push_back(0);                      // 37    compressed (patched below)
+    body.push_back(static_cast<uint8_t>(nx));     body.push_back(static_cast<uint8_t>(nx >> 8));
+    body.push_back(static_cast<uint8_t>(ny));     body.push_back(static_cast<uint8_t>(ny >> 8));
+    body.push_back(static_cast<uint8_t>(nz));     body.push_back(static_cast<uint8_t>(nz >> 8));
+    body.push_back(0); body.push_back(0);         // pad
+    push_f32(body, fb.g_vmin);                    // 24-27 g_vmin
+    push_f32(body, fb.g_vmax);                    // 28-31 g_vmax
+    push_f32(body, fb.domain_L);                  // 32-35 domain_L (= Lx)
+    body.push_back(fb.var_id);                    // 36    var_id
+    body.push_back(0);                            // 37    compressed (patched below)
     const size_t compressed_off = body.size() - 1;
-    body.push_back(0); body.push_back(0);   // 38-39 pad
+    body.push_back(0); body.push_back(0);         // 38-39 pad
     // total header = 40 bytes ✓
 
     // ── Data section ─────────────────────────────────────────────────────────
