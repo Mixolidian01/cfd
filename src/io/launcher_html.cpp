@@ -190,7 +190,8 @@ input[type=checkbox]{width:14px;height:14px;cursor:pointer;accent-color:#9cf}
     <div class="field"><label>Global BC (all faces)</label>
       <select id="bc" onchange="updateBCStatus()">
         <option value="Periodic">Periodic</option>
-        <option value="Wall">Wall</option>
+        <option value="Wall">Wall (no-slip)</option>
+        <option value="SlipWall">SlipWall (inviscid)</option>
         <option value="Open">Open</option>
         <option value="NSCBC">NSCBC</option>
       </select>
@@ -204,27 +205,27 @@ input[type=checkbox]{width:14px;height:14px;cursor:pointer;accent-color:#9cf}
     <div class="row">
       <div class="field"><label>X&#8722; (xlo)</label>
         <select id="bc_xlo" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>X+ (xhi)</label>
         <select id="bc_xhi" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>Y&#8722; (ylo)</label>
         <select id="bc_ylo" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>Y+ (yhi)</label>
         <select id="bc_yhi" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>Z&#8722; (zlo)</label>
         <select id="bc_zlo" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>Z+ (zhi)</label>
         <select id="bc_zhi" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
         </select></div>
     </div>
   </div>
