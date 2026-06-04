@@ -127,13 +127,46 @@ struct Config {
 
 int main(int argc, char* argv[])
 {
-    const char* config_path = (argc >= 2) ? argv[1] : "sim.json";
+    // ── Argument parsing ──────────────────────────────────────────────────────
+    bool        launcher_mode = false;
+    int         launcher_port = 8080;
+    const char* config_path   = nullptr;
+    std::string tmpconfig_path;
+
+    for (int i = 1; i < argc; ++i) {
+        if      (std::strcmp(argv[i], "--launcher") == 0) { launcher_mode = true; }
+        else if (std::strcmp(argv[i], "--port") == 0 && i+1 < argc)
+                { launcher_port = std::atoi(argv[++i]); }
+        else    { config_path = argv[i]; }
+    }
+    if (!config_path && !launcher_mode) config_path = "sim.json";
 
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
     printf("simulate_gpu: GPU = %s\n", prop.name);
-    printf("simulate_gpu: loading config from '%s'\n", config_path);
 
+    // ── Phase 1: launcher mode — start HTTP server, wait for POST /launch ────
+    std::unique_ptr<LiveStreamer>       streamer;
+    std::unique_ptr<GpuSnapshotBuffer> snap_buf;
+
+    if (launcher_mode) {
+        StreamConfig lscfg;
+        lscfg.port = launcher_port;
+        streamer = std::make_unique<LiveStreamer>(lscfg);
+        printf("simulate_gpu: launcher mode — open http://localhost:%d to configure\n",
+               launcher_port);
+        std::string launch_json;
+        while (!streamer->pop_launch(launch_json))
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        char tmpbuf[64];
+        std::snprintf(tmpbuf, sizeof(tmpbuf), "/tmp/sgpu_launch_%d.json", (int)getpid());
+        tmpconfig_path = tmpbuf;
+        { std::ofstream tf(tmpconfig_path); tf << launch_json; }
+        config_path = tmpconfig_path.c_str();
+        printf("simulate_gpu: config received — building solver...\n");
+    }
+
+    printf("simulate_gpu: loading config from '%s'\n", config_path);
     Config cfg = Config::from_file(config_path);
 
     printf("simulate_gpu: configuration:\n");
@@ -439,10 +472,8 @@ int main(int argc, char* argv[])
            (int)solver.tree.leaf_indices().size());
 
     // ── Live streamer + GPU snapshot buffer (optional) ────────────────────────
-    std::unique_ptr<LiveStreamer>        streamer;
-    std::unique_ptr<GpuSnapshotBuffer>  snap_buf;
     int stream_port = cfg.i("stream_port", 0);
-    if (stream_port > 0) {
+    if (!streamer && stream_port > 0) {
         StreamConfig scfg;
         scfg.port        = stream_port;
         scfg.axis        = static_cast<uint8_t>(cfg.i("stream_axis",   2));
@@ -482,6 +513,7 @@ int main(int argc, char* argv[])
         printf("simulate_gpu: live feed enabled on http://localhost:%d  (var=%s axis=%d)  [GPU snap]\n",
                stream_port, sv.c_str(), (int)scfg.axis);
     }
+    if (launcher_mode && streamer) streamer->set_running();
 
     // ── VTK snapshot buffer (when VTK requested but no live stream) ──────────
     if (!sc.metrics.vtk_prefix.empty() && !snap_buf) {

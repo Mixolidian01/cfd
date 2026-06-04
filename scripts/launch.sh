@@ -8,6 +8,7 @@
 #   --backend cpu|gpu|mpi   execution path (default: cpu)
 #   --ranks N               number of MPI ranks (mpi backend only, default: 2)
 #   --port N                override stream_port in config (gpu backend only)
+#   --launcher              start in launcher mode (gpu backend only)
 #   --build-dir DIR         build directory (default: <repo_root>/build)
 #   -h, --help              print this message and exit
 #
@@ -40,6 +41,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKEND="cpu"
 RANKS=2
 PORT=""
+LAUNCHER=0
 CONFIG=""
 BUILD_DIR="$REPO_ROOT/build"
 
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
         --backend)   BACKEND="$2";   shift 2 ;;
         --ranks)     RANKS="$2";     shift 2 ;;
         --port)      PORT="$2";      shift 2 ;;
+        --launcher)  LAUNCHER=1;          shift   ;;
         --build-dir) BUILD_DIR="$2"; shift 2 ;;
         -h|--help)   usage; exit 0 ;;
         --)          shift; break ;;
@@ -121,6 +124,10 @@ case "$BACKEND" in
             echo "Warning: nvidia-smi not found — GPU availability unknown." >&2
         fi
         echo "launch.sh: backend=gpu  config=$CONFIG"
+        if [[ "$LAUNCHER" -eq 1 ]]; then
+            echo "launch.sh: launcher mode — open http://localhost:${PORT:-8080} to configure"
+            exec "$BIN" --launcher --port "${PORT:-8080}"
+        fi
         if [[ -n "$PORT" ]]; then
             TMPCONFIG=$(mktemp /tmp/launch_cfg_XXXXXX.json)
             trap 'rm -f "$TMPCONFIG"' EXIT
