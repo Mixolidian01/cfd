@@ -308,8 +308,18 @@ double NSSolver::advance() {
                 tree, *gpu_pool_, make_bc_types(cfg.bc)[0], cfg.amr.max_level);
         if (!gpu_regrid_done)
             regrid();
-        else if (cfg.bc.faces)
-            gpu_solver_->build_faces(tree, *gpu_pool_, make_bc_types(cfg.bc));
+        else {
+            // GPU regrid bypasses NSSolver::regrid(), so resize CPU scratch
+            // arrays here.  When LTS is configured the CPU integrator uses
+            // Qn_/Qs_/rhs_, so we also download the newly-prolongated GPU Q
+            // to keep CPU Q consistent with the new tree topology.
+            scratch_leaf_count_ = -1;
+            alloc_scratch();
+            if (cfg.amr.use_lts)
+                gpu_solver_->download_q(tree);
+            if (cfg.bc.faces)
+                gpu_solver_->build_faces(tree, *gpu_pool_, make_bc_types(cfg.bc));
+        }
     }
 
     // P11.8 / P14.4: GPU path — flat and AMR trees.
