@@ -99,6 +99,7 @@ add_library(ns_solver STATIC
     src/io/live_streamer.cpp
     src/io/viewer_html.cpp
     src/io/gui_html.cpp
+    src/io/launcher_html.cpp
     src/io/http_server.cpp          # R9-E1: POSIX socket / HTTP utilities
     src/io/frame_packer.cpp         # R9-E1: wire-format frame serialisers
     src/solver/solver_factory.cpp
@@ -249,6 +250,7 @@ if(NVCC)
         ${_S}/models/sgs.cpp    ${_S}/io/checkpoint.cpp ${_S}/io/vtk_writer.cu
         ${_S}/io/live_streamer.cpp ${_S}/io/viewer_html.cpp
         ${_S}/io/gui_html.cpp
+        ${_S}/io/launcher_html.cpp
         ${_S}/io/http_server.cpp   ${_S}/io/frame_packer.cpp
     )
     set(_LZ4 "$<$<BOOL:${LZ4_LIBRARY}>:-llz4>")
@@ -293,6 +295,7 @@ if(NVCC)
              ${_S}/models/sgs.cpp ${_S}/io/checkpoint.cpp ${_S}/io/vtk_writer.cu
              ${_S}/io/live_streamer.cpp ${_S}/io/viewer_html.cpp
              ${_S}/io/gui_html.cpp
+             ${_S}/io/launcher_html.cpp
              ${_S}/io/http_server.cpp   ${_S}/io/frame_packer.cpp
     )
     add_nvcc_gate(TARGET t8  BIN t8_ghost_cluster  COMMENT "P4.3 TBC ghost exchange"
