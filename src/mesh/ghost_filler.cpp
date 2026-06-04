@@ -17,6 +17,8 @@ void GhostFiller::fill_all(BlockTree& tree, const BCVariant& bc, bool cf_zero_gr
             tree.fill_ghosts_periodic(cf_zero_grad);
         } else if constexpr (std::is_same_v<T, WallBC>) {
             tree.fill_ghosts_wall(cf_zero_grad);
+        } else if constexpr (std::is_same_v<T, SlipWallBC>) {
+            tree.fill_ghosts_slip_wall(cf_zero_grad);
         } else if constexpr (std::is_same_v<T, OpenBC>) {
             tree.fill_ghosts_open(cf_zero_grad);
         } else if constexpr (std::is_same_v<T, ContactAngleBC>) {

@@ -23,6 +23,7 @@
 #include "mesh/amr_operators.hpp"
 #include "mesh/ghost_filler.hpp"
 #include "solver/ns_solver.hpp"
+#include "gpu_pool.hpp"
 #include "solver/cpu_rk3.hpp"
 #include "solver/lts_integrator.hpp"
 #include "schemes/operators.hpp"
@@ -295,6 +296,7 @@ double NSSolver::advance() {
         last_dt_ = dt;
         t    += dt;
         step += 1;
+        gpu_q_stale_ = true;  // CPU LTS advanced Q; GPU Q is stale until re-upload
         return dt;
     }
 
@@ -654,6 +656,15 @@ void NSSolver::regrid() {
     // A3: rebuild GPU lists after topology change (new d_Q pointers; stale
     // CUDA graphs from the previous build would reference freed memory).
     if (gpu_solver_) {
+        // CPU regrid (refine/coarsen) creates new CellBlock objects whose GPU
+        // pool entries don't exist yet.  Allocate and upload them before
+        // build_faces() so download_pairs gets valid device pointers.
+        for (int li : tree.leaf_indices()) {
+            CellBlock* blk = tree.nodes[li].block.get();
+            if (!blk || gpu_pool_->has_device(blk)) continue;
+            gpu_pool_->alloc(blk);
+            gpu_pool_->upload(blk);
+        }
         if (cfg.acdi.use_acdi)
             gpu_solver_->set_gpu_acdi(cfg.acdi.acdi_ceps);
         if (cfg.physics.sgs) {

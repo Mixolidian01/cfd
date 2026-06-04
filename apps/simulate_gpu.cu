@@ -198,9 +198,10 @@ int main(int argc, char* argv[])
     // Boundary conditions — per-face keys take precedence over global "bc"
     {
         auto parse_bc_str = [&](const std::string& s) -> BCVariant {
-            if (s == "Wall")  return WallBC{};
-            if (s == "Open")  return OpenBC{};
-            if (s == "NSCBC") return NscbcBC{ cfg.d("nscbc_p_inf", 1.0) };
+            if (s == "Wall")     return WallBC{};
+            if (s == "SlipWall") return SlipWallBC{};
+            if (s == "Open")     return OpenBC{};
+            if (s == "NSCBC")    return NscbcBC{ cfg.d("nscbc_p_inf", 1.0) };
             return PeriodicBC{};
         };
         static const char* face_keys[6] = {

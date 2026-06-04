@@ -157,7 +157,18 @@ double LtsIntegrator::step(BlockTree& tree, double cfl) {
 
     const int L_min = tree.min_leaf_level();
     const int L_max = tree.max_leaf_level();
-    assert(L_max > L_min);  // advance() dispatches here only when max_leaf_level > 0
+
+    // Regrid may have coarsened the tree back to a single level (e.g. when
+    // gradients drop below the refinement threshold right after AMR fires).
+    // In that case fall back to a plain flat-tree RK3 so CPU Q stays current
+    // before the GPU path resumes on the next advance() call.
+    if (L_max <= L_min) {
+        double dt = level_cfl_dt(tree, L_min, cfl);
+        tree.zero_flux_registers();
+        rk3_level(tree, L_min, dt, 1.0, false);
+        lts_positivity_floor_tree(tree);
+        return dt;
+    }
 
     const int r = solver.cfg.amr.lts_ratio;
 

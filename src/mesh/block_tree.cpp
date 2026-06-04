@@ -1040,6 +1040,12 @@ void BlockTree::fill_ghosts_wall(bool cf_zero_grad) {
     fill_ghosts_per_face(bcs, cf_zero_grad);
 }
 
+// ── fill_ghosts_slip_wall (inviscid: only normal momentum reflected) ─────────
+void BlockTree::fill_ghosts_slip_wall(bool cf_zero_grad) {
+    FaceBCArray bcs; bcs.fill(SlipWallBC{});
+    fill_ghosts_per_face(bcs, cf_zero_grad);
+}
+
 // ── fill_ghosts_open (P13.3: characteristic open BC with optional p∞) ────────
 // When bc_cfg.open_bc_p == 0: zero-gradient transmissive (legacy behaviour).
 // When bc_cfg.open_bc_p >  0: subsonic outflow uses isentropic ghost + Riemann-
@@ -1189,6 +1195,26 @@ void BlockTree::fill_ghosts_per_face(const FaceBCArray& bcs, bool cf_zero_grad) 
                         blk.rhou(gi,gj,gk) = -blk.rhou(mi,mj,mk);
                         blk.rhov(gi,gj,gk) = -blk.rhov(mi,mj,mk);
                         blk.rhow(gi,gj,gk) = -blk.rhow(mi,mj,mk);
+                        blk.E   (gi,gj,gk) =  wall_E(blk,mi,mj,mk);
+                        blk.phi (gi,gj,gk) =  phi_wall_ghost(blk.phi(ri,rj,rk), dist);
+                    }
+                }
+            } else if (std::holds_alternative<SlipWallBC>(bcs[d])) {
+                // Inviscid slip wall: only the wall-normal momentum is negated.
+                for (int gl = 0; gl < NG; ++gl) {
+                    const int ghost = (side==0) ? (NG-1-gl)   : (NB2-NG+gl);
+                    const int mirr  = (side==0) ? (ilo()+gl)  : (ihi()-gl);
+                    const int ref   = (side==0) ? ilo()       : ihi();
+                    const int dist  = (side==0) ? (ilo()-ghost) : (ghost-ihi());
+                    for (int a = ilo(); a <= ihi(); ++a)
+                    for (int b = ilo(); b <= ihi(); ++b) {
+                        const int gi=(axis==0)?ghost:a, gj=(axis==1)?ghost:(axis==0)?a:b, gk=(axis==2)?ghost:b;
+                        const int mi=(axis==0)?mirr:a,  mj=(axis==1)?mirr:(axis==0)?a:b,  mk=(axis==2)?mirr:b;
+                        const int ri=(axis==0)?ref:a,   rj=(axis==1)?ref:(axis==0)?a:b,   rk=(axis==2)?ref:b;
+                        blk.rho (gi,gj,gk) =  blk.rho (mi,mj,mk);
+                        blk.rhou(gi,gj,gk) = (axis==0) ? -blk.rhou(mi,mj,mk) : +blk.rhou(mi,mj,mk);
+                        blk.rhov(gi,gj,gk) = (axis==1) ? -blk.rhov(mi,mj,mk) : +blk.rhov(mi,mj,mk);
+                        blk.rhow(gi,gj,gk) = (axis==2) ? -blk.rhow(mi,mj,mk) : +blk.rhow(mi,mj,mk);
                         blk.E   (gi,gj,gk) =  wall_E(blk,mi,mj,mk);
                         blk.phi (gi,gj,gk) =  phi_wall_ghost(blk.phi(ri,rj,rk), dist);
                     }

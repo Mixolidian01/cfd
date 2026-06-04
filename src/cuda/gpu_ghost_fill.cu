@@ -192,6 +192,18 @@ __device__ __forceinline__ static void fill_wall(
     }
 }
 
+// Inviscid slip wall: only the wall-normal momentum component (v == axis+1) is negated.
+__device__ __forceinline__ static void fill_slip_wall(
+    double* d_dst, int axis, int side, int gl, int a, int b, int dst_flat)
+{
+    const int mir_ax   = (side == 0) ? (NG + gl) : (NB + NG - 1 - gl);
+    const int mir_flat = cidx_axis(axis, mir_ax, a, b);
+    for (int v = 0; v < NVAR; ++v) {
+        const double val = d_dst[v * NCELL + mir_flat];
+        d_dst[v * NCELL + dst_flat] = (v == axis + 1) ? -val : val;
+    }
+}
+
 // =============================================================================
 // k_fill_faces — face ghost fill kernel
 // Grid: (n_leaves, NFACES)   Block: 256
@@ -248,6 +260,7 @@ __global__ void k_fill_faces(const GpuLeafGhostMeta* metas) {
             else if (bc == 2) fill_zero_grad(d_dst, axis, side, a, b, dst_flat);
             else if (bc == 3) fill_nscbc(d_dst, axis, side, a, b, dst_flat,
                                          m.open_p_inf[face]);
+            else if (bc == 4) fill_slip_wall(d_dst, axis, side, gl, a, b, dst_flat);
             else              fill_copy(d_dst, d_dst, axis, side, gl, a, b, dst_flat);
         }
     }

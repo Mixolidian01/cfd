@@ -166,9 +166,10 @@ struct BlockTree {
     // cf_zero_grad=true  (LTS coarse step): coarse C/F ghosts use zero-gradient
     //   extrapolation (ghost = interior).  This makes viscous flux at C/F exactly
     //   zero, so total-energy conservation holds after the Berger-Colella correction.
-    void fill_ghosts_periodic(bool cf_zero_grad = false);
-    void fill_ghosts_wall    (bool cf_zero_grad = false);
-    void fill_ghosts_open    (bool cf_zero_grad = false); // zero-gradient transmissive
+    void fill_ghosts_periodic  (bool cf_zero_grad = false);
+    void fill_ghosts_wall      (bool cf_zero_grad = false);
+    void fill_ghosts_slip_wall (bool cf_zero_grad = false); // inviscid slip wall
+    void fill_ghosts_open      (bool cf_zero_grad = false); // zero-gradient transmissive
 
     // Per-face ghost fill: each of the 6 domain faces can independently be
     // Periodic, Wall, Open, or ContactAngleBC.  Interior / C/F faces are handled
