@@ -192,6 +192,7 @@ input[type=checkbox]{width:14px;height:14px;cursor:pointer;accent-color:#9cf}
         <option value="Periodic">Periodic</option>
         <option value="Wall">Wall (no-slip)</option>
         <option value="SlipWall">SlipWall (inviscid)</option>
+        <option value="Symmetry">Symmetry</option>
         <option value="Open">Open</option>
         <option value="NSCBC">NSCBC</option>
       </select>
@@ -205,27 +206,27 @@ input[type=checkbox]{width:14px;height:14px;cursor:pointer;accent-color:#9cf}
     <div class="row">
       <div class="field"><label>X&#8722; (xlo)</label>
         <select id="bc_xlo" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Symmetry</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>X+ (xhi)</label>
         <select id="bc_xhi" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Symmetry</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>Y&#8722; (ylo)</label>
         <select id="bc_ylo" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Symmetry</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>Y+ (yhi)</label>
         <select id="bc_yhi" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Symmetry</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>Z&#8722; (zlo)</label>
         <select id="bc_zlo" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Symmetry</option><option>Open</option><option>NSCBC</option>
         </select></div>
       <div class="field"><label>Z+ (zhi)</label>
         <select id="bc_zhi" onchange="updateBCStatus()">
-          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Open</option><option>NSCBC</option>
+          <option>Periodic</option><option>Wall</option><option>SlipWall</option><option>Symmetry</option><option>Open</option><option>NSCBC</option>
         </select></div>
     </div>
   </div>
@@ -286,13 +287,50 @@ input[type=checkbox]{width:14px;height:14px;cursor:pointer;accent-color:#9cf}
   </div>
   <div id="ibm-params" class="sub" style="display:none">
     <div class="row">
-      <div class="field" style="flex:1"><label>ibm_stl_path</label>
-        <input type="text" id="ibm_stl_path" placeholder="body.stl" style="min-width:200px"></div>
+      <div class="field"><label>Shape</label>
+        <select id="ibm_shape" onchange="updateIBMShape()">
+          <option value="stl">STL file</option>
+          <option value="sphere">Sphere</option>
+          <option value="box">Box (AABB)</option>
+          <option value="cylinder">Cylinder (Z-axis)</option>
+        </select></div>
       <div class="field"><label>Wall BC</label>
         <select id="ibm_wall_bc" onchange="updateIBMWall()">
           <option value="noslip">noslip</option>
           <option value="isothermal">isothermal</option>
         </select></div>
+    </div>
+    <!-- STL path (shown only for stl shape) -->
+    <div id="ibm-stl-row" class="row">
+      <div class="field" style="flex:1"><label>ibm_stl_path</label>
+        <input type="text" id="ibm_stl_path" placeholder="body.stl" style="min-width:200px"></div>
+    </div>
+    <!-- Sphere params -->
+    <div id="ibm-sphere-row" class="row" style="display:none">
+      <div class="field"><label>cx</label><input type="number" id="ibm_sph_cx" value="0.0" step="any"></div>
+      <div class="field"><label>cy</label><input type="number" id="ibm_sph_cy" value="0.0" step="any"></div>
+      <div class="field"><label>cz</label><input type="number" id="ibm_sph_cz" value="0.0" step="any"></div>
+      <div class="field"><label>r</label><input type="number" id="ibm_sph_r" value="0.1" step="any" min="0"></div>
+      <div class="field"><label>nlon</label><input type="number" id="ibm_nlon" value="32" step="1" min="4"></div>
+      <div class="field"><label>nlat</label><input type="number" id="ibm_nlat" value="16" step="1" min="2"></div>
+    </div>
+    <!-- Box params -->
+    <div id="ibm-box-row" class="row" style="display:none">
+      <div class="field"><label>x0</label><input type="number" id="ibm_x0" value="0.0" step="any"></div>
+      <div class="field"><label>y0</label><input type="number" id="ibm_y0" value="0.0" step="any"></div>
+      <div class="field"><label>z0 (box)</label><input type="number" id="ibm_box_z0" value="0.0" step="any"></div>
+      <div class="field"><label>x1</label><input type="number" id="ibm_x1" value="0.5" step="any"></div>
+      <div class="field"><label>y1</label><input type="number" id="ibm_y1" value="0.5" step="any"></div>
+      <div class="field"><label>z1 (box)</label><input type="number" id="ibm_box_z1" value="0.5" step="any"></div>
+    </div>
+    <!-- Cylinder params -->
+    <div id="ibm-cyl-row" class="row" style="display:none">
+      <div class="field"><label>cx</label><input type="number" id="ibm_cyl_cx" value="0.0" step="any"></div>
+      <div class="field"><label>cy</label><input type="number" id="ibm_cyl_cy" value="0.0" step="any"></div>
+      <div class="field"><label>z0</label><input type="number" id="ibm_cyl_z0" value="0.0" step="any"></div>
+      <div class="field"><label>z1</label><input type="number" id="ibm_cyl_z1" value="1.0" step="any"></div>
+      <div class="field"><label>r</label><input type="number" id="ibm_cyl_r" value="0.1" step="any" min="0"></div>
+      <div class="field"><label>nseg</label><input type="number" id="ibm_nseg" value="32" step="1" min="4"></div>
     </div>
     <div class="row">
       <div class="field"><label>u_wall (m/s)</label><input type="number" id="ibm_u_wall" value="0.0" step="any"></div>
@@ -433,6 +471,15 @@ function updateSGS(){
 
 function updateIBM(){
   document.getElementById('ibm-params').style.display=gb('ibm_enabled')?'':'none';
+  updateIBMShape();
+}
+
+function updateIBMShape(){
+  const shape=gs('ibm_shape')||'stl';
+  document.getElementById('ibm-stl-row').style.display=shape==='stl'?'':'none';
+  document.getElementById('ibm-sphere-row').style.display=shape==='sphere'?'':'none';
+  document.getElementById('ibm-box-row').style.display=shape==='box'?'':'none';
+  document.getElementById('ibm-cyl-row').style.display=shape==='cylinder'?'':'none';
 }
 
 function updateIBMWall(){
@@ -510,7 +557,25 @@ function buildConfig(){
 
   // IBM
   if(gb('ibm_enabled')){
-    cfg.ibm_enabled=true;cfg.ibm_stl_path=gs('ibm_stl_path');
+    cfg.ibm_enabled=true;
+    const ibm_shape=gs('ibm_shape')||'stl';
+    cfg.ibm_shape=ibm_shape;
+    if(ibm_shape==='sphere'){
+      cfg.ibm_cx=gn('ibm_sph_cx');cfg.ibm_cy=gn('ibm_sph_cy');cfg.ibm_cz=gn('ibm_sph_cz');
+      cfg.ibm_r=gn('ibm_sph_r')||0.1;
+      const nlon=gn('ibm_nlon')|0;if(nlon>4)cfg.ibm_nlon=nlon;
+      const nlat=gn('ibm_nlat')|0;if(nlat>2)cfg.ibm_nlat=nlat;
+    }else if(ibm_shape==='box'){
+      cfg.ibm_x0=gn('ibm_x0');cfg.ibm_y0=gn('ibm_y0');cfg.ibm_z0=gn('ibm_box_z0');
+      cfg.ibm_x1=gn('ibm_x1');cfg.ibm_y1=gn('ibm_y1');cfg.ibm_z1=gn('ibm_box_z1');
+    }else if(ibm_shape==='cylinder'){
+      cfg.ibm_cx=gn('ibm_cyl_cx');cfg.ibm_cy=gn('ibm_cyl_cy');
+      cfg.ibm_z0=gn('ibm_cyl_z0');cfg.ibm_z1=gn('ibm_cyl_z1');
+      cfg.ibm_r=gn('ibm_cyl_r')||0.1;
+      const nseg=gn('ibm_nseg')|0;if(nseg>4)cfg.ibm_nseg=nseg;
+    }else{
+      cfg.ibm_stl_path=gs('ibm_stl_path');
+    }
     cfg.ibm_wall_bc=gs('ibm_wall_bc');
     const uw=gn('ibm_u_wall'),vw=gn('ibm_v_wall'),ww=gn('ibm_w_wall');
     if(uw)cfg.ibm_u_wall=uw;if(vw)cfg.ibm_v_wall=vw;if(ww)cfg.ibm_w_wall=ww;

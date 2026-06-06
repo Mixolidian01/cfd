@@ -14,6 +14,7 @@
 #include "cuda/gpu_ibm.cuh"
 #include "cuda/gpu_bvh.cuh"
 #include "models/mesh_loader.hpp"
+#include "models/primitive_gen.hpp"
 #include "gpu_pool.hpp"
 #include "mesh/bc_types.hpp"        // bc_to_int()
 #include "io/live_streamer.hpp"
@@ -199,7 +200,7 @@ int main(int argc, char* argv[])
     {
         auto parse_bc_str = [&](const std::string& s) -> BCVariant {
             if (s == "Wall")     return WallBC{};
-            if (s == "SlipWall") return SlipWallBC{};
+            if (s == "SlipWall" || s == "Symmetry") return SlipWallBC{};
             if (s == "Open")     return OpenBC{};
             if (s == "NSCBC")    return NscbcBC{ cfg.d("nscbc_p_inf", 1.0) };
             return PeriodicBC{};
@@ -376,12 +377,40 @@ int main(int argc, char* argv[])
     if (sc.acdi.use_acdi)
         graph_solver.set_gpu_acdi(sc.acdi.acdi_ceps);
     std::unique_ptr<GpuBvh> ibm_bvh;
-    if (sc.ibm.enabled && !sc.ibm.stl_path.empty()) {
+    const std::string ibm_shape = cfg.str("ibm_shape", "stl");
+    if (sc.ibm.enabled && (ibm_shape != "stl" || !sc.ibm.stl_path.empty())) {
         try {
             uint8_t bc = 0; // NoSlip
             if (sc.ibm.wall_bc == "isothermal") bc = 2;
             ibm_bvh = std::make_unique<GpuBvh>();
-            TriangleMesh stl_mesh = load_mesh(sc.ibm.stl_path);
+            TriangleMesh stl_mesh;
+            if (ibm_shape == "sphere") {
+                const float cx = (float)cfg.d("ibm_cx", 0.0);
+                const float cy = (float)cfg.d("ibm_cy", 0.0);
+                const float cz = (float)cfg.d("ibm_cz", 0.0);
+                const float r  = (float)cfg.d("ibm_r",  0.1);
+                const int nlon = cfg.i("ibm_nlon", 32);
+                const int nlat = cfg.i("ibm_nlat", 16);
+                stl_mesh = make_sphere(cx, cy, cz, r, nlon, nlat);
+                printf("simulate_gpu: IBM sphere  c=(%.4g,%.4g,%.4g)  r=%.4g  %d×%d\n",
+                       cx, cy, cz, r, nlon, nlat);
+            } else if (ibm_shape == "box") {
+                const float x0=(float)cfg.d("ibm_x0",0), y0=(float)cfg.d("ibm_y0",0), z0=(float)cfg.d("ibm_z0",0);
+                const float x1=(float)cfg.d("ibm_x1",1), y1=(float)cfg.d("ibm_y1",1), z1=(float)cfg.d("ibm_z1",1);
+                stl_mesh = make_box(x0, y0, z0, x1, y1, z1);
+                printf("simulate_gpu: IBM box  (%.4g,%.4g,%.4g)–(%.4g,%.4g,%.4g)\n",
+                       x0, y0, z0, x1, y1, z1);
+            } else if (ibm_shape == "cylinder") {
+                const float cx=(float)cfg.d("ibm_cx",0), cy=(float)cfg.d("ibm_cy",0);
+                const float z0=(float)cfg.d("ibm_z0",0), z1=(float)cfg.d("ibm_z1",1);
+                const float r =(float)cfg.d("ibm_r", 0.1);
+                const int nseg=cfg.i("ibm_nseg", 32);
+                stl_mesh = make_cylinder(cx, cy, z0, z1, r, nseg);
+                printf("simulate_gpu: IBM cylinder  c=(%.4g,%.4g)  z=[%.4g,%.4g]  r=%.4g  %d seg\n",
+                       cx, cy, z0, z1, r, nseg);
+            } else {
+                stl_mesh = load_mesh(sc.ibm.stl_path);
+            }
             ibm_bvh->build(stl_mesh);
             graph_solver.set_gpu_ibm(ibm_bvh.get(), bc,
                                      (float)sc.ibm.u_wall, (float)sc.ibm.v_wall,
