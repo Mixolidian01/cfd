@@ -501,6 +501,13 @@ int main(int argc, char* argv[])
             ++n_passes;
         if (n_passes > 0) {
             gpu_build();
+            // Bring CPU CellBlocks in sync with the GPU-prolongated Q so that the
+            // CPU LTS integrator and ghost-fill routines see valid IC values (not
+            // the zero-initialised blocks created by tree.refine() callbacks).
+            if (sc.amr.use_lts) graph_solver.download_q(solver.tree);
+            // Resize Qn_/Qs_/rhs_ scratch arrays to match the new leaf count;
+            // without this the LTS integrator accesses Qn_[i≥old_n] → segfault.
+            solver.alloc_scratch();
             printf("simulate_gpu: IBM pre-refinement: %d pass(es)  leaves=%d\n",
                    n_passes, (int)solver.tree.leaf_indices().size());
         }
