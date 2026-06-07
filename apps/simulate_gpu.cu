@@ -491,14 +491,28 @@ int main(int argc, char* argv[])
 
     // ── IBM startup pre-refinement ────────────────────────────────────────────
     // Iterate gpu_regrid() until h ≤ R_c/curvature_k on every IBM leaf.
-    // Runs when IBM is active and max_level > 0; terminates because depth is capped.
+    // coarsen_thr=1e30f disables coarsening: without this, leaves just beyond the
+    // 3h SDF band coarsen (low fluid sensor), their merged parent re-enters the band
+    // (larger h → larger 3h), IBM sensor fires again → infinite refine/coarsen cycle.
     if (sc.ibm.enabled && ibm_bvh && sc.amr.max_level > 0) {
         graph_solver.upload_q();
         const int bc0 = sc.bc.faces ? bc_to_int((*sc.bc.faces)[0])
                                     : bc_to_int(sc.bc.variant);
+        constexpr int   MAX_IBM_PASSES  = 32;   // hard safety cap
+        constexpr float IBM_REFINE_THR  = 0.05f;
+        constexpr float IBM_COARSEN_OFF = 1e30f; // disables coarsening
         int n_passes = 0;
-        while (graph_solver.gpu_regrid(solver.tree, pool, bc0, sc.amr.max_level))
+        printf("simulate_gpu: IBM pre-refinement  max_level=%d ...\n", sc.amr.max_level);
+        while (n_passes < MAX_IBM_PASSES &&
+               graph_solver.gpu_regrid(solver.tree, pool, bc0, sc.amr.max_level,
+                                       IBM_REFINE_THR, IBM_COARSEN_OFF)) {
             ++n_passes;
+            printf("simulate_gpu:   pass %d  leaves=%d\n",
+                   n_passes, (int)solver.tree.leaf_indices().size());
+        }
+        if (n_passes >= MAX_IBM_PASSES)
+            fprintf(stderr, "[WARN] IBM pre-refinement hit cap (%d passes) — check max_level\n",
+                    MAX_IBM_PASSES);
         if (n_passes > 0) {
             gpu_build();
             // Bring CPU CellBlocks in sync with the GPU-prolongated Q so that the
@@ -508,7 +522,7 @@ int main(int argc, char* argv[])
             // Resize Qn_/Qs_/rhs_ scratch arrays to match the new leaf count;
             // without this the LTS integrator accesses Qn_[i≥old_n] → segfault.
             solver.alloc_scratch();
-            printf("simulate_gpu: IBM pre-refinement: %d pass(es)  leaves=%d\n",
+            printf("simulate_gpu: IBM pre-refinement done  %d pass(es)  leaves=%d\n",
                    n_passes, (int)solver.tree.leaf_indices().size());
         }
     }
