@@ -500,7 +500,7 @@ int main(int argc, char* argv[])
                                     : bc_to_int(sc.bc.variant);
         constexpr int   MAX_IBM_PASSES  = 32;   // hard safety cap
         constexpr float IBM_REFINE_THR  = 0.05f;
-        constexpr float IBM_COARSEN_OFF = 1e30f; // disables coarsening
+        constexpr float IBM_COARSEN_OFF = -1.0f; // disables coarsening: grad=-0.5 < any sensor
         int n_passes = 0;
         printf("simulate_gpu: IBM pre-refinement  max_level=%d ...\n", sc.amr.max_level);
         while (n_passes < MAX_IBM_PASSES &&
