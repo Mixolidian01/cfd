@@ -290,8 +290,11 @@ double NSSolver::advance() {
 
     // P3.5: IMEX path.
     if (cfg.physics.use_imex) return advance_imex();
-    // P4.1: LTS path — only if tree has more than one level.
-    if (cfg.amr.use_lts && tree.max_leaf_level() > 0) {
+    // P4.1: LTS path — CPU only; skip when GPU solver is active.
+    // With GPU solver, _advance_amr() handles multi-level trees via Berger-Colella
+    // and applies IBM masking every RK3 stage.  CPU LTS knows nothing about IBM
+    // solid cells and produces NaN RHS on them.
+    if (cfg.amr.use_lts && !gpu_solver_ && tree.max_leaf_level() > 0) {
         const double dt = lts_integrator_->step(tree, cfg.time.cfl);
         last_dt_ = dt;
         t    += dt;
