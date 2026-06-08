@@ -26,20 +26,37 @@ void k_save_qn(const GpuRk3LeafMeta* __restrict__ metas) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// k_rk3s1: stage 1 — Q = Qn + dt * RHS
+// k_rk3s1: stage 1 — Q = Qn + dt * RHS  (interior cells only)
+//
+// Ghost cells are intentionally skipped: they will be overwritten by
+// ghost_list.exec() at the start of each stage, so applying the Shu-Osher
+// formula to stale Qn[ghost]=0 (prolongation leaves halos uninitialised)
+// would corrupt them.  ghost_list.exec() is the sole authority for ghost Q.
 // ─────────────────────────────────────────────────────────────────────────────
 __global__
 void k_rk3s1(const GpuRk3LeafMeta* __restrict__ metas,
              const double* __restrict__ d_dt) {
     const GpuRk3LeafMeta& m = metas[blockIdx.x];
     const double dt = *d_dt;
-    constexpr int total = GPU_NVAR * GPU_NCELL;
-    for (int i = threadIdx.x; i < total; i += blockDim.x)
+    constexpr int n_int = GPU_NB * GPU_NB * GPU_NB;
+    for (int idx = threadIdx.x; idx < GPU_NVAR * n_int; idx += blockDim.x) {
+        const int v   = idx / n_int;
+        const int loc = idx % n_int;
+        const int ii  = loc % GPU_NB + GPU_NG;
+        const int jj  = (loc / GPU_NB) % GPU_NB + GPU_NG;
+        const int kk  = loc / (GPU_NB * GPU_NB) + GPU_NG;
+        const int c   = ii + GPU_NB2 * (jj + GPU_NB2 * kk);
+        const int i   = v * GPU_NCELL + c;
         m.d_Q[i] = m.d_Qn[i] + dt * m.d_RHS[i];
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// k_rk3s23: stages 2 & 3 — Q = α*Qn + β*(Q + dt*RHS)
+// k_rk3s23: stages 2 & 3 — Q = α*Qn + β*(Q + dt*RHS)  (interior cells only)
+//
+// Same rationale as k_rk3s1: ghost cells are excluded so that stale
+// Qn[ghost]=0 (from prolongation) does not contaminate the ghost layer.
+// ghost_list.exec() + ibm_list.exec() are responsible for ghost cell values.
 // ─────────────────────────────────────────────────────────────────────────────
 __global__
 void k_rk3s23(const GpuRk3LeafMeta* __restrict__ metas,
@@ -47,9 +64,17 @@ void k_rk3s23(const GpuRk3LeafMeta* __restrict__ metas,
               double alpha, double beta) {
     const GpuRk3LeafMeta& m = metas[blockIdx.x];
     const double dt = *d_dt;
-    constexpr int total = GPU_NVAR * GPU_NCELL;
-    for (int i = threadIdx.x; i < total; i += blockDim.x)
+    constexpr int n_int = GPU_NB * GPU_NB * GPU_NB;
+    for (int idx = threadIdx.x; idx < GPU_NVAR * n_int; idx += blockDim.x) {
+        const int v   = idx / n_int;
+        const int loc = idx % n_int;
+        const int ii  = loc % GPU_NB + GPU_NG;
+        const int jj  = (loc / GPU_NB) % GPU_NB + GPU_NG;
+        const int kk  = loc / (GPU_NB * GPU_NB) + GPU_NG;
+        const int c   = ii + GPU_NB2 * (jj + GPU_NB2 * kk);
+        const int i   = v * GPU_NCELL + c;
         m.d_Q[i] = alpha * m.d_Qn[i] + beta * (m.d_Q[i] + dt * m.d_RHS[i]);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

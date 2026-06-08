@@ -1,10 +1,11 @@
 // tests/cuda/test_t49_gpu_ibm.cu
-// IBM GPU gate: I5–I9.
-// I5: GPU classify sphere STL matches CPU SphereLevelSet (>90% interior cells agree)
-// I6: No-slip wall: all IBM ghost |u| < ambient u=0.3 (stationary wall)
-// I7: Adiabatic wall: ghost T error < 2 K in uniform-temperature field
-// I8: 10-step SSP-RK3 advance with IBM active → stable (dt > 0, ρ > 0)
-// I9: Ghost count invariant across two consecutive build() calls (regrid resilience)
+// IBM GPU gate: I5–I13, W5.
+// I5:  GPU classify sphere STL matches CPU SphereLevelSet (>90% interior cells agree)
+// I6:  No-slip wall: all IBM ghost |u| < ambient u=0.3 (stationary wall)
+// I7:  Adiabatic wall: ghost T error < 2 K in uniform-temperature field
+// I8:  10-step SSP-RK3 advance with IBM active → stable (dt > 0, ρ > 0)
+// I9:  Ghost count invariant across two consecutive build() calls (regrid resilience)
+// I13: 5-step SSP-RK3 with IBM+AMR (max_level=2) → stable (no NaN divergence)
 
 #include "cuda/gpu_graph.cuh"
 #include "cuda/gpu_ibm.cuh"
@@ -377,6 +378,56 @@ int main() {
               (double)h_tct[f_fluid]);
 
         g_pool.free(tblk);
+    }
+
+    // ── I13: 5-step SSP-RK3 advance with IBM+AMR (max_level=2) active ──────────
+    // Reproduces the IBM+AMR NaN divergence scenario: pre-refine the tree to
+    // max_level=2 so C/F boundaries exist, then run the GPU solver.
+    {
+        BlockTree amr_tree; amr_tree.init(1.0);
+        CellBlock* ab = amr_tree.nodes[0].block.get();
+        for (int f = 0; f < NCELL; ++f) {
+            ab->Q[0][f] = 1.0;
+            ab->Q[1][f] = 0.1;
+            ab->Q[2][f] = 0.0;
+            ab->Q[3][f] = 0.0;
+            ab->Q[4][f] = 1.0 / (GAMMA - 1.0) + 0.5 * 1.0 * 0.1 * 0.1;
+        }
+        g_pool.alloc(ab);
+        g_pool.upload(ab);
+
+        GpuGraphSolver amr_solver;
+        amr_solver.set_gpu_ibm(&bvh, 0, 0.f, 0.f, 0.f, 300.f);
+        amr_solver.build(amr_tree, g_pool, 0);
+        amr_solver.upload_q();
+
+        while (amr_solver.gpu_regrid(amr_tree, g_pool, 0, 2))
+            ;  // pre-refine until stable
+
+        bool amr_stable = true;
+        for (int s = 0; s < 5 && amr_stable; ++s) {
+            double dt = amr_solver.advance(amr_tree, 0.5);
+            if (!std::isfinite(dt) || dt <= 0.0) { amr_stable = false; break; }
+        }
+        amr_solver.download_q(amr_tree);
+        bool amr_rho_ok = true;
+        for (int li : amr_tree.leaf_indices()) {
+            CellBlock* b = amr_tree.nodes[li].block.get();
+            if (!b) continue;
+            for (int k = NG; k < NG+NB; ++k)
+            for (int j = NG; j < NG+NB; ++j)
+            for (int i = NG; i < NG+NB; ++i) {
+                int f = cell_idx(i,j,k);
+                if (!std::isfinite(b->Q[0][f]) || b->Q[0][f] <= 0.0) amr_rho_ok = false;
+            }
+        }
+        check(amr_stable && amr_rho_ok, "I13",
+              "5-step SSP-RK3 IBM+AMR max_level=2: stable and ρ > 0");
+
+        for (int li : amr_tree.leaf_indices()) {
+            CellBlock* b = amr_tree.nodes[li].block.get();
+            if (b && g_pool.has_device(b)) g_pool.free(b);
+        }
     }
 
     // ── Summary ───────────────────────────────────────────────────────────────
