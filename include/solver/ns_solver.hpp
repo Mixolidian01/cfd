@@ -106,6 +106,12 @@ struct IGpuSolver : TimeIntegrator {
                                int /*bc_type*/, int /*max_level*/,
                                float /*refine_thr*/ = 0.05f,
                                float /*coarsen_thr*/ = 0.01f) { return false; }
+
+    // Called by NSSolver::regrid() after CPU-side topology changes (refine/coarsen)
+    // to allocate GPU pool entries and upload Q for any new leaves that don't yet
+    // have a device buffer.  Default: no-op (CPU-only builds don't override).
+    // GpuGraphSolver implements this in a CUDA TU so GpuPool calls stay in CUDA code.
+    virtual void sync_cpu_regrid_pool(const BlockTree& /*tree*/, GpuPool& /*pool*/) {}
 };
 
 // ── Diagnostics written every `diag_interval` steps ───────────────────────────────────

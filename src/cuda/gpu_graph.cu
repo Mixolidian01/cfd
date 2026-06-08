@@ -805,6 +805,18 @@ void GpuGraphSolver::upload_q() const {
     }
 }
 
+// Called by NSSolver::regrid() after CPU-side topology changes to allocate and
+// upload GPU pool entries for any new leaves created by the CPU refine/coarsen.
+// Keeps GpuPool CUDA calls inside a CUDA TU so ns_solver.cpp stays CUDA-free.
+void GpuGraphSolver::sync_cpu_regrid_pool(const BlockTree& tree, GpuPool& pool) {
+    for (int li : tree.leaf_indices()) {
+        CellBlock* blk = tree.nodes[li].block.get();
+        if (!blk || pool.has_device(blk)) continue;
+        pool.alloc(blk);
+        pool.upload(blk);
+    }
+}
+
 // G7: build MetricsBus using internal rhs_list/ibm_list, then wire it.
 void GpuGraphSolver::build_metrics(MetricsBus* bus, const SolverConfig::MetricsConfig& cfg,
                                     const SnapLeafMeta* snap_metas) noexcept {

@@ -659,15 +659,10 @@ void NSSolver::regrid() {
     // A3: rebuild GPU lists after topology change (new d_Q pointers; stale
     // CUDA graphs from the previous build would reference freed memory).
     if (gpu_solver_) {
-        // CPU regrid (refine/coarsen) creates new CellBlock objects whose GPU
-        // pool entries don't exist yet.  Allocate and upload them before
-        // build_faces() so download_pairs gets valid device pointers.
-        for (int li : tree.leaf_indices()) {
-            CellBlock* blk = tree.nodes[li].block.get();
-            if (!blk || gpu_pool_->has_device(blk)) continue;
-            gpu_pool_->alloc(blk);
-            gpu_pool_->upload(blk);
-        }
+        // CPU regrid creates new CellBlock objects without GPU pool entries.
+        // sync_cpu_regrid_pool() allocates and uploads them (virtual call keeps
+        // GpuPool CUDA code out of this CPU-only translation unit).
+        gpu_solver_->sync_cpu_regrid_pool(tree, *gpu_pool_);
         if (cfg.acdi.use_acdi)
             gpu_solver_->set_gpu_acdi(cfg.acdi.acdi_ceps);
         if (cfg.physics.sgs) {

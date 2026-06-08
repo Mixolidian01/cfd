@@ -286,6 +286,8 @@ struct GpuGraphSolver : IGpuSolver {
                     int cfg_max_level,
                     float refine_thr = 0.05f, float coarsen_thr = 0.01f);
 
+    void sync_cpu_regrid_pool(const BlockTree& tree, GpuPool& pool) override;
+
     // G7: metrics bus (optional; null = disabled).
     MetricsBus* metrics_bus_  = nullptr;
     int         metrics_step_ = 0;
